@@ -1,0 +1,33 @@
+{
+  "name": "shane-backend",
+  "version": "1.0.0",
+  "description": "Backend for personal website using Hono on Bun with Drizzle ORM",
+  "type": "module",
+  "scripts": {
+    "dev": "bun run --watch src/index.ts",
+    "build": "bun build src/index.ts --outdir dist --target bun",
+    "start": "bun run dist/index.js",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "drizzle-kit migrate",
+    "db:push": "drizzle-kit push",
+    "db:studio": "drizzle-kit studio",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@hono/node-server": "^1.13.7",
+    "drizzle-orm": "^0.40.0",
+    "hono": "^4.7.5",
+    "node-cron": "^3.0.3",
+    "pg": "^8.14.1",
+    "zod": "^3.24.2"
+  },
+  "devDependencies": {
+    "@types/node-cron": "^3.0.11",
+    "@types/pg": "^8.11.11",
+    "bun-types": "latest",
+    "drizzle-kit": "^0.30.4",
+    "typescript": "^5.8.2",
+    "vitest": "^3.0.9"
+  }
+}
