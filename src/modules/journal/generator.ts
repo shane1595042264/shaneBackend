@@ -1,0 +1,345 @@
+import { generateText } from "@/modules/shared/llm";
+import { embed } from "@/modules/shared/embeddings";
+import { findSimilarEntries, findRelevantFacts } from "@/modules/shared/vector-search";
+import { getLatestVoiceProfile } from "@/modules/journal/voice-profile";
+import { db } from "@/db/client";
+import { activities, diaryEntries, summaries } from "@/db/schema";
+import type { NormalizedActivity } from "@/modules/integrations/types";
+import { eq, desc, and, lte, gte } from "drizzle-orm";
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+
+export interface GenerationContext {
+  date: string;
+  activitiesText: string;
+  yearlySummary: string | null;
+  monthlySummary: string | null;
+  weeklySummary: string | null;
+  yesterdayEntry: string | null;
+  similarEntries: Array<{ date: string; content: string }>;
+  relevantFacts: string[];
+}
+
+// ---------------------------------------------------------------------------
+// formatActivitiesForPrompt
+// ---------------------------------------------------------------------------
+
+/**
+ * Formats a list of NormalizedActivity records grouped by source into a
+ * human-readable text block suitable for inclusion in a generation prompt.
+ */
+export function formatActivitiesForPrompt(
+  acts: NormalizedActivity[],
+  date: string
+): string {
+  if (acts.length === 0) {
+    return `No activities recorded for ${date}.`;
+  }
+
+  const bySource: Record<string, NormalizedActivity[]> = {
+    google_maps: [],
+    strava: [],
+    github: [],
+    google_calendar: [],
+  };
+
+  for (const act of acts) {
+    if (bySource[act.source]) {
+      bySource[act.source].push(act);
+    }
+  }
+
+  const sections: string[] = [];
+
+  // --- Locations (Google Maps) ---
+  if (bySource.google_maps.length > 0) {
+    const lines = bySource.google_maps.map((a) => {
+      const name = (a.data.name as string) ?? "Unknown place";
+      const address = a.data.address ? ` (${a.data.address as string})` : "";
+      return `  - ${name}${address}`;
+    });
+    sections.push(`Locations visited (Google Maps):\n${lines.join("\n")}`);
+  }
+
+  // --- Workouts (Strava) ---
+  if (bySource.strava.length > 0) {
+    const lines = bySource.strava.map((a) => {
+      const name = (a.data.name as string) ?? a.type;
+      const km =
+        a.data.distance_km !== undefined
+          ? ` — ${(a.data.distance_km as number).toFixed(1)} km`
+          : "";
+      const secs = a.data.duration_seconds as number | undefined;
+      const time =
+        secs !== undefined
+          ? ` in ${Math.floor(secs / 60)}m ${secs % 60}s`
+          : "";
+      return `  - ${name}${km}${time}`;
+    });
+    sections.push(`Workouts / exercise (Strava):\n${lines.join("\n")}`);
+  }
+
+  // --- Commits (GitHub) ---
+  if (bySource.github.length > 0) {
+    const lines = bySource.github.map((a) => {
+      const repo = (a.data.repo as string) ?? "unknown repo";
+      const message = (a.data.message as string) ?? "(no message)";
+      return `  - [${repo}] ${message}`;
+    });
+    sections.push(`Code commits (GitHub):\n${lines.join("\n")}`);
+  }
+
+  // --- Calendar events (Google Calendar) ---
+  if (bySource.google_calendar.length > 0) {
+    const lines = bySource.google_calendar.map((a) => {
+      const summary = (a.data.summary as string) ?? "Untitled event";
+      const start = a.data.start ? ` at ${a.data.start as string}` : "";
+      const end = a.data.end ? `–${a.data.end as string}` : "";
+      return `  - ${summary}${start}${end}`;
+    });
+    sections.push(`Calendar events (Google Calendar):\n${lines.join("\n")}`);
+  }
+
+  return sections.join("\n\n");
+}
+
+// ---------------------------------------------------------------------------
+// buildGenerationPrompt
+// ---------------------------------------------------------------------------
+
+/**
+ * Assembles all context layers into a single generation prompt for Claude.
+ */
+export function buildGenerationPrompt(ctx: GenerationContext): string {
+  const parts: string[] = [];
+
+  parts.push(`You are writing a personal journal entry for ${ctx.date}.`);
+
+  // Activities
+  parts.push(`## Today's Activities\n${ctx.activitiesText}`);
+
+  // Summaries
+  if (ctx.yearlySummary) {
+    parts.push(`## Yearly Context\n${ctx.yearlySummary}`);
+  }
+  if (ctx.monthlySummary) {
+    parts.push(`## Monthly Context\n${ctx.monthlySummary}`);
+  }
+  if (ctx.weeklySummary) {
+    parts.push(`## Weekly Context\n${ctx.weeklySummary}`);
+  }
+
+  // Yesterday's entry
+  if (ctx.yesterdayEntry) {
+    parts.push(`## Yesterday's Entry\n${ctx.yesterdayEntry}`);
+  }
+
+  // Similar past entries
+  if (ctx.similarEntries.length > 0) {
+    const entriesBlock = ctx.similarEntries
+      .map((e) => `### ${e.date}\n${e.content}`)
+      .join("\n\n");
+    parts.push(`## Similar Past Entries\n${entriesBlock}`);
+  }
+
+  // Relevant facts
+  if (ctx.relevantFacts.length > 0) {
+    const factsBlock = ctx.relevantFacts.map((f) => `- ${f}`).join("\n");
+    parts.push(`## Relevant Facts About Me\n${factsBlock}`);
+  }
+
+  // Final instruction
+  parts.push(
+    `## Instruction\nUsing all the context above, write a journal entry for ${ctx.date} in flowing prose, written in first person. The entry should feel authentic and personal, as if the author is reflecting on their day. Do not use headers or bullet points — write continuous paragraphs.`
+  );
+
+  return parts.join("\n\n");
+}
+
+// ---------------------------------------------------------------------------
+// generateDailyEntry
+// ---------------------------------------------------------------------------
+
+/**
+ * Full pipeline: fetch context from DB, call Claude, embed result, store entry.
+ */
+export async function generateDailyEntry(
+  date: string
+): Promise<{ content: string; voiceProfileVersion: number }> {
+  // 1. Get today's activities from DB
+  const rawActivities = await db
+    .select()
+    .from(activities)
+    .where(eq(activities.date, date));
+
+  const todayActivities: NormalizedActivity[] = rawActivities.map((row) => ({
+    date: row.date,
+    source: row.source as NormalizedActivity["source"],
+    type: row.type,
+    data: row.data as Record<string, unknown>,
+  }));
+
+  // 2. Get latest voice profile
+  const voiceProfile = await getLatestVoiceProfile();
+  const voiceProfileVersion = voiceProfile?.version ?? 0;
+  const systemPrompt =
+    voiceProfile?.profileText ??
+    "You are a thoughtful diarist writing personal journal entries in first person.";
+
+  // 3. Get summaries (yearly, monthly, weekly)
+  const [yearStart, yearEnd] = getYearRange(date);
+  const [monthStart, monthEnd] = getMonthRange(date);
+  const [weekStart, weekEnd] = getWeekRange(date);
+
+  const [yearlyRows, monthlyRows, weeklyRows] = await Promise.all([
+    db
+      .select({ content: summaries.content })
+      .from(summaries)
+      .where(
+        and(
+          eq(summaries.level, "yearly"),
+          eq(summaries.startDate, yearStart),
+          eq(summaries.endDate, yearEnd)
+        )
+      )
+      .limit(1),
+    db
+      .select({ content: summaries.content })
+      .from(summaries)
+      .where(
+        and(
+          eq(summaries.level, "monthly"),
+          eq(summaries.startDate, monthStart),
+          eq(summaries.endDate, monthEnd)
+        )
+      )
+      .limit(1),
+    db
+      .select({ content: summaries.content })
+      .from(summaries)
+      .where(
+        and(
+          eq(summaries.level, "weekly"),
+          eq(summaries.startDate, weekStart),
+          eq(summaries.endDate, weekEnd)
+        )
+      )
+      .limit(1),
+  ]);
+
+  const yearlySummary = yearlyRows[0]?.content ?? null;
+  const monthlySummary = monthlyRows[0]?.content ?? null;
+  const weeklySummary = weeklyRows[0]?.content ?? null;
+
+  // 4. Get yesterday's entry
+  const yesterday = getYesterday(date);
+  const yesterdayRows = await db
+    .select({ content: diaryEntries.content })
+    .from(diaryEntries)
+    .where(eq(diaryEntries.date, yesterday))
+    .limit(1);
+  const yesterdayEntry = yesterdayRows[0]?.content ?? null;
+
+  // 5. Vector search for 5 similar entries (excluding today)
+  const activitiesText = formatActivitiesForPrompt(todayActivities, date);
+  const queryEmbedding = await embed(activitiesText);
+
+  const similarRows = await findSimilarEntries(queryEmbedding, 5, date);
+  const similarEntries = (
+    similarRows as Array<{ date: string; content: string }>
+  ).map((row) => ({ date: row.date, content: row.content }));
+
+  // 6. Vector search for relevant facts
+  const factRows = await findRelevantFacts(queryEmbedding, 5);
+  const relevantFacts = (
+    factRows as Array<{ fact_text: string }>
+  ).map((row) => row.fact_text);
+
+  // 7. Build prompt
+  const ctx: GenerationContext = {
+    date,
+    activitiesText,
+    yearlySummary,
+    monthlySummary,
+    weeklySummary,
+    yesterdayEntry,
+    similarEntries,
+    relevantFacts,
+  };
+  const prompt = buildGenerationPrompt(ctx);
+
+  // 8. Call Claude Sonnet with voice profile as system prompt
+  const { text: content } = await generateText({
+    system: systemPrompt,
+    prompt,
+    model: "claude-sonnet-4-20250514",
+    maxTokens: 2048,
+  });
+
+  // 9. Embed the result, store in diary_entries
+  const contentEmbedding = await embed(content);
+
+  await db
+    .insert(diaryEntries)
+    .values({
+      date,
+      content,
+      embedding: contentEmbedding,
+      voiceProfileVersion,
+      generationMetadata: {
+        model: "claude-sonnet-4-20250514",
+        generatedAt: new Date().toISOString(),
+        activitiesCount: todayActivities.length,
+      },
+    })
+    .onConflictDoUpdate({
+      target: diaryEntries.date,
+      set: {
+        content,
+        embedding: contentEmbedding,
+        voiceProfileVersion,
+        updatedAt: new Date(),
+      },
+    });
+
+  return { content, voiceProfileVersion };
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+function getYesterday(date: string): string {
+  const d = new Date(date);
+  d.setDate(d.getDate() - 1);
+  return d.toISOString().slice(0, 10);
+}
+
+function getYearRange(date: string): [string, string] {
+  const year = date.slice(0, 4);
+  return [`${year}-01-01`, `${year}-12-31`];
+}
+
+function getMonthRange(date: string): [string, string] {
+  const [year, month] = date.split("-");
+  const start = `${year}-${month}-01`;
+  const lastDay = new Date(Number(year), Number(month), 0).getDate();
+  const end = `${year}-${month}-${String(lastDay).padStart(2, "0")}`;
+  return [start, end];
+}
+
+function getWeekRange(date: string): [string, string] {
+  const d = new Date(date);
+  const day = d.getDay(); // 0 = Sunday
+  const diffToMonday = (day === 0 ? -6 : 1 - day);
+  const monday = new Date(d);
+  monday.setDate(d.getDate() + diffToMonday);
+  const sunday = new Date(monday);
+  sunday.setDate(monday.getDate() + 6);
+  return [
+    monday.toISOString().slice(0, 10),
+    sunday.toISOString().slice(0, 10),
+  ];
+}
