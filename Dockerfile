@@ -5,4 +5,5 @@ RUN bun install --frozen-lockfile
 COPY . .
 EXPOSE 8080
 ENV PORT=8080
-CMD ["bun", "run", "src/index.ts"]
+RUN chmod +x start.sh
+CMD ["./start.sh"]
