@@ -12,7 +12,9 @@
     "db:push": "drizzle-kit push",
     "db:studio": "drizzle-kit studio",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "seed:voice": "bun run src/scripts/seed-voice-profile.ts",
+    "seed:elements": "bun run src/scripts/seed-elements.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.80.0",
