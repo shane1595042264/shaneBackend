@@ -11,6 +11,7 @@ import {
   unique,
   index,
   customType,
+  boolean,
 } from "drizzle-orm/pg-core";
 
 // Custom pgvector column type
@@ -167,4 +168,55 @@ export const elementConfig = pgTable("element_config", {
   updatedAt: timestamp("updated_at", { withTimezone: true })
     .notNull()
     .defaultNow(),
+});
+
+// ------------------------------------------------------------------
+// rng_plaid_tokens
+// ------------------------------------------------------------------
+export const rngPlaidTokens = pgTable("rng_plaid_tokens", {
+  id: serial("id").primaryKey(),
+  accessToken: text("access_token").notNull(),
+  itemId: text("item_id").notNull(),
+  institutionName: text("institution_name"),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+});
+
+// ------------------------------------------------------------------
+// rng_monthly_spend
+// ------------------------------------------------------------------
+export const rngMonthlySpend = pgTable("rng_monthly_spend", {
+  id: serial("id").primaryKey(),
+  yearMonth: varchar("year_month", { length: 7 }).notNull().unique(),
+  totalSpend: text("total_spend").notNull(),
+  fetchedAt: timestamp("fetched_at", { withTimezone: true }).defaultNow(),
+});
+
+// ------------------------------------------------------------------
+// rng_decisions
+// ------------------------------------------------------------------
+export const rngDecisions = pgTable("rng_decisions", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  url: text("url"),
+  productName: text("product_name").notNull(),
+  price: text("price").notNull(),
+  genericCategory: text("generic_category").notNull(),
+  isEntertainment: boolean("is_entertainment").notNull(),
+  avatarUrl: text("avatar_url"),
+  balanceAtTime: text("balance_at_time"),
+  remainingBudget: text("remaining_budget"),
+  threshold: integer("threshold"),
+  roll: integer("roll"),
+  result: varchar("result", { length: 20 }).notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+});
+
+// ------------------------------------------------------------------
+// rng_ban_list
+// ------------------------------------------------------------------
+export const rngBanList = pgTable("rng_ban_list", {
+  id: serial("id").primaryKey(),
+  genericCategory: text("generic_category").notNull(),
+  bannedAt: timestamp("banned_at", { withTimezone: true }).defaultNow(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  sourceDecisionId: uuid("source_decision_id").references(() => rngDecisions.id),
 });
