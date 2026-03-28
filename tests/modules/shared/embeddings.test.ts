@@ -1,89 +1,32 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 
-// Mock the OpenAI SDK before importing the module under test
-vi.mock("openai", () => {
-  const mockCreate = vi.fn();
-  return {
-    default: vi.fn().mockImplementation(() => ({
-      embeddings: {
-        create: mockCreate,
-      },
-    })),
-    __mockCreate: mockCreate,
-  };
+// Mock @xenova/transformers to avoid downloading model in tests
+vi.mock("@xenova/transformers", () => {
+  const mockPipeline = vi.fn().mockResolvedValue(
+    vi.fn().mockResolvedValue({
+      data: new Float32Array(384).fill(0.1),
+    })
+  );
+  return { pipeline: mockPipeline };
 });
 
-import { embed } from "@/modules/shared/embeddings";
-import OpenAI from "openai";
+import { embed, EMBEDDING_DIM } from "@/modules/shared/embeddings";
 
 describe("embed", () => {
-  let mockCreate: ReturnType<typeof vi.fn>;
-
-  beforeEach(() => {
-    vi.clearAllMocks();
-    const instance = new (OpenAI as unknown as new () => { embeddings: { create: ReturnType<typeof vi.fn> } })();
-    mockCreate = instance.embeddings.create;
-  });
-
-  it("should return a 1536-dimensional vector", async () => {
-    const fakeEmbedding = new Array(1536).fill(0).map((_, i) => i / 1536);
-    mockCreate.mockResolvedValueOnce({
-      data: [{ embedding: fakeEmbedding }],
-    });
-
+  it("should return a 384-dimensional vector", async () => {
     const result = await embed("Hello world");
-
-    expect(result).toHaveLength(1536);
-    expect(result).toEqual(fakeEmbedding);
-  });
-
-  it("should call OpenAI with model text-embedding-3-small", async () => {
-    const fakeEmbedding = new Array(1536).fill(0.1);
-    mockCreate.mockResolvedValueOnce({
-      data: [{ embedding: fakeEmbedding }],
-    });
-
-    await embed("Test text");
-
-    expect(mockCreate).toHaveBeenCalledWith(
-      expect.objectContaining({
-        model: "text-embedding-3-small",
-      })
-    );
-  });
-
-  it("should pass the input text to the API", async () => {
-    const fakeEmbedding = new Array(1536).fill(0.1);
-    mockCreate.mockResolvedValueOnce({
-      data: [{ embedding: fakeEmbedding }],
-    });
-
-    await embed("My specific input text");
-
-    expect(mockCreate).toHaveBeenCalledWith(
-      expect.objectContaining({
-        input: "My specific input text",
-      })
-    );
+    expect(result).toHaveLength(384);
   });
 
   it("should return an array of numbers", async () => {
-    const fakeEmbedding = [0.1, 0.2, 0.3, ...new Array(1533).fill(0.0)];
-    mockCreate.mockResolvedValueOnce({
-      data: [{ embedding: fakeEmbedding }],
-    });
-
-    const result = await embed("Test");
-
+    const result = await embed("Test text");
     expect(Array.isArray(result)).toBe(true);
     result.forEach((val) => {
       expect(typeof val).toBe("number");
     });
   });
 
-  it("should propagate errors from the OpenAI API", async () => {
-    mockCreate.mockRejectedValueOnce(new Error("OpenAI API Error"));
-
-    await expect(embed("Test")).rejects.toThrow("OpenAI API Error");
+  it("should export EMBEDDING_DIM as 384", () => {
+    expect(EMBEDDING_DIM).toBe(384);
   });
 });

@@ -16,7 +16,7 @@ import {
 // Custom pgvector column type
 const vector = customType<{ data: number[]; driverData: string }>({
   dataType(config) {
-    const dimensions = (config as { dimensions?: number })?.dimensions ?? 1536;
+    const dimensions = (config as { dimensions?: number })?.dimensions ?? 384;
     return `vector(${dimensions})`;
   },
   toDriver(value: number[]): string {
@@ -57,7 +57,7 @@ export const diaryEntries = pgTable(
     id: uuid("id").primaryKey().defaultRandom(),
     date: date("date").notNull().unique(),
     content: text("content").notNull(),
-    embedding: vector("embedding", { dimensions: 1536 } as never),
+    embedding: vector("embedding", { dimensions: 384 } as never),
     voiceProfileVersion: integer("voice_profile_version"),
     generationMetadata: jsonb("generation_metadata"),
     createdAt: timestamp("created_at", { withTimezone: true })
@@ -84,7 +84,7 @@ export const summaries = pgTable(
     startDate: date("start_date").notNull(),
     endDate: date("end_date").notNull(),
     content: text("content").notNull(),
-    embedding: vector("embedding", { dimensions: 1536 } as never),
+    embedding: vector("embedding", { dimensions: 384 } as never),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -134,7 +134,7 @@ export const learnedFacts = pgTable(
   {
     id: uuid("id").primaryKey().defaultRandom(),
     factText: text("fact_text").notNull(),
-    embedding: vector("embedding", { dimensions: 1536 } as never),
+    embedding: vector("embedding", { dimensions: 384 } as never),
     sourceCorrectionId: uuid("source_correction_id").references(
       () => corrections.id,
       { onDelete: "set null" }

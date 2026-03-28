@@ -10,7 +10,7 @@ vi.mock("@/db/client", () => ({
 import { buildSimilarityQuery } from "@/modules/shared/vector-search";
 
 describe("buildSimilarityQuery", () => {
-  const sampleEmbedding = new Array(1536).fill(0.1);
+  const sampleEmbedding = new Array(384).fill(0.1);
 
   it("should return an object with sql and params properties", () => {
     const result = buildSimilarityQuery("diary_entries", sampleEmbedding, 5);
