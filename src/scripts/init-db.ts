@@ -1,4 +1,4 @@
-import { pool } from "@/db/client";
+import { getPool } from "@/db/client";
 import { db } from "@/db/client";
 import { elementConfig, voiceProfiles } from "@/db/schema";
 import { deriveVoiceProfile, saveVoiceProfile } from "@/modules/journal/voice-profile";
@@ -85,7 +85,7 @@ async function initDatabase() {
   try {
         // Step 1: Enable pgvector extension
       console.log("[init-db] Enabling pgvector extension...");
-        await pool.query("CREATE EXTENSION IF NOT EXISTS vector;");
+        await getPool().query("CREATE EXTENSION IF NOT EXISTS vector;");
         console.log("[init-db] pgvector extension enabled.");
 
       // Step 2: Run Drizzle schema push via drizzle-kit CLI
@@ -133,7 +133,7 @@ async function initDatabase() {
         console.error("[init-db] Error during database initialization:", error);
         process.exit(1);
   } finally {
-        await pool.end();
+        await getPool().end();
   }
 }
 
