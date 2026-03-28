@@ -45,11 +45,18 @@ app.post("/api/admin/generate/:date", async (c) => {
     return c.json({ error: "Unauthorized" }, 401);
   }
   const date = c.req.param("date");
+  // Fire and forget — respond immediately, run generation in background
+  // Railway has a 30s gateway timeout so we can't wait for Claude + embeddings
   const { ingestActivities } = await import("@/cron/ingest");
   const { runDailyGeneration } = await import("@/cron/generate-daily");
-  const ingested = await ingestActivities(date);
-  await runDailyGeneration(date);
-  return c.json({ ok: true, date, ingested });
+  ingestActivities(date)
+    .then((ingested) => {
+      console.log(`[admin] Ingested ${ingested} activities for ${date}`);
+      return runDailyGeneration(date);
+    })
+    .then(() => console.log(`[admin] Journal entry generated for ${date}`))
+    .catch((err) => console.error(`[admin] Generation failed for ${date}:`, err));
+  return c.json({ ok: true, date, status: "generation_started" });
 });
 
 export default app;
