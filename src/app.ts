@@ -59,18 +59,26 @@ app.post("/api/admin/generate/:date", async (c) => {
   return c.json({ ok: true, date, status: "generation_started" });
 });
 
-// Debug endpoint — runs generation synchronously and returns errors
-app.get("/api/admin/debug-generate/:date", async (c) => {
+// Debug: ingest only (fast, should finish within 30s)
+app.get("/api/admin/ingest/:date", async (c) => {
   const date = c.req.param("date");
   try {
     const { ingestActivities } = await import("@/cron/ingest");
     const ingested = await ingestActivities(date);
-    const { runDailyGeneration } = await import("@/cron/generate-daily");
-    await runDailyGeneration(date);
     return c.json({ ok: true, date, ingested });
   } catch (err: any) {
     return c.json({ error: err.message, stack: err.stack?.split("\n").slice(0, 5) }, 500);
   }
+});
+
+// Debug: generate only (may timeout at gateway but runs in background)
+app.get("/api/admin/generate-only/:date", async (c) => {
+  const date = c.req.param("date");
+  const { runDailyGeneration } = await import("@/cron/generate-daily");
+  runDailyGeneration(date)
+    .then(() => console.log(`[admin] Generated entry for ${date}`))
+    .catch((err) => console.error(`[admin] Generation failed:`, err.message, err.stack));
+  return c.json({ ok: true, date, status: "generation_started_bg" });
 });
 
 export default app;
