@@ -4,6 +4,7 @@ import { logger } from "hono/logger";
 import { journalRoutes } from "@/modules/journal/routes";
 import { elementRoutes } from "@/modules/elements/routes";
 import { locationRoutes } from "@/modules/location/routes";
+import { rngRoutes } from "@/modules/rng-capitalist/routes";
 
 const app = new Hono();
 
@@ -35,6 +36,7 @@ app.get("/health", (c) => {
 app.route("/api/journal", journalRoutes);
 app.route("/api/elements", elementRoutes);
 app.route("/api/location", locationRoutes);
+app.route("/api/rng", rngRoutes);
 
 // ---------------------------------------------------------------------------
 // Admin — manual trigger for ingestion + journal generation
