@@ -3,6 +3,7 @@ import { ingestActivities } from "./ingest";
 import { runDailyGeneration } from "./generate-daily";
 import { runSummaryGeneration } from "./generate-summaries";
 import { refreshVoiceProfile } from "./refresh-voice-profile";
+import { fetchAndCacheMonthlySpend } from "@/modules/rng-capitalist/plaid";
 
 function getTodayDate(): string {
   return new Date().toISOString().slice(0, 10);
@@ -49,6 +50,14 @@ export function startCronJobs(): void {
     } catch (err) {
       console.error("[cron] Voice profile refresh failed:", err);
     }
+  });
+
+  cron.schedule("0 2 1 * *", async () => {
+    const now = new Date();
+    const lastMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+    const yearMonth = `${lastMonth.getFullYear()}-${String(lastMonth.getMonth() + 1).padStart(2, "0")}`;
+    console.log(`[cron] Caching monthly spend for ${yearMonth}...`);
+    await fetchAndCacheMonthlySpend(yearMonth).catch((err) => console.error("[cron] Monthly spend cache failed:", err));
   });
 
   console.log("[cron] All cron jobs registered.");
