@@ -1,26 +1,38 @@
 import { Hono } from "hono";
 import { zValidator } from "@hono/zod-validator";
 import { z } from "zod";
-import { eq, desc } from "drizzle-orm";
+import { eq, desc, sql } from "drizzle-orm";
 import { db } from "@/db/client";
 import { diaryEntries, activities, learnedFacts } from "@/db/schema";
 import { processSuggestion } from "./correction";
 
 const journalRoutes = new Hono();
 
-// GET /entries — list all diary entries ordered by date desc
+// GET /entries — list diary entries with pagination (default limit=20, offset=0)
 journalRoutes.get("/entries", async (c) => {
-  const entries = await db
-    .select({
-      date: diaryEntries.date,
-      content: diaryEntries.content,
-      createdAt: diaryEntries.createdAt,
-      updatedAt: diaryEntries.updatedAt,
-    })
-    .from(diaryEntries)
-    .orderBy(desc(diaryEntries.date));
+  const limit = Math.max(1, Math.min(100, Number(c.req.query("limit")) || 20));
+  const offset = Math.max(0, Number(c.req.query("offset")) || 0);
 
-  return c.json({ entries });
+  const [entries, countResult] = await Promise.all([
+    db
+      .select({
+        date: diaryEntries.date,
+        content: diaryEntries.content,
+        createdAt: diaryEntries.createdAt,
+        updatedAt: diaryEntries.updatedAt,
+      })
+      .from(diaryEntries)
+      .orderBy(desc(diaryEntries.date))
+      .limit(limit)
+      .offset(offset),
+    db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(diaryEntries),
+  ]);
+
+  const total = countResult[0].count;
+
+  return c.json({ entries, total, limit, offset });
 });
 
 // GET /entries/:date — single entry + activities for that day

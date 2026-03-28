@@ -182,7 +182,18 @@ export function buildGenerationPrompt(ctx: GenerationContext): string {
 
   // Final instruction
   parts.push(
-    `## Instruction\nUsing all the context above, write a journal entry for ${ctx.date} in flowing prose, written in first person. The entry should feel authentic and personal, as if the author is reflecting on their day. Do not use headers or bullet points — write continuous paragraphs.`
+    `## Instruction
+Write a SHORT journal entry for ${ctx.date}. Rules:
+1. ONE sentence per data category (workout, commits, locations, calendar). Connect them naturally into one paragraph.
+2. Keep it under 100 words total. The DATA is the point, not the story.
+3. When referencing specific data, wrap it in [[data:TYPE|DISPLAY|RAW]] markers so the frontend can make it interactive. Examples:
+   - [[data:strava|ran 5.2km in 24:32|{"distance_km":5.2,"duration":"24:32","type":"run"}]]
+   - [[data:github|pushed 3 commits to PersonalWebsite|{"count":3,"repo":"PersonalWebsite"}]]
+   - [[data:location|spent the afternoon in Midtown|{"name":"Midtown","duration_min":180}]]
+   - [[data:calendar|had a team standup at 10am|{"title":"Team standup","time":"10:00"}]]
+4. NEVER use em dashes (—). Use commas, periods, or "and" instead.
+5. Write in first person, casual, human. Short sentences. No flowery metaphors.
+6. Think of this as a data log with personality, not a literary essay.`
   );
 
   return parts.join("\n\n");

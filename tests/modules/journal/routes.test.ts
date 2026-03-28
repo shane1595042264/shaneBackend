@@ -26,6 +26,7 @@ vi.mock("@/db/schema", () => ({
 vi.mock("drizzle-orm", () => ({
   eq: vi.fn((_col: unknown, val: unknown) => ({ col: _col, val })),
   desc: vi.fn((col: unknown) => ({ col, direction: "desc" })),
+  sql: vi.fn(),
 }));
 
 vi.mock("@/modules/journal/correction", () => ({
@@ -47,7 +48,7 @@ app.route("/", journalRoutes);
 function makeSelectChain(rows: unknown[]) {
   const chain: Record<string, unknown> = {};
   const terminal = Promise.resolve(rows);
-  for (const m of ["from", "where", "orderBy", "limit"]) {
+  for (const m of ["from", "where", "orderBy", "limit", "offset"]) {
     chain[m] = vi.fn(() => chain);
   }
   Object.assign(chain, {
@@ -67,7 +68,7 @@ beforeEach(() => {
 // GET /entries
 // ---------------------------------------------------------------------------
 describe("GET /entries", () => {
-  it("returns { entries: [...] } with 200", async () => {
+  it("returns paginated entries with defaults (limit=20, offset=0)", async () => {
     const fakeEntries = [
       {
         date: "2026-03-20",
@@ -77,15 +78,65 @@ describe("GET /entries", () => {
       },
     ];
 
-    mockSelect.mockReturnValue(makeSelectChain(fakeEntries));
+    mockSelect
+      .mockReturnValueOnce(makeSelectChain(fakeEntries))
+      .mockReturnValueOnce(makeSelectChain([{ count: 1 }]));
 
     const res = await app.request("/entries");
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body).toHaveProperty("entries");
-    expect(Array.isArray(body.entries)).toBe(true);
     expect(body.entries).toHaveLength(1);
     expect(body.entries[0].date).toBe("2026-03-20");
+    expect(body.total).toBe(1);
+    expect(body.limit).toBe(20);
+    expect(body.offset).toBe(0);
+  });
+
+  it("respects custom limit and offset query params", async () => {
+    const fakeEntries = [
+      {
+        date: "2026-03-18",
+        content: "Page 2 entry",
+        createdAt: new Date("2026-03-18T10:00:00Z"),
+        updatedAt: new Date("2026-03-18T10:00:00Z"),
+      },
+    ];
+
+    mockSelect
+      .mockReturnValueOnce(makeSelectChain(fakeEntries))
+      .mockReturnValueOnce(makeSelectChain([{ count: 25 }]));
+
+    const res = await app.request("/entries?limit=5&offset=10");
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.entries).toHaveLength(1);
+    expect(body.total).toBe(25);
+    expect(body.limit).toBe(5);
+    expect(body.offset).toBe(10);
+  });
+
+  it("returns empty entries when offset exceeds total", async () => {
+    mockSelect
+      .mockReturnValueOnce(makeSelectChain([]))
+      .mockReturnValueOnce(makeSelectChain([{ count: 3 }]));
+
+    const res = await app.request("/entries?offset=100");
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.entries).toHaveLength(0);
+    expect(body.total).toBe(3);
+  });
+
+  it("clamps limit to max 100", async () => {
+    mockSelect
+      .mockReturnValueOnce(makeSelectChain([]))
+      .mockReturnValueOnce(makeSelectChain([{ count: 0 }]));
+
+    const res = await app.request("/entries?limit=999");
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.limit).toBe(100);
   });
 });
 
