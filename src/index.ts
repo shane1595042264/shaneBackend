@@ -12,20 +12,22 @@ const server = Bun.serve({
 
 console.log(`Server running on http://localhost:${server.port}`);
 
-// Run schema push after server starts (env vars are guaranteed available here)
+// Migrate vector columns from 1536 to 384 dimensions (one-time migration)
 if (process.env.DATABASE_URL) {
-  Bun.spawn(["bunx", "drizzle-kit", "push", "--force"], {
-    cwd: process.cwd(),
-    env: process.env,
-    stdout: "inherit",
-    stderr: "inherit",
-    onExit(proc, exitCode) {
-      if (exitCode === 0) {
-        console.log("[startup] Schema push completed");
-      } else {
-        console.error("[startup] Schema push failed (exit code:", exitCode, ")");
-      }
-    },
+  import("@/db/client").then(({ getPool }) => {
+    const pool = getPool();
+    Promise.all([
+      pool.query("ALTER TABLE diary_entries ALTER COLUMN embedding TYPE vector(384) USING NULL"),
+      pool.query("ALTER TABLE summaries ALTER COLUMN embedding TYPE vector(384) USING NULL"),
+      pool.query("ALTER TABLE learned_facts ALTER COLUMN embedding TYPE vector(384) USING NULL"),
+    ])
+      .then(() => console.log("[startup] Vector columns migrated to 384 dimensions"))
+      .catch((err) => {
+        // Ignore if already correct dimension or column doesn't exist
+        if (!err.message.includes("already")) {
+          console.error("[startup] Vector migration note:", err.message);
+        }
+      });
   });
 }
 
