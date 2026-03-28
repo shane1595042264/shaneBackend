@@ -3,6 +3,7 @@ import { cors } from "hono/cors";
 import { logger } from "hono/logger";
 import { journalRoutes } from "@/modules/journal/routes";
 import { elementRoutes } from "@/modules/elements/routes";
+import { locationRoutes } from "@/modules/location/routes";
 
 const app = new Hono();
 
@@ -33,5 +34,6 @@ app.get("/health", (c) => {
 // ---------------------------------------------------------------------------
 app.route("/api/journal", journalRoutes);
 app.route("/api/elements", elementRoutes);
+app.route("/api/location", locationRoutes);
 
 export default app;

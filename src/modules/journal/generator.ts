@@ -53,14 +53,44 @@ export function formatActivitiesForPrompt(
 
   const sections: string[] = [];
 
-  // --- Locations (Google Maps) ---
+  // --- Locations (Google Maps / OwnTracks) ---
   if (bySource.google_maps.length > 0) {
-    const lines = bySource.google_maps.map((a) => {
+    const placeVisits = bySource.google_maps.filter((a) => a.type === "place_visit" || a.type === "visit");
+    const placeEvents = bySource.google_maps.filter((a) => a.type === "place_enter" || a.type === "place_leave");
+    const locationPings = bySource.google_maps.filter((a) => a.type === "location_ping");
+
+    const lines: string[] = [];
+
+    // Named place visits (from Google Takeout)
+    for (const a of placeVisits) {
       const name = (a.data.name as string) ?? "Unknown place";
       const address = a.data.address ? ` (${a.data.address as string})` : "";
-      return `  - ${name}${address}`;
-    });
-    sections.push(`Locations visited (Google Maps):\n${lines.join("\n")}`);
+      lines.push(`  - ${name}${address}`);
+    }
+
+    // Waypoint transitions from OwnTracks (entered/left named places)
+    for (const a of placeEvents) {
+      const name = (a.data.name as string) ?? "Unknown place";
+      const event = a.type === "place_enter" ? "Arrived at" : "Left";
+      const time = new Date(a.data.timestamp as string).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+      lines.push(`  - ${event} ${name} at ${time}`);
+    }
+
+    // Raw location pings — summarize as coordinate clusters
+    if (locationPings.length > 0 && placeVisits.length === 0 && placeEvents.length === 0) {
+      lines.push(`  - ${locationPings.length} location pings recorded throughout the day`);
+      // Show first and last ping for rough movement
+      const first = locationPings[0];
+      const last = locationPings[locationPings.length - 1];
+      const firstTime = new Date(first.data.timestamp as string).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+      const lastTime = new Date(last.data.timestamp as string).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+      lines.push(`  - First seen: ${(first.data.latitude as number).toFixed(4)}, ${(first.data.longitude as number).toFixed(4)} at ${firstTime}`);
+      lines.push(`  - Last seen: ${(last.data.latitude as number).toFixed(4)}, ${(last.data.longitude as number).toFixed(4)} at ${lastTime}`);
+    }
+
+    if (lines.length > 0) {
+      sections.push(`Locations:\n${lines.join("\n")}`);
+    }
   }
 
   // --- Workouts (Strava) ---
