@@ -36,4 +36,20 @@ app.route("/api/journal", journalRoutes);
 app.route("/api/elements", elementRoutes);
 app.route("/api/location", locationRoutes);
 
+// ---------------------------------------------------------------------------
+// Admin — manual trigger for ingestion + journal generation
+// ---------------------------------------------------------------------------
+app.post("/api/admin/generate/:date", async (c) => {
+  const adminToken = process.env.ADMIN_TOKEN;
+  if (adminToken && c.req.header("Authorization") !== `Bearer ${adminToken}`) {
+    return c.json({ error: "Unauthorized" }, 401);
+  }
+  const date = c.req.param("date");
+  const { ingestActivities } = await import("@/cron/ingest");
+  const { runDailyGeneration } = await import("@/cron/generate-daily");
+  const ingested = await ingestActivities(date);
+  await runDailyGeneration(date);
+  return c.json({ ok: true, date, ingested });
+});
+
 export default app;
