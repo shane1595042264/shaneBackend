@@ -68,6 +68,17 @@ const ELEMENTS = [
     url: null,
     status: "coming-soon" as const,
   },
+  {
+    symbol: "Rc",
+    name: "RNG Capitalist",
+    category: "tools",
+    rowPos: 3,
+    colPos: 1,
+    type: "internal" as const,
+    route: "/rng-capitalist",
+    url: null,
+    status: "live" as const,
+  },
 ];
 
 async function seedElements() {
