@@ -25,6 +25,7 @@
     "hono": "^4.7.5",
     "node-cron": "^3.0.3",
     "pg": "^8.14.1",
+    "plaid": "^41.4.0",
     "zod": "^3.24.2"
   },
   "devDependencies": {
