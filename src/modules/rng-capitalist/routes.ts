@@ -86,7 +86,7 @@ is_entertainment: true if entertainment/luxury/want, false if necessity`,
   const [decision] = await db.insert(rngDecisions).values({
     url, productName: classified.productName, price: String(classified.price.toFixed(2)),
     genericCategory: classified.genericCategory, isEntertainment: classified.isEntertainment,
-    avatarUrl: scraped.ogImage, balanceAtTime: String(balance.toFixed(2)),
+    avatarUrl, balanceAtTime: String(balance.toFixed(2)),
     remainingBudget: String(remainingBudget.toFixed(2)), threshold, roll, result: verdict,
   }).returning();
   let bannedUntil: string | null = null;
@@ -98,7 +98,7 @@ is_entertainment: true if entertainment/luxury/want, false if necessity`,
   if (verdict === "banned" && activeBan) bannedUntil = activeBan.expiresAt.toISOString();
   return c.json({
     product_name: classified.productName, price: classified.price, generic_category: classified.genericCategory,
-    is_entertainment: classified.isEntertainment, avatar_url: scraped.ogImage, balance, last_month_spend: lastMonthSpend,
+    is_entertainment: classified.isEntertainment, avatar_url: avatarUrl, balance, last_month_spend: lastMonthSpend,
     remaining_budget: remainingBudget, threshold, roll, result: verdict, banned_until: bannedUntil,
   });
 });
