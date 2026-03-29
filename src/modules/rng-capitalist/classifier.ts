@@ -27,12 +27,37 @@ export async function classifyProduct(html: string): Promise<ClassifiedProduct> 
     model: "claude-haiku-4-5-20251001",
     maxTokens: 256,
   });
+
   const cleaned = result.text.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
-  const parsed = JSON.parse(cleaned);
+
+  let parsed: any;
+  try {
+    parsed = JSON.parse(cleaned);
+  } catch {
+    // Try to extract JSON from the response if Claude added extra text
+    const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
+    if (jsonMatch) {
+      try {
+        parsed = JSON.parse(jsonMatch[0]);
+      } catch {
+        console.error("[classifier] Failed to parse AI response:", cleaned.slice(0, 500));
+        throw new Error(`Could not parse product info from this page. AI returned: ${cleaned.slice(0, 200)}`);
+      }
+    } else {
+      console.error("[classifier] No JSON found in AI response:", cleaned.slice(0, 500));
+      throw new Error(`Could not extract product info from this page. The page may be too complex to parse.`);
+    }
+  }
+
+  if (!parsed.product_name || parsed.price_usd === undefined) {
+    console.error("[classifier] Missing fields in parsed response:", parsed);
+    throw new Error("Could not extract product name or price from this page.");
+  }
+
   return {
     productName: parsed.product_name,
     price: Number(parsed.price_usd),
-    genericCategory: parsed.generic_category.toLowerCase(),
+    genericCategory: (parsed.generic_category || "unknown").toLowerCase(),
     isEntertainment: Boolean(parsed.is_entertainment),
   };
 }

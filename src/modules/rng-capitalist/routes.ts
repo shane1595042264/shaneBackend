@@ -15,8 +15,21 @@ const evaluateSchema = z.object({ url: z.string().url() });
 
 rngRoutes.post("/evaluate", zValidator("json", evaluateSchema), async (c) => {
   const { url } = c.req.valid("json");
-  const scraped = await scrapeProductUrl(url);
-  const classified = await classifyProduct(scraped.html);
+
+  let scraped;
+  try {
+    scraped = await scrapeProductUrl(url);
+  } catch (err: any) {
+    return c.json({ error: `Failed to fetch URL: ${err.message}` }, 400);
+  }
+
+  let classified;
+  try {
+    classified = await classifyProduct(scraped.html);
+  } catch (err: any) {
+    return c.json({ error: err.message }, 400);
+  }
+
   const balance = await getCurrentBalance();
   const lastMonthSpend = await getLastMonthSpend();
   if (balance === null || lastMonthSpend === null) {
