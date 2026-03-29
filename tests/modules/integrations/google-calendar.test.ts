@@ -59,8 +59,9 @@ describe("GoogleCalendarConnector", () => {
     const url = eventsCall[0] as string;
 
     expect(url).toContain("calendar/v3/calendars/primary/events");
-    expect(url).toContain("timeMin=2024-01-15T00%3A00%3A00Z");
-    expect(url).toContain("timeMax=2024-01-15T23%3A59%3A59Z");
+    expect(url).toContain("timeMin=2024-01-15T00%3A00%3A00");
+    expect(url).toContain("timeMax=2024-01-15T23%3A59%3A59");
+    expect(url).toContain("timeZone=America%2FChicago");
   });
 
   it("should return NormalizedActivity[] with calendar_event type", async () => {
