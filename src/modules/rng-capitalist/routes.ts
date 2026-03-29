@@ -16,6 +16,8 @@ const evaluateSchema = z.object({
   url: z.string().optional(),
   product_name: z.string().optional(),
   price: z.number().optional(),
+  override_balance: z.number().optional(),
+  override_last_month_spend: z.number().optional(),
 }).refine((d) => d.url || (d.product_name && d.price), {
   message: "Provide either a URL or product_name + price",
 });
@@ -72,10 +74,11 @@ is_entertainment: true if entertainment/luxury/want, false if necessity`,
     }
   }
 
-  const balance = await getCurrentBalance();
-  const lastMonthSpend = await getLastMonthSpend();
+  // Use manual overrides if provided, otherwise fetch from Plaid
+  const balance = body.override_balance ?? await getCurrentBalance();
+  const lastMonthSpend = body.override_last_month_spend ?? await getLastMonthSpend();
   if (balance === null || lastMonthSpend === null) {
-    return c.json({ error: "Bank not connected. Please connect via Plaid first." }, 400);
+    return c.json({ error: "Bank not connected and no manual override provided." }, 400);
   }
   const remainingBudget = balance - lastMonthSpend;
   const activeBan = await db.select().from(rngBanList).where(gt(rngBanList.expiresAt, new Date())).then((bans) => bans.find((b) => b.genericCategory === classified.genericCategory));
