@@ -35,7 +35,8 @@ export async function ingestActivities(date: string): Promise<number> {
       new GoogleCalendarConnector(
         process.env.GOOGLE_CALENDAR_CLIENT_ID,
         process.env.GOOGLE_CALENDAR_CLIENT_SECRET,
-        process.env.GOOGLE_CALENDAR_REFRESH_TOKEN
+        process.env.GOOGLE_CALENDAR_REFRESH_TOKEN,
+        process.env.GOOGLE_CALENDAR_ID || "primary"
       )
     );
   }
