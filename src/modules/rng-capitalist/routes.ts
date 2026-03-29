@@ -6,28 +6,70 @@ import { rngDecisions, rngBanList } from "@/db/schema";
 import { desc, gt } from "drizzle-orm";
 import { scrapeProductUrl } from "./scraper";
 import { classifyProduct } from "./classifier";
+import { generateText } from "@/modules/shared/llm";
 import { calculateThreshold, rollD20, determineVerdict } from "./engine";
 import { createLinkToken, exchangePublicToken, getCurrentBalance, getLastMonthSpend, isPlaidConfigured } from "./plaid";
 
 export const rngRoutes = new Hono();
 
-const evaluateSchema = z.object({ url: z.string().url() });
+const evaluateSchema = z.object({
+  url: z.string().optional(),
+  product_name: z.string().optional(),
+  price: z.number().optional(),
+}).refine((d) => d.url || (d.product_name && d.price), {
+  message: "Provide either a URL or product_name + price",
+});
 
 rngRoutes.post("/evaluate", zValidator("json", evaluateSchema), async (c) => {
-  const { url } = c.req.valid("json");
+  const body = c.req.valid("json");
 
-  let scraped;
-  try {
-    scraped = await scrapeProductUrl(url);
-  } catch (err: any) {
-    return c.json({ error: `Failed to fetch URL: ${err.message}` }, 400);
-  }
+  let classified: { productName: string; price: number; genericCategory: string; isEntertainment: boolean };
+  let avatarUrl: string | null = null;
+  const url = body.url || null;
 
-  let classified;
-  try {
-    classified = await classifyProduct(scraped.html);
-  } catch (err: any) {
-    return c.json({ error: err.message }, 400);
+  if (body.product_name && body.price) {
+    // Manual input — classify by name only
+    const result = await generateText({
+      system: "You classify products. Return ONLY valid JSON.",
+      prompt: `Classify this product:
+Name: "${body.product_name}"
+Price: $${body.price}
+
+Return JSON: {"generic_category":"...","is_entertainment":true/false}
+generic_category: short 1-3 word category (e.g., "sex toy", "gaming console")
+is_entertainment: true if entertainment/luxury/want, false if necessity`,
+      model: "claude-haiku-4-5-20251001",
+      maxTokens: 128,
+    });
+    const cleaned = result.text.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
+    let parsed: any;
+    try {
+      const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
+      parsed = JSON.parse(jsonMatch ? jsonMatch[0] : cleaned);
+    } catch {
+      parsed = { generic_category: "unknown", is_entertainment: true };
+    }
+    classified = {
+      productName: body.product_name,
+      price: body.price,
+      genericCategory: (parsed.generic_category || "unknown").toLowerCase(),
+      isEntertainment: parsed.is_entertainment !== false,
+    };
+  } else {
+    // URL scrape + AI classify
+    let scraped;
+    try {
+      scraped = await scrapeProductUrl(body.url!);
+      avatarUrl = scraped.ogImage;
+    } catch (err: any) {
+      return c.json({ error: `Failed to fetch URL: ${err.message}`, needs_manual: true }, 400);
+    }
+
+    try {
+      classified = await classifyProduct(scraped.html);
+    } catch (err: any) {
+      return c.json({ error: err.message, needs_manual: true }, 400);
+    }
   }
 
   const balance = await getCurrentBalance();
