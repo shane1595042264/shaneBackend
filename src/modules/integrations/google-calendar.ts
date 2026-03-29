@@ -5,14 +5,14 @@ export class GoogleCalendarConnector implements IntegrationConnector {
   private clientSecret: string;
   private refreshToken: string;
   private calendarId: string;
+  private timezone: string;
 
-  constructor(clientId: string, clientSecret: string, refreshToken: string, calendarId?: string) {
+  constructor(clientId: string, clientSecret: string, refreshToken: string, calendarId?: string, timezone?: string) {
     this.clientId = clientId;
     this.clientSecret = clientSecret;
     this.refreshToken = refreshToken;
-    // Use specific calendar ID if provided, otherwise "primary"
-    // For filtering to only YOUR calendar (not shared), set this to your email
     this.calendarId = calendarId || "primary";
+    this.timezone = timezone || "America/Chicago";
   }
 
   private async getAccessToken(): Promise<string> {
@@ -40,12 +40,14 @@ export class GoogleCalendarConnector implements IntegrationConnector {
   async fetchActivities(date: string): Promise<NormalizedActivity[]> {
     const accessToken = await this.getAccessToken();
 
-    const timeMin = `${date}T00:00:00Z`;
-    const timeMax = `${date}T23:59:59Z`;
+    // Use timezone-aware time range to avoid UTC offset issues
+    const timeMin = `${date}T00:00:00`;
+    const timeMax = `${date}T23:59:59`;
 
     const params = new URLSearchParams({
       timeMin,
       timeMax,
+      timeZone: this.timezone,
       singleEvents: "true",
       orderBy: "startTime",
     });
@@ -68,21 +70,26 @@ export class GoogleCalendarConnector implements IntegrationConnector {
         location?: string;
         start: { dateTime?: string; date?: string };
         end: { dateTime?: string; date?: string };
-        organizer?: { email?: string; self?: boolean };
       }>;
     };
 
-    return (data.items || []).map((event) => ({
-      date,
-      source: "google_calendar" as const,
-      type: "calendar_event",
-      data: {
-        id: event.id,
-        title: event.summary || "Untitled",
-        location: event.location ?? null,
-        startTime: event.start.dateTime || event.start.date || null,
-        endTime: event.end.dateTime || event.end.date || null,
-      },
-    }));
+    // Strict filter: only include events that actually start on this date
+    return (data.items || [])
+      .filter((event) => {
+        const startStr = event.start.dateTime || event.start.date || "";
+        return startStr.startsWith(date);
+      })
+      .map((event) => ({
+        date,
+        source: "google_calendar" as const,
+        type: "calendar_event",
+        data: {
+          id: event.id,
+          title: event.summary || "Untitled",
+          location: event.location ?? null,
+          startTime: event.start.dateTime || event.start.date || null,
+          endTime: event.end.dateTime || event.end.date || null,
+        },
+      }));
   }
 }
