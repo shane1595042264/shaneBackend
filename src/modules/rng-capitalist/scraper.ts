@@ -56,16 +56,43 @@ export async function scrapeProductUrl(url: string): Promise<ScrapedProduct> {
 
   const html = await response.text();
 
-  // For Amazon, also try to extract price directly from JSON in HTML
-  // This is more reliable than letting AI parse it
+  // For Amazon, try to extract price directly from HTML using multiple strategies
   let amazonHint = "";
   if (isAmazon) {
-    const priceMatch = html.match(/"priceAmount"\s*:\s*([\d.]+)/);
+    // Detect bot-block / CAPTCHA pages — fail fast instead of sending garbage to AI
+    if (
+      html.includes("captcha") && html.includes("Type the characters you see") ||
+      html.includes("Sorry, we just need to make sure you're not a robot") ||
+      html.includes("api-services-support@amazon.com")
+    ) {
+      throw new Error("Amazon is blocking automated requests. Please enter the product details manually.");
+    }
+
+    // Try multiple price extraction patterns (Amazon changes their markup frequently)
+    const pricePatterns = [
+      /"priceAmount"\s*:\s*([\d.]+)/,                          // JSON-LD price
+      /"price"\s*:\s*"?([\d.]+)"?/,                            // generic JSON price
+      /class="a-price-whole"[^>]*>([\d,]+)/,                   // desktop price element
+      /data-a-color="price"[^>]*>[^$]*\$([\d,.]+)/,            // price display
+      /"buyingPrice"\s*:\s*([\d.]+)/,                           // buying price
+      /corePriceDisplay_desktop.*?\$([\d,.]+)/s,                // core price display
+      /"priceToPay"[^}]*?"value"\s*:\s*"?([\d.]+)/,            // price to pay
+    ];
+
+    let extractedPrice: string | null = null;
+    for (const pattern of pricePatterns) {
+      const m = html.match(pattern);
+      if (m) {
+        const val = parseFloat(m[1].replace(/,/g, ""));
+        if (val > 0) { extractedPrice = String(val); break; }
+      }
+    }
+
     const titleMatch = html.match(/<title>(?:Amazon\.com:\s*)?([^<]+)<\/title>/i);
-    if (priceMatch || titleMatch) {
+    if (extractedPrice || titleMatch) {
       amazonHint = "\n\nEXTRACTED DATA (use this if available):\n";
       if (titleMatch) amazonHint += `Product title from page: ${titleMatch[1].trim()}\n`;
-      if (priceMatch) amazonHint += `Price from page data: $${priceMatch[1]}\n`;
+      if (extractedPrice) amazonHint += `Price from page data: $${extractedPrice}\n`;
     }
   }
 

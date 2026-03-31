@@ -72,6 +72,14 @@ is_entertainment: true if entertainment/luxury/want, false if necessity`,
     } catch (err: any) {
       return c.json({ error: err.message, needs_manual: true }, 400);
     }
+
+    // If AI returned price 0 or negative, the scrape likely failed (CAPTCHA, blocked, etc.)
+    if (classified.price <= 0) {
+      return c.json({
+        error: "Could not determine the product price from this page. Please enter the details manually.",
+        needs_manual: true,
+      }, 400);
+    }
   }
 
   // Use manual overrides if provided, otherwise fetch from Plaid
