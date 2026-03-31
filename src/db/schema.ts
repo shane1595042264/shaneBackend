@@ -46,7 +46,10 @@ export const activities = pgTable(
       .notNull()
       .defaultNow(),
   },
-  (t) => [unique("activities_date_source_type_data_unique").on(t.date, t.source, t.type, t.data)]
+  (t) => [
+    unique("activities_date_source_type_data_unique").on(t.date, t.source, t.type, t.data),
+    index("activities_date_idx").on(t.date),
+  ]
 );
 
 // ------------------------------------------------------------------
@@ -113,19 +116,23 @@ export const voiceProfiles = pgTable("voice_profiles", {
 // ------------------------------------------------------------------
 // corrections
 // ------------------------------------------------------------------
-export const corrections = pgTable("corrections", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  entryId: uuid("entry_id")
-    .notNull()
-    .references(() => diaryEntries.id, { onDelete: "cascade" }),
-  suggestionText: text("suggestion_text").notNull(),
-  originalContent: text("original_content").notNull(),
-  correctedContent: text("corrected_content"),
-  extractedFacts: jsonb("extracted_facts"),
-  createdAt: timestamp("created_at", { withTimezone: true })
-    .notNull()
-    .defaultNow(),
-});
+export const corrections = pgTable(
+  "corrections",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    entryId: uuid("entry_id")
+      .notNull()
+      .references(() => diaryEntries.id, { onDelete: "cascade" }),
+    suggestionText: text("suggestion_text").notNull(),
+    originalContent: text("original_content").notNull(),
+    correctedContent: text("corrected_content"),
+    extractedFacts: jsonb("extracted_facts"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [index("corrections_entry_id_idx").on(t.entryId)]
+);
 
 // ------------------------------------------------------------------
 // learned_facts
@@ -194,29 +201,37 @@ export const rngMonthlySpend = pgTable("rng_monthly_spend", {
 // ------------------------------------------------------------------
 // rng_decisions
 // ------------------------------------------------------------------
-export const rngDecisions = pgTable("rng_decisions", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  url: text("url"),
-  productName: text("product_name").notNull(),
-  price: text("price").notNull(),
-  genericCategory: text("generic_category").notNull(),
-  isEntertainment: boolean("is_entertainment").notNull(),
-  avatarUrl: text("avatar_url"),
-  balanceAtTime: text("balance_at_time"),
-  remainingBudget: text("remaining_budget"),
-  threshold: integer("threshold"),
-  roll: integer("roll"),
-  result: varchar("result", { length: 20 }).notNull(),
-  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
-});
+export const rngDecisions = pgTable(
+  "rng_decisions",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    url: text("url"),
+    productName: text("product_name").notNull(),
+    price: text("price").notNull(),
+    genericCategory: text("generic_category").notNull(),
+    isEntertainment: boolean("is_entertainment").notNull(),
+    avatarUrl: text("avatar_url"),
+    balanceAtTime: text("balance_at_time"),
+    remainingBudget: text("remaining_budget"),
+    threshold: integer("threshold"),
+    roll: integer("roll"),
+    result: varchar("result", { length: 20 }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+  },
+  (t) => [index("rng_decisions_created_at_idx").on(t.createdAt)]
+);
 
 // ------------------------------------------------------------------
 // rng_ban_list
 // ------------------------------------------------------------------
-export const rngBanList = pgTable("rng_ban_list", {
-  id: serial("id").primaryKey(),
-  genericCategory: text("generic_category").notNull(),
-  bannedAt: timestamp("banned_at", { withTimezone: true }).defaultNow(),
-  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
-  sourceDecisionId: uuid("source_decision_id").references(() => rngDecisions.id),
-});
+export const rngBanList = pgTable(
+  "rng_ban_list",
+  {
+    id: serial("id").primaryKey(),
+    genericCategory: text("generic_category").notNull(),
+    bannedAt: timestamp("banned_at", { withTimezone: true }).defaultNow(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    sourceDecisionId: uuid("source_decision_id").references(() => rngDecisions.id),
+  },
+  (t) => [index("rng_ban_list_expires_at_idx").on(t.expiresAt)]
+);
