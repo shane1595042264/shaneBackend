@@ -4,6 +4,8 @@ import { runDailyGeneration } from "./generate-daily";
 import { runSummaryGeneration } from "./generate-summaries";
 import { refreshVoiceProfile } from "./refresh-voice-profile";
 import { fetchAndCacheMonthlySpend } from "@/modules/rng-capitalist/plaid";
+import { db } from "@/db/client";
+import { rngPlaidTokens } from "@/db/schema";
 
 function getTodayDate(): string {
   return new Date().toISOString().slice(0, 10);
@@ -57,7 +59,11 @@ export function startCronJobs(): void {
     const lastMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
     const yearMonth = `${lastMonth.getFullYear()}-${String(lastMonth.getMonth() + 1).padStart(2, "0")}`;
     console.log(`[cron] Caching monthly spend for ${yearMonth}...`);
-    await fetchAndCacheMonthlySpend(yearMonth).catch((err) => console.error("[cron] Monthly spend cache failed:", err));
+    const tokens = await db.select({ userId: rngPlaidTokens.userId }).from(rngPlaidTokens).execute();
+    const userIds = [...new Set(tokens.map((t) => t.userId).filter(Boolean))] as string[];
+    for (const uid of userIds) {
+      await fetchAndCacheMonthlySpend(yearMonth, uid).catch((err) => console.error(`[cron] Monthly spend cache failed for user ${uid}:`, err));
+    }
   });
 
   console.log("[cron] All cron jobs registered.");

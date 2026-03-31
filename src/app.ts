@@ -5,6 +5,7 @@ import { journalRoutes } from "@/modules/journal/routes";
 import { elementRoutes } from "@/modules/elements/routes";
 import { locationRoutes } from "@/modules/location/routes";
 import { rngRoutes } from "@/modules/rng-capitalist/routes";
+import { authRoutes } from "@/modules/auth/routes";
 
 const app = new Hono();
 
@@ -33,6 +34,7 @@ app.get("/health", (c) => {
 // ---------------------------------------------------------------------------
 // API routes
 // ---------------------------------------------------------------------------
+app.route("/api/auth", authRoutes);
 app.route("/api/journal", journalRoutes);
 app.route("/api/elements", elementRoutes);
 app.route("/api/location", locationRoutes);

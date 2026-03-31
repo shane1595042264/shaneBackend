@@ -32,6 +32,27 @@ const vector = customType<{ data: number[]; driverData: string }>({
 });
 
 // ------------------------------------------------------------------
+// users
+// ------------------------------------------------------------------
+export const users = pgTable(
+  "users",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    googleId: varchar("google_id", { length: 255 }).notNull().unique(),
+    email: varchar("email", { length: 255 }).notNull(),
+    name: varchar("name", { length: 255 }),
+    avatarUrl: text("avatar_url"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [index("users_google_id_idx").on(t.googleId)]
+);
+
+// ------------------------------------------------------------------
 // activities
 // ------------------------------------------------------------------
 export const activities = pgTable(
@@ -182,6 +203,7 @@ export const elementConfig = pgTable("element_config", {
 // ------------------------------------------------------------------
 export const rngPlaidTokens = pgTable("rng_plaid_tokens", {
   id: serial("id").primaryKey(),
+  userId: uuid("user_id").references(() => users.id, { onDelete: "set null" }),
   accessToken: text("access_token").notNull(),
   itemId: text("item_id").notNull(),
   institutionName: text("institution_name"),
@@ -205,6 +227,7 @@ export const rngDecisions = pgTable(
   "rng_decisions",
   {
     id: uuid("id").primaryKey().defaultRandom(),
+    userId: uuid("user_id").references(() => users.id, { onDelete: "set null" }),
     url: text("url"),
     productName: text("product_name").notNull(),
     price: text("price").notNull(),
@@ -228,6 +251,7 @@ export const rngBanList = pgTable(
   "rng_ban_list",
   {
     id: serial("id").primaryKey(),
+    userId: uuid("user_id").references(() => users.id, { onDelete: "set null" }),
     genericCategory: text("generic_category").notNull(),
     bannedAt: timestamp("banned_at", { withTimezone: true }).defaultNow(),
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),

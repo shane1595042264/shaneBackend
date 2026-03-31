@@ -1,7 +1,7 @@
 import { Configuration, PlaidApi, PlaidEnvironments, Products, CountryCode } from "plaid";
 import { db } from "@/db/client";
 import { rngPlaidTokens, rngMonthlySpend } from "@/db/schema";
-import { desc, eq } from "drizzle-orm";
+import { desc, eq, and } from "drizzle-orm";
 
 const config = new Configuration({
   basePath: PlaidEnvironments[process.env.PLAID_ENV || "sandbox"],
@@ -15,9 +15,9 @@ const config = new Configuration({
 
 const plaidClient = new PlaidApi(config);
 
-export async function createLinkToken(): Promise<string> {
+export async function createLinkToken(userId: string): Promise<string> {
   const response = await plaidClient.linkTokenCreate({
-    user: { client_user_id: "shane" },
+    user: { client_user_id: userId },
     client_name: "RNG Capitalist",
     products: [Products.Transactions],
     country_codes: [CountryCode.Us],
@@ -26,38 +26,39 @@ export async function createLinkToken(): Promise<string> {
   return response.data.link_token;
 }
 
-export async function exchangePublicToken(publicToken: string): Promise<void> {
+export async function exchangePublicToken(publicToken: string, userId: string): Promise<void> {
   const response = await plaidClient.itemPublicTokenExchange({ public_token: publicToken });
   await db.insert(rngPlaidTokens).values({
+    userId,
     accessToken: response.data.access_token,
     itemId: response.data.item_id,
   });
 }
 
-async function getAccessToken(): Promise<string | null> {
-  const result = await db.select({ accessToken: rngPlaidTokens.accessToken }).from(rngPlaidTokens).orderBy(desc(rngPlaidTokens.createdAt)).limit(1);
+async function getAccessToken(userId: string): Promise<string | null> {
+  const result = await db.select({ accessToken: rngPlaidTokens.accessToken }).from(rngPlaidTokens).where(eq(rngPlaidTokens.userId, userId)).orderBy(desc(rngPlaidTokens.createdAt)).limit(1);
   return result[0]?.accessToken || null;
 }
 
-export async function getCurrentBalance(): Promise<number | null> {
-  const accessToken = await getAccessToken();
+export async function getCurrentBalance(userId: string): Promise<number | null> {
+  const accessToken = await getAccessToken(userId);
   if (!accessToken) return null;
   const response = await plaidClient.accountsBalanceGet({ access_token: accessToken });
   const account = response.data.accounts.find((a) => a.type === "depository") || response.data.accounts[0];
   return account?.balances.current ?? null;
 }
 
-export async function getLastMonthSpend(): Promise<number | null> {
+export async function getLastMonthSpend(userId: string): Promise<number | null> {
   const now = new Date();
   const lastMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
   const yearMonth = `${lastMonth.getFullYear()}-${String(lastMonth.getMonth() + 1).padStart(2, "0")}`;
   const cached = await db.select({ totalSpend: rngMonthlySpend.totalSpend }).from(rngMonthlySpend).where(eq(rngMonthlySpend.yearMonth, yearMonth)).limit(1);
   if (cached[0]) return Number(cached[0].totalSpend);
-  return await fetchAndCacheMonthlySpend(yearMonth);
+  return await fetchAndCacheMonthlySpend(yearMonth, userId);
 }
 
-export async function fetchAndCacheMonthlySpend(yearMonth: string): Promise<number | null> {
-  const accessToken = await getAccessToken();
+export async function fetchAndCacheMonthlySpend(yearMonth: string, userId: string): Promise<number | null> {
+  const accessToken = await getAccessToken(userId);
   if (!accessToken) return null;
   const [year, month] = yearMonth.split("-").map(Number);
   const startDate = `${year}-${String(month).padStart(2, "0")}-01`;
