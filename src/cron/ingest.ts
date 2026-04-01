@@ -3,6 +3,7 @@ import { activities } from "@/db/schema";
 import { GitHubConnector } from "@/modules/integrations/github";
 import { StravaConnector } from "@/modules/integrations/strava";
 import { GoogleCalendarConnector } from "@/modules/integrations/google-calendar";
+import { TwitchConnector } from "@/modules/integrations/twitch";
 import type { IntegrationConnector } from "@/modules/integrations/types";
 
 export async function ingestActivities(date: string): Promise<number> {
@@ -37,6 +38,20 @@ export async function ingestActivities(date: string): Promise<number> {
         process.env.GOOGLE_CALENDAR_CLIENT_SECRET,
         process.env.GOOGLE_CALENDAR_REFRESH_TOKEN,
         process.env.GOOGLE_CALENDAR_ID || "primary"
+      )
+    );
+  }
+
+  if (
+    process.env.TWITCH_CLIENT_ID &&
+    process.env.TWITCH_CLIENT_SECRET &&
+    process.env.TWITCH_USER_ID
+  ) {
+    connectors.push(
+      new TwitchConnector(
+        process.env.TWITCH_CLIENT_ID,
+        process.env.TWITCH_CLIENT_SECRET,
+        process.env.TWITCH_USER_ID
       )
     );
   }
