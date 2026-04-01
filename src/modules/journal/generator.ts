@@ -5,6 +5,7 @@ import { getLatestVoiceProfile } from "@/modules/journal/voice-profile";
 import { db } from "@/db/client";
 import { activities, diaryEntries, summaries } from "@/db/schema";
 import type { NormalizedActivity } from "@/modules/integrations/types";
+import { batchReverseGeocode } from "@/modules/integrations/geocode";
 import { eq, desc, and, lte, gte } from "drizzle-orm";
 
 // ---------------------------------------------------------------------------
@@ -23,17 +24,121 @@ export interface GenerationContext {
 }
 
 // ---------------------------------------------------------------------------
+// Location ping clustering
+// ---------------------------------------------------------------------------
+
+export interface LocationCluster {
+  centroidLat: number;
+  centroidLon: number;
+  startTime: string;
+  endTime: string;
+  pingCount: number;
+  durationMinutes: number;
+}
+
+/**
+ * Haversine distance between two lat/lon points in meters.
+ */
+function haversineMeters(
+  lat1: number, lon1: number,
+  lat2: number, lon2: number
+): number {
+  const R = 6_371_000; // Earth radius in meters
+  const toRad = (deg: number) => (deg * Math.PI) / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLon = toRad(lon2 - lon1);
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+/**
+ * Cluster consecutive location pings that are within `radiusMeters` of the
+ * running centroid into distinct stops. Returns clusters sorted by start time,
+ * filtered to stops where the user spent at least `minMinutes`.
+ */
+export function clusterLocationPings(
+  pings: NormalizedActivity[],
+  radiusMeters = 200,
+  minMinutes = 5
+): LocationCluster[] {
+  if (pings.length === 0) return [];
+
+  // Sort by timestamp
+  const sorted = [...pings].sort(
+    (a, b) =>
+      new Date(a.data.timestamp as string).getTime() -
+      new Date(b.data.timestamp as string).getTime()
+  );
+
+  const clusters: LocationCluster[] = [];
+  let clusterLats = [sorted[0].data.latitude as number];
+  let clusterLons = [sorted[0].data.longitude as number];
+  let clusterStart = sorted[0].data.timestamp as string;
+  let clusterEnd = sorted[0].data.timestamp as string;
+
+  for (let i = 1; i < sorted.length; i++) {
+    const lat = sorted[i].data.latitude as number;
+    const lon = sorted[i].data.longitude as number;
+    const centroidLat = clusterLats.reduce((s, v) => s + v, 0) / clusterLats.length;
+    const centroidLon = clusterLons.reduce((s, v) => s + v, 0) / clusterLons.length;
+
+    if (haversineMeters(centroidLat, centroidLon, lat, lon) <= radiusMeters) {
+      // Same cluster
+      clusterLats.push(lat);
+      clusterLons.push(lon);
+      clusterEnd = sorted[i].data.timestamp as string;
+    } else {
+      // Finalize previous cluster
+      const dur =
+        (new Date(clusterEnd).getTime() - new Date(clusterStart).getTime()) /
+        60_000;
+      clusters.push({
+        centroidLat: clusterLats.reduce((s, v) => s + v, 0) / clusterLats.length,
+        centroidLon: clusterLons.reduce((s, v) => s + v, 0) / clusterLons.length,
+        startTime: clusterStart,
+        endTime: clusterEnd,
+        pingCount: clusterLats.length,
+        durationMinutes: Math.round(dur),
+      });
+      // Start new cluster
+      clusterLats = [lat];
+      clusterLons = [lon];
+      clusterStart = sorted[i].data.timestamp as string;
+      clusterEnd = sorted[i].data.timestamp as string;
+    }
+  }
+
+  // Finalize last cluster
+  const dur =
+    (new Date(clusterEnd).getTime() - new Date(clusterStart).getTime()) /
+    60_000;
+  clusters.push({
+    centroidLat: clusterLats.reduce((s, v) => s + v, 0) / clusterLats.length,
+    centroidLon: clusterLons.reduce((s, v) => s + v, 0) / clusterLons.length,
+    startTime: clusterStart,
+    endTime: clusterEnd,
+    pingCount: clusterLats.length,
+    durationMinutes: Math.round(dur),
+  });
+
+  return clusters.filter((c) => c.durationMinutes >= minMinutes);
+}
+
+// ---------------------------------------------------------------------------
 // formatActivitiesForPrompt
 // ---------------------------------------------------------------------------
 
 /**
  * Formats a list of NormalizedActivity records grouped by source into a
  * human-readable text block suitable for inclusion in a generation prompt.
+ * Async because location pings may need reverse geocoding.
  */
-export function formatActivitiesForPrompt(
+export async function formatActivitiesForPrompt(
   acts: NormalizedActivity[],
   date: string
-): string {
+): Promise<string> {
   if (acts.length === 0) {
     return `No activities recorded for ${date}.`;
   }
@@ -77,16 +182,31 @@ export function formatActivitiesForPrompt(
       lines.push(`  - ${event} ${name} at ${time}`);
     }
 
-    // Raw location pings — summarize as coordinate clusters
+    // Raw location pings — cluster into stops and reverse geocode
     if (locationPings.length > 0 && placeVisits.length === 0 && placeEvents.length === 0) {
-      lines.push(`  - ${locationPings.length} location pings recorded throughout the day`);
-      // Show first and last ping for rough movement
-      const first = locationPings[0];
-      const last = locationPings[locationPings.length - 1];
-      const firstTime = new Date(first.data.timestamp as string).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
-      const lastTime = new Date(last.data.timestamp as string).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
-      lines.push(`  - First seen: ${(first.data.latitude as number).toFixed(4)}, ${(first.data.longitude as number).toFixed(4)} at ${firstTime}`);
-      lines.push(`  - Last seen: ${(last.data.latitude as number).toFixed(4)}, ${(last.data.longitude as number).toFixed(4)} at ${lastTime}`);
+      const clusters = clusterLocationPings(locationPings);
+
+      if (clusters.length > 0) {
+        // Reverse geocode each cluster centroid (max 10 to respect rate limits)
+        const toGeocode = clusters.slice(0, 10);
+        const placeNames = await batchReverseGeocode(
+          toGeocode.map((c) => ({ latitude: c.centroidLat, longitude: c.centroidLon }))
+        );
+
+        for (let i = 0; i < toGeocode.length; i++) {
+          const c = toGeocode[i];
+          const startFmt = new Date(c.startTime).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+          const endFmt = new Date(c.endTime).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+          const durLabel =
+            c.durationMinutes >= 60
+              ? `${Math.floor(c.durationMinutes / 60)}h ${c.durationMinutes % 60}m`
+              : `${c.durationMinutes}m`;
+          lines.push(`  - ${placeNames[i]} (${startFmt}–${endFmt}, ${durLabel})`);
+        }
+      } else {
+        // All pings were transient (no stops >= 5 min) — brief summary
+        lines.push(`  - Moved through the area without extended stops`);
+      }
     }
 
     if (lines.length > 0) {
@@ -304,7 +424,7 @@ export async function generateDailyEntry(
   const yesterdayEntry = yesterdayRows[0]?.content ?? null;
 
   // 5. Vector search for 5 similar entries (excluding today)
-  const activitiesText = formatActivitiesForPrompt(todayActivities, date);
+  const activitiesText = await formatActivitiesForPrompt(todayActivities, date);
   const queryEmbedding = await embed(activitiesText);
 
   const similarRows = await findSimilarEntries(queryEmbedding, 5, date);

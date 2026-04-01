@@ -29,10 +29,14 @@ vi.mock("drizzle-orm", () => ({
   gte: vi.fn(),
   or: vi.fn(),
 }));
+vi.mock("@/modules/integrations/geocode", () => ({
+  batchReverseGeocode: vi.fn().mockResolvedValue(["Deep Ellum, Dallas", "Uptown, Dallas"]),
+}));
 
 import {
   formatActivitiesForPrompt,
   buildGenerationPrompt,
+  clusterLocationPings,
   type GenerationContext,
 } from "@/modules/journal/generator";
 import type { NormalizedActivity } from "@/modules/integrations/types";
@@ -91,44 +95,44 @@ const sampleContext: GenerationContext = {
 // -----------------------------------------------------------------------
 
 describe("formatActivitiesForPrompt", () => {
-  it("should include google_maps location names", () => {
-    const output = formatActivitiesForPrompt(sampleActivities, "2025-01-15");
+  it("should include google_maps location names", async () => {
+    const output = await formatActivitiesForPrompt(sampleActivities, "2025-01-15");
     expect(output).toContain("Blue Bottle Coffee");
   });
 
-  it("should include strava workout data", () => {
-    const output = formatActivitiesForPrompt(sampleActivities, "2025-01-15");
+  it("should include strava workout data", async () => {
+    const output = await formatActivitiesForPrompt(sampleActivities, "2025-01-15");
     expect(output).toContain("Morning Run");
   });
 
-  it("should include strava distance", () => {
-    const output = formatActivitiesForPrompt(sampleActivities, "2025-01-15");
+  it("should include strava distance", async () => {
+    const output = await formatActivitiesForPrompt(sampleActivities, "2025-01-15");
     // Distance should appear in some form
     expect(output).toContain("5.2");
   });
 
-  it("should include github commit messages", () => {
-    const output = formatActivitiesForPrompt(sampleActivities, "2025-01-15");
+  it("should include github commit messages", async () => {
+    const output = await formatActivitiesForPrompt(sampleActivities, "2025-01-15");
     expect(output).toContain("feat: add new feature");
   });
 
-  it("should include github repo name", () => {
-    const output = formatActivitiesForPrompt(sampleActivities, "2025-01-15");
+  it("should include github repo name", async () => {
+    const output = await formatActivitiesForPrompt(sampleActivities, "2025-01-15");
     expect(output).toContain("user/my-project");
   });
 
-  it("should include calendar event summary", () => {
-    const output = formatActivitiesForPrompt(sampleActivities, "2025-01-15");
+  it("should include calendar event summary", async () => {
+    const output = await formatActivitiesForPrompt(sampleActivities, "2025-01-15");
     expect(output).toContain("Team standup");
   });
 
-  it("should include calendar event times", () => {
-    const output = formatActivitiesForPrompt(sampleActivities, "2025-01-15");
+  it("should include calendar event times", async () => {
+    const output = await formatActivitiesForPrompt(sampleActivities, "2025-01-15");
     expect(output).toContain("09:00");
   });
 
-  it("should group activities by source with section labels", () => {
-    const output = formatActivitiesForPrompt(sampleActivities, "2025-01-15");
+  it("should group activities by source with section labels", async () => {
+    const output = await formatActivitiesForPrompt(sampleActivities, "2025-01-15");
     // Should have some kind of grouping / section labels
     const lower = output.toLowerCase();
     const hasLocations = lower.includes("location") || lower.includes("places") || lower.includes("maps");
@@ -138,15 +142,123 @@ describe("formatActivitiesForPrompt", () => {
     expect(hasLocations && hasWorkouts && hasCommits && hasEvents).toBe(true);
   });
 
-  it("should return a non-empty string for empty activities", () => {
-    const output = formatActivitiesForPrompt([], "2025-01-15");
+  it("should return a non-empty string for empty activities", async () => {
+    const output = await formatActivitiesForPrompt([], "2025-01-15");
     expect(typeof output).toBe("string");
   });
 
-  it("should handle activities with only one source", () => {
+  it("should handle activities with only one source", async () => {
     const githubOnly = sampleActivities.filter((a) => a.source === "github");
-    const output = formatActivitiesForPrompt(githubOnly, "2025-01-15");
+    const output = await formatActivitiesForPrompt(githubOnly, "2025-01-15");
     expect(output).toContain("feat: add new feature");
+  });
+
+  it("should reverse geocode location pings into place names", async () => {
+    const pings: NormalizedActivity[] = [];
+    // Create pings at a location for 30 minutes (enough to form a cluster)
+    for (let i = 0; i < 10; i++) {
+      pings.push({
+        date: "2025-01-15",
+        source: "google_maps",
+        type: "location_ping",
+        data: {
+          latitude: 32.7847 + Math.random() * 0.001,
+          longitude: -96.7853 + Math.random() * 0.001,
+          timestamp: new Date(2025, 0, 15, 10, i * 3).toISOString(),
+        },
+      });
+    }
+    const output = await formatActivitiesForPrompt(pings, "2025-01-15");
+    // Should contain the mocked geocoded name, not raw coordinate counts
+    expect(output).toContain("Deep Ellum, Dallas");
+    expect(output).not.toContain("location pings recorded");
+  });
+});
+
+// -----------------------------------------------------------------------
+// clusterLocationPings tests
+// -----------------------------------------------------------------------
+
+describe("clusterLocationPings", () => {
+  it("should group nearby pings into a single cluster", () => {
+    const pings: NormalizedActivity[] = [];
+    for (let i = 0; i < 5; i++) {
+      pings.push({
+        date: "2025-01-15",
+        source: "google_maps",
+        type: "location_ping",
+        data: {
+          latitude: 32.7847,
+          longitude: -96.7853,
+          timestamp: new Date(2025, 0, 15, 10, i * 5).toISOString(),
+        },
+      });
+    }
+    const clusters = clusterLocationPings(pings);
+    expect(clusters.length).toBe(1);
+    expect(clusters[0].pingCount).toBe(5);
+    expect(clusters[0].durationMinutes).toBe(20);
+  });
+
+  it("should split distant pings into separate clusters", () => {
+    const pings: NormalizedActivity[] = [
+      // Cluster 1: downtown (30 min)
+      ...Array.from({ length: 4 }, (_, i) => ({
+        date: "2025-01-15",
+        source: "google_maps" as const,
+        type: "location_ping",
+        data: {
+          latitude: 32.7847,
+          longitude: -96.7853,
+          timestamp: new Date(2025, 0, 15, 10, i * 10).toISOString(),
+        },
+      })),
+      // Cluster 2: 5km away (30 min)
+      ...Array.from({ length: 4 }, (_, i) => ({
+        date: "2025-01-15",
+        source: "google_maps" as const,
+        type: "location_ping",
+        data: {
+          latitude: 32.83,
+          longitude: -96.75,
+          timestamp: new Date(2025, 0, 15, 14, i * 10).toISOString(),
+        },
+      })),
+    ];
+    const clusters = clusterLocationPings(pings);
+    expect(clusters.length).toBe(2);
+  });
+
+  it("should filter out short stops below minMinutes", () => {
+    const pings: NormalizedActivity[] = [
+      {
+        date: "2025-01-15",
+        source: "google_maps",
+        type: "location_ping",
+        data: {
+          latitude: 32.7847,
+          longitude: -96.7853,
+          timestamp: new Date(2025, 0, 15, 10, 0).toISOString(),
+        },
+      },
+      {
+        date: "2025-01-15",
+        source: "google_maps",
+        type: "location_ping",
+        data: {
+          latitude: 32.7847,
+          longitude: -96.7853,
+          timestamp: new Date(2025, 0, 15, 10, 2).toISOString(),
+        },
+      },
+    ];
+    // 2 minutes — should be filtered out (default minMinutes = 5)
+    const clusters = clusterLocationPings(pings);
+    expect(clusters.length).toBe(0);
+  });
+
+  it("should return empty array for no pings", () => {
+    expect(clusterLocationPings([])).toEqual([]);
   });
 });
 
