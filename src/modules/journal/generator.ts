@@ -127,6 +127,48 @@ export function clusterLocationPings(
 }
 
 // ---------------------------------------------------------------------------
+// Calendar event filtering
+// ---------------------------------------------------------------------------
+
+const PLACEHOLDER_TITLES = new Set([
+  "untitled",
+  "untitled event",
+  "placeholder",
+  "(no title)",
+  "busy",
+  "no title",
+]);
+
+/**
+ * Returns true if a calendar event has no meaningful title (placeholder/empty).
+ */
+export function isPlaceholderCalendarEvent(act: NormalizedActivity): boolean {
+  if (act.source !== "google_calendar") return false;
+  const title = ((act.data.title as string) ?? (act.data.summary as string) ?? "").trim();
+  return title === "" || PLACEHOLDER_TITLES.has(title.toLowerCase());
+}
+
+/**
+ * Detect data quality issues in activities for debug notes.
+ * Returns an array of human-readable issue descriptions.
+ */
+export function detectActivityDataIssues(acts: NormalizedActivity[]): string[] {
+  const issues: string[] = [];
+
+  const calendarEvents = acts.filter((a) => a.source === "google_calendar");
+  const placeholders = calendarEvents.filter(isPlaceholderCalendarEvent);
+
+  if (placeholders.length > 0) {
+    issues.push(
+      `${placeholders.length} calendar event(s) had no meaningful title and were excluded from journal generation. ` +
+      `This may indicate a non-public calendar or events from a different account.`
+    );
+  }
+
+  return issues;
+}
+
+// ---------------------------------------------------------------------------
 // formatActivitiesForPrompt
 // ---------------------------------------------------------------------------
 
@@ -244,13 +286,20 @@ export async function formatActivitiesForPrompt(
 
   // --- Calendar events (Google Calendar) ---
   if (bySource.google_calendar.length > 0) {
-    const lines = bySource.google_calendar.map((a) => {
-      const summary = (a.data.summary as string) ?? "Untitled event";
-      const start = a.data.start ? ` at ${a.data.start as string}` : "";
-      const end = a.data.end ? `–${a.data.end as string}` : "";
-      return `  - ${summary}${start}${end}`;
-    });
-    sections.push(`Calendar events (Google Calendar):\n${lines.join("\n")}`);
+    const meaningful = bySource.google_calendar.filter(
+      (a) => !isPlaceholderCalendarEvent(a)
+    );
+    if (meaningful.length > 0) {
+      const lines = meaningful.map((a) => {
+        const title = (a.data.title as string) ?? (a.data.summary as string) ?? "Untitled event";
+        const start = (a.data.startTime ?? a.data.start) as string | undefined;
+        const end = (a.data.endTime ?? a.data.end) as string | undefined;
+        const startStr = start ? ` at ${start}` : "";
+        const endStr = end ? `–${end}` : "";
+        return `  - ${title}${startStr}${endStr}`;
+      });
+      sections.push(`Calendar events (Google Calendar):\n${lines.join("\n")}`);
+    }
   }
 
   // --- Streams (Twitch) ---
@@ -333,7 +382,8 @@ Write a SHORT journal entry for ${ctx.date}. Rules:
    - [[data:twitch|streamed for 3 hours playing Valorant|{"title":"Ranked grind","duration_h":3,"views":42}]]
 4. NEVER use em dashes (—). Use commas, periods, or "and" instead.
 5. Write in first person, casual, human. Short sentences. No flowery metaphors.
-6. Think of this as a data log with personality, not a literary essay.`
+6. Think of this as a data log with personality, not a literary essay.
+7. If any data category has no meaningful content (e.g., no titled events), SKIP it entirely. Never mention "untitled" or "placeholder" events.`
   );
 
   return parts.join("\n\n");
@@ -438,7 +488,10 @@ export async function generateDailyEntry(
     factRows as Array<{ fact_text: string }>
   ).map((row) => row.fact_text);
 
-  // 7. Build prompt
+  // 7. Detect data quality issues for debug notes
+  const debugNotes = detectActivityDataIssues(todayActivities);
+
+  // 8. Build prompt
   const ctx: GenerationContext = {
     date,
     activitiesText,
@@ -451,7 +504,7 @@ export async function generateDailyEntry(
   };
   const prompt = buildGenerationPrompt(ctx);
 
-  // 8. Call Claude Sonnet with voice profile as system prompt
+  // 9. Call Claude Sonnet with voice profile as system prompt
   const { text: content } = await generateText({
     system: systemPrompt,
     prompt,
@@ -459,8 +512,17 @@ export async function generateDailyEntry(
     maxTokens: 2048,
   });
 
-  // 9. Embed the result, store in diary_entries
+  // 10. Embed the result, store in diary_entries
   const contentEmbedding = await embed(content);
+
+  const metadata: Record<string, unknown> = {
+    model: "claude-sonnet-4-20250514",
+    generatedAt: new Date().toISOString(),
+    activitiesCount: todayActivities.length,
+  };
+  if (debugNotes.length > 0) {
+    metadata.debugNotes = debugNotes;
+  }
 
   await db
     .insert(diaryEntries)
@@ -469,11 +531,7 @@ export async function generateDailyEntry(
       content,
       embedding: contentEmbedding,
       voiceProfileVersion,
-      generationMetadata: {
-        model: "claude-sonnet-4-20250514",
-        generatedAt: new Date().toISOString(),
-        activitiesCount: todayActivities.length,
-      },
+      generationMetadata: metadata,
     })
     .onConflictDoUpdate({
       target: diaryEntries.date,

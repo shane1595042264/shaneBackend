@@ -5,6 +5,8 @@ import { eq, desc, sql } from "drizzle-orm";
 import { db } from "@/db/client";
 import { diaryEntries, activities, learnedFacts } from "@/db/schema";
 import { processSuggestion } from "./correction";
+import { detectActivityDataIssues } from "./generator";
+import type { NormalizedActivity } from "@/modules/integrations/types";
 
 const journalRoutes = new Hono();
 
@@ -68,7 +70,20 @@ journalRoutes.get("/entries/:date", async (c) => {
     .from(activities)
     .where(eq(activities.date, date));
 
-  return c.json({ entry, activities: entryActivities });
+  // Detect data quality issues for debug notes
+  const normalizedActs: NormalizedActivity[] = entryActivities.map((a) => ({
+    date: a.date,
+    source: a.source as NormalizedActivity["source"],
+    type: a.type,
+    data: a.data as Record<string, unknown>,
+  }));
+  const debugNotes = detectActivityDataIssues(normalizedActs);
+
+  return c.json({
+    entry,
+    activities: entryActivities,
+    debugNotes: debugNotes.length > 0 ? debugNotes : undefined,
+  });
 });
 
 // POST /entries/:date/suggest — process a suggestion/correction
