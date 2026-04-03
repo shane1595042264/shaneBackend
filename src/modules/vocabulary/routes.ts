@@ -148,22 +148,27 @@ vocabularyRoutes.post("/words/:id/enrich", async (c) => {
   const [word] = await db.select().from(vocabWords).where(eq(vocabWords.id, id));
   if (!word) return c.json({ error: "Word not found" }, 404);
 
-  const enriched = await enrichWord(word.word, word.language);
-  const [updated] = await db
-    .update(vocabWords)
-    .set({
-      definition: enriched.definition || word.definition,
-      pronunciation: enriched.pronunciation || word.pronunciation,
-      partOfSpeech: enriched.partOfSpeech || word.partOfSpeech,
-      exampleSentence: enriched.exampleSentence || word.exampleSentence,
-      labels: enriched.labels.length > 0 ? enriched.labels : (word.labels as string[]),
-      aiMetadata: { enrichedAt: new Date().toISOString() },
-      updatedAt: new Date(),
-    })
-    .where(eq(vocabWords.id, id))
-    .returning();
+  try {
+    const enriched = await enrichWord(word.word, word.language);
+    const [updated] = await db
+      .update(vocabWords)
+      .set({
+        definition: enriched.definition || word.definition,
+        pronunciation: enriched.pronunciation || word.pronunciation,
+        partOfSpeech: enriched.partOfSpeech || word.partOfSpeech,
+        exampleSentence: enriched.exampleSentence || word.exampleSentence,
+        labels: enriched.labels.length > 0 ? enriched.labels : (word.labels as string[]),
+        aiMetadata: { enrichedAt: new Date().toISOString() },
+        updatedAt: new Date(),
+      })
+      .where(eq(vocabWords.id, id))
+      .returning();
 
-  return c.json({ word: updated });
+    return c.json({ word: updated });
+  } catch (err: any) {
+    console.error("[vocabulary] enrich error:", err.message);
+    return c.json({ error: `Enrichment failed: ${err.message}` }, 500);
+  }
 });
 
 // ---------------------------------------------------------------------------
