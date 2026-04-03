@@ -3,7 +3,7 @@ import { embed } from "@/modules/shared/embeddings";
 import { db } from "@/db/client";
 import { diaryEntries, corrections, learnedFacts, activities } from "@/db/schema";
 import { getLatestVoiceProfile } from "./voice-profile";
-import { eq, and } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 
 export interface CorrectionContext {
   originalEntry: string;
@@ -82,20 +82,17 @@ Return only the JSON array, with no additional text.`;
 }
 
 /**
- * Full pipeline for processing a user suggestion/correction:
- * 1. Gets original entry from DB
- * 2. Gets calendar events and location data for that day
- * 3. Gets latest voice profile
- * 4. Builds correction prompt, calls Claude Sonnet to regenerate
- * 5. Builds fact extraction prompt, calls Claude Haiku, parses JSON response
- * 6. Stores correction record in corrections table
- * 7. Stores learned facts with embeddings in learned_facts table
- * 8. Updates the diary entry with new content and embedding
+ * Phase 1: Generate the corrected content via Claude Sonnet.
+ * Returns quickly so the HTTP response can be sent within Railway's 30s gateway timeout.
  */
-export async function processSuggestion(
+export async function generateCorrection(
   entryDate: string,
   suggestion: string
-): Promise<{ correctedContent: string; extractedFacts: string[] }> {
+): Promise<{
+  correctedContent: string;
+  entryId: string;
+  originalContent: string;
+}> {
   // 1. Get original entry from DB
   const entryRows = await db
     .select({ id: diaryEntries.id, content: diaryEntries.content })
@@ -110,41 +107,35 @@ export async function processSuggestion(
   const entry = entryRows[0];
   const originalContent = entry.content;
 
-  // 2. Get calendar events and location data from activities table
-  const activityRows = await db
-    .select({ source: activities.source, type: activities.type, data: activities.data })
-    .from(activities)
-    .where(eq(activities.date, entryDate));
+  // 2. Get calendar events, location data, and voice profile in parallel
+  const [activityRows, voiceProfile] = await Promise.all([
+    db
+      .select({ source: activities.source, type: activities.type, data: activities.data })
+      .from(activities)
+      .where(eq(activities.date, entryDate)),
+    getLatestVoiceProfile(),
+  ]);
 
   const calendarActivities = activityRows.filter((a) => a.source === "google_calendar");
   const locationActivities = activityRows.filter((a) => a.source === "location");
 
   const calendarEvents =
     calendarActivities.length > 0
-      ? calendarActivities
-          .map((a) => JSON.stringify(a.data))
-          .join("\n")
+      ? calendarActivities.map((a) => JSON.stringify(a.data)).join("\n")
       : undefined;
 
   const locationData =
     locationActivities.length > 0
-      ? locationActivities
-          .map((a) => JSON.stringify(a.data))
-          .join("\n")
+      ? locationActivities.map((a) => JSON.stringify(a.data)).join("\n")
       : undefined;
 
-  // 3. Get latest voice profile
-  const voiceProfile = await getLatestVoiceProfile();
-
-  // 4. Build correction prompt and call Claude Sonnet
-  const correctionCtx: CorrectionContext = {
+  // 3. Build correction prompt and call Claude Sonnet
+  const correctionPrompt = buildCorrectionPrompt({
     originalEntry: originalContent,
     suggestion,
     calendarEvents,
     locationData,
-  };
-
-  const correctionPrompt = buildCorrectionPrompt(correctionCtx);
+  });
 
   const systemPrompt = voiceProfile
     ? `You are a skilled editor. Write in this author's voice:\n\n${voiceProfile.profileText}`
@@ -156,16 +147,34 @@ export async function processSuggestion(
     model: "claude-sonnet-4-20250514",
   });
 
-  const correctedContent = correctionResult.text;
+  return {
+    correctedContent: correctionResult.text,
+    entryId: entry.id,
+    originalContent,
+  };
+}
 
-  // 5. Build fact extraction prompt and call Claude Haiku
+/**
+ * Phase 2: Background work — fact extraction, embeddings, and DB updates.
+ * Runs after the HTTP response has been sent.
+ */
+export async function finalizeSuggestion(
+  entryId: string,
+  suggestion: string,
+  originalContent: string,
+  correctedContent: string
+): Promise<void> {
+  // 1. Extract facts and update entry content in parallel
   const factPrompt = buildFactExtractionPrompt(suggestion, originalContent, correctedContent);
 
-  const factResult = await generateText({
-    system: "You are a precise data extractor. Return only valid JSON arrays.",
-    prompt: factPrompt,
-    model: "claude-haiku-4-5-20251001",
-  });
+  const [factResult, newEmbedding] = await Promise.all([
+    generateText({
+      system: "You are a precise data extractor. Return only valid JSON arrays.",
+      prompt: factPrompt,
+      model: "claude-haiku-4-5-20251001",
+    }),
+    embed(correctedContent),
+  ]);
 
   let extractedFacts: string[] = [];
   try {
@@ -174,25 +183,34 @@ export async function processSuggestion(
       extractedFacts = parsed.filter((f) => typeof f === "string");
     }
   } catch {
-    // If parsing fails, return empty facts array
     extractedFacts = [];
   }
 
-  // 6. Store correction record in corrections table
-  const correctionInsert = await db
-    .insert(corrections)
-    .values({
-      entryId: entry.id,
-      suggestionText: suggestion,
-      originalContent,
-      correctedContent,
-      extractedFacts,
-    })
-    .returning({ id: corrections.id });
+  // 2. Store correction record and update diary entry in parallel
+  const [correctionInsert] = await Promise.all([
+    db
+      .insert(corrections)
+      .values({
+        entryId,
+        suggestionText: suggestion,
+        originalContent,
+        correctedContent,
+        extractedFacts,
+      })
+      .returning({ id: corrections.id }),
+    db
+      .update(diaryEntries)
+      .set({
+        content: correctedContent,
+        embedding: newEmbedding,
+        updatedAt: new Date(),
+      })
+      .where(eq(diaryEntries.id, entryId)),
+  ]);
 
   const correctionId = correctionInsert[0].id;
 
-  // 7. Store learned facts with embeddings in learned_facts table
+  // 3. Store learned facts with embeddings
   for (const fact of extractedFacts) {
     const factEmbedding = await embed(fact);
     await db.insert(learnedFacts).values({
@@ -201,17 +219,4 @@ export async function processSuggestion(
       sourceCorrectionId: correctionId,
     });
   }
-
-  // 8. Update the diary entry with new content and embedding
-  const newEmbedding = await embed(correctedContent);
-  await db
-    .update(diaryEntries)
-    .set({
-      content: correctedContent,
-      embedding: newEmbedding,
-      updatedAt: new Date(),
-    })
-    .where(eq(diaryEntries.id, entry.id));
-
-  return { correctedContent, extractedFacts };
 }

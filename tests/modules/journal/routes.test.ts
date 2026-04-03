@@ -30,7 +30,8 @@ vi.mock("drizzle-orm", () => ({
 }));
 
 vi.mock("@/modules/journal/correction", () => ({
-  processSuggestion: vi.fn(),
+  generateCorrection: vi.fn(),
+  finalizeSuggestion: vi.fn(),
 }));
 
 // ---------------------------------------------------------------------------
@@ -38,7 +39,7 @@ vi.mock("@/modules/journal/correction", () => ({
 // ---------------------------------------------------------------------------
 import { Hono } from "hono";
 import { journalRoutes } from "@/modules/journal/routes";
-import { processSuggestion } from "@/modules/journal/correction";
+import { generateCorrection, finalizeSuggestion } from "@/modules/journal/correction";
 
 // Build a test app with the routes mounted at /
 const app = new Hono();
@@ -191,12 +192,13 @@ describe("GET /entries/:date", () => {
 // POST /entries/:date/suggest
 // ---------------------------------------------------------------------------
 describe("POST /entries/:date/suggest", () => {
-  it("calls processSuggestion and returns correctedContent + extractedFacts", async () => {
-    const mockResult = {
+  it("calls generateCorrection and returns correctedContent + extractedFacts", async () => {
+    vi.mocked(generateCorrection).mockResolvedValue({
       correctedContent: "Corrected entry text",
-      extractedFacts: ["Shane has a sister"],
-    };
-    vi.mocked(processSuggestion).mockResolvedValue(mockResult);
+      entryId: "entry-123",
+      originalContent: "Original entry text",
+    });
+    vi.mocked(finalizeSuggestion).mockResolvedValue(undefined);
 
     const res = await app.request("/entries/2026-03-20/suggest", {
       method: "POST",
@@ -207,8 +209,8 @@ describe("POST /entries/:date/suggest", () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.correctedContent).toBe("Corrected entry text");
-    expect(body.extractedFacts).toEqual(["Shane has a sister"]);
-    expect(processSuggestion).toHaveBeenCalledWith("2026-03-20", "I was with my sister");
+    expect(body.extractedFacts).toEqual([]);
+    expect(generateCorrection).toHaveBeenCalledWith("2026-03-20", "I was with my sister");
   });
 
   it("returns 400 when suggestion is missing", async () => {

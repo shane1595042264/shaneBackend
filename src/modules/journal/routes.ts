@@ -4,7 +4,7 @@ import { z } from "zod";
 import { eq, desc, sql } from "drizzle-orm";
 import { db } from "@/db/client";
 import { diaryEntries, activities, learnedFacts } from "@/db/schema";
-import { processSuggestion } from "./correction";
+import { generateCorrection, finalizeSuggestion } from "./correction";
 import { detectActivityDataIssues } from "./generator";
 import type { NormalizedActivity } from "@/modules/integrations/types";
 
@@ -94,9 +94,27 @@ journalRoutes.post(
     const date = c.req.param("date");
     const { suggestion } = c.req.valid("json");
 
-    const result = await processSuggestion(date, suggestion);
+    try {
+      // Phase 1: Generate corrected content (must complete within Railway's 30s timeout)
+      const { correctedContent, entryId, originalContent } =
+        await generateCorrection(date, suggestion);
 
-    return c.json(result);
+      // Phase 2: Fire-and-forget background work (fact extraction, embeddings, DB updates)
+      finalizeSuggestion(entryId, suggestion, originalContent, correctedContent).catch(
+        (err) => console.error(`[suggest] Background finalization failed for ${date}:`, err)
+      );
+
+      return c.json({ correctedContent, extractedFacts: [] });
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : "Unknown error";
+      console.error(`[suggest] Failed for ${date}:`, message);
+
+      if (message.includes("No diary entry found")) {
+        return c.json({ error: message }, 404);
+      }
+
+      return c.json({ error: "Failed to process suggestion. Please try again." }, 500);
+    }
   }
 );
 
