@@ -25,30 +25,35 @@ const createWordSchema = z.object({
 
 // List words with optional filters
 vocabularyRoutes.get("/words", async (c) => {
-  const language = c.req.query("language");
-  const label = c.req.query("label");
-  const search = c.req.query("search");
-  const limit = Math.min(Number(c.req.query("limit") || 100), 500);
-  const offset = Number(c.req.query("offset") || 0);
+  try {
+    const language = c.req.query("language");
+    const label = c.req.query("label");
+    const search = c.req.query("search");
+    const limit = Math.min(Number(c.req.query("limit") || 100), 500);
+    const offset = Number(c.req.query("offset") || 0);
 
-  const conditions = [];
-  if (language) conditions.push(eq(vocabWords.language, language));
-  if (search) conditions.push(ilike(vocabWords.word, `%${search}%`));
-  if (label) {
-    conditions.push(sql`${vocabWords.labels}::jsonb @> ${JSON.stringify([label])}::jsonb`);
+    const conditions = [];
+    if (language) conditions.push(eq(vocabWords.language, language));
+    if (search) conditions.push(ilike(vocabWords.word, `%${search}%`));
+    if (label) {
+      conditions.push(sql`${vocabWords.labels}::jsonb @> ${JSON.stringify([label])}::jsonb`);
+    }
+
+    const where = conditions.length > 0 ? and(...conditions) : undefined;
+
+    const words = await db
+      .select()
+      .from(vocabWords)
+      .where(where)
+      .orderBy(desc(vocabWords.createdAt))
+      .limit(limit)
+      .offset(offset);
+
+    return c.json({ words });
+  } catch (err: any) {
+    console.error("[vocabulary] GET /words error:", err.message, err.stack);
+    return c.json({ error: err.message }, 500);
   }
-
-  const where = conditions.length > 0 ? and(...conditions) : undefined;
-
-  const words = await db
-    .select()
-    .from(vocabWords)
-    .where(where)
-    .orderBy(desc(vocabWords.createdAt))
-    .limit(limit)
-    .offset(offset);
-
-  return c.json({ words });
 });
 
 // Get a single word with its connections
