@@ -245,6 +245,64 @@ export const rngDecisions = pgTable(
 );
 
 // ------------------------------------------------------------------
+// vocab_words
+// ------------------------------------------------------------------
+export const vocabWords = pgTable(
+  "vocab_words",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    word: varchar("word", { length: 255 }).notNull(),
+    language: varchar("language", { length: 50 }).notNull(),
+    definition: text("definition"),
+    pronunciation: varchar("pronunciation", { length: 255 }),
+    partOfSpeech: varchar("part_of_speech", { length: 50 }),
+    exampleSentence: text("example_sentence"),
+    labels: jsonb("labels").default([]),
+    aiMetadata: jsonb("ai_metadata"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    index("vocab_words_language_idx").on(t.language),
+    index("vocab_words_created_at_idx").on(t.createdAt),
+  ]
+);
+
+// ------------------------------------------------------------------
+// vocab_connections
+// ------------------------------------------------------------------
+export const vocabConnections = pgTable(
+  "vocab_connections",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    fromWordId: uuid("from_word_id")
+      .notNull()
+      .references(() => vocabWords.id, { onDelete: "cascade" }),
+    toWordId: uuid("to_word_id")
+      .notNull()
+      .references(() => vocabWords.id, { onDelete: "cascade" }),
+    connectionType: varchar("connection_type", { length: 50 }).notNull(),
+    note: text("note"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    index("vocab_connections_from_idx").on(t.fromWordId),
+    index("vocab_connections_to_idx").on(t.toWordId),
+    unique("vocab_connections_unique").on(
+      t.fromWordId,
+      t.toWordId,
+      t.connectionType
+    ),
+  ]
+);
+
+// ------------------------------------------------------------------
 // rng_ban_list
 // ------------------------------------------------------------------
 export const rngBanList = pgTable(
