@@ -43,24 +43,46 @@ app.route("/api/rng", rngRoutes);
 app.route("/api/vocabulary", vocabularyRoutes);
 
 // ---------------------------------------------------------------------------
-// Admin — schema push
+// Admin — migrate vocabulary tables
 // ---------------------------------------------------------------------------
-app.post("/api/admin/push-schema", async (c) => {
+app.post("/api/admin/migrate-vocabulary", async (c) => {
   const adminToken = process.env.ADMIN_TOKEN;
   if (adminToken && c.req.header("Authorization") !== `Bearer ${adminToken}`) {
     return c.json({ error: "Unauthorized" }, 401);
   }
   try {
-    const proc = Bun.spawn(["bunx", "drizzle-kit", "push", "--force"], {
-      cwd: process.cwd(),
-      env: process.env,
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-    const stdout = await new Response(proc.stdout).text();
-    const stderr = await new Response(proc.stderr).text();
-    const exitCode = await proc.exited;
-    return c.json({ exitCode, stdout, stderr });
+    const { getPool } = await import("@/db/client");
+    const pool = getPool();
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS vocab_words (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        word VARCHAR(255) NOT NULL,
+        language VARCHAR(50) NOT NULL,
+        definition TEXT,
+        pronunciation VARCHAR(255),
+        part_of_speech VARCHAR(50),
+        example_sentence TEXT,
+        labels JSONB DEFAULT '[]'::jsonb,
+        ai_metadata JSONB,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS vocab_words_language_idx ON vocab_words (language);
+      CREATE INDEX IF NOT EXISTS vocab_words_created_at_idx ON vocab_words (created_at);
+
+      CREATE TABLE IF NOT EXISTS vocab_connections (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        from_word_id UUID NOT NULL REFERENCES vocab_words(id) ON DELETE CASCADE,
+        to_word_id UUID NOT NULL REFERENCES vocab_words(id) ON DELETE CASCADE,
+        connection_type VARCHAR(50) NOT NULL,
+        note TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS vocab_connections_from_idx ON vocab_connections (from_word_id);
+      CREATE INDEX IF NOT EXISTS vocab_connections_to_idx ON vocab_connections (to_word_id);
+      CREATE UNIQUE INDEX IF NOT EXISTS vocab_connections_unique ON vocab_connections (from_word_id, to_word_id, connection_type);
+    `);
+    return c.json({ ok: true, message: "Vocabulary tables created" });
   } catch (err: any) {
     return c.json({ error: err.message }, 500);
   }
