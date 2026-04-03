@@ -43,6 +43,30 @@ app.route("/api/rng", rngRoutes);
 app.route("/api/vocabulary", vocabularyRoutes);
 
 // ---------------------------------------------------------------------------
+// Admin — schema push
+// ---------------------------------------------------------------------------
+app.post("/api/admin/push-schema", async (c) => {
+  const adminToken = process.env.ADMIN_TOKEN;
+  if (adminToken && c.req.header("Authorization") !== `Bearer ${adminToken}`) {
+    return c.json({ error: "Unauthorized" }, 401);
+  }
+  try {
+    const proc = Bun.spawn(["bunx", "drizzle-kit", "push", "--force"], {
+      cwd: process.cwd(),
+      env: process.env,
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const stdout = await new Response(proc.stdout).text();
+    const stderr = await new Response(proc.stderr).text();
+    const exitCode = await proc.exited;
+    return c.json({ exitCode, stdout, stderr });
+  } catch (err: any) {
+    return c.json({ error: err.message }, 500);
+  }
+});
+
+// ---------------------------------------------------------------------------
 // Admin — manual trigger for ingestion + journal generation
 // ---------------------------------------------------------------------------
 app.post("/api/admin/generate/:date", async (c) => {
