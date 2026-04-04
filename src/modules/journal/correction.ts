@@ -210,13 +210,15 @@ export async function finalizeSuggestion(
 
   const correctionId = correctionInsert[0].id;
 
-  // 3. Store learned facts with embeddings
-  for (const fact of extractedFacts) {
-    const factEmbedding = await embed(fact);
-    await db.insert(learnedFacts).values({
-      factText: fact,
-      embedding: factEmbedding,
-      sourceCorrectionId: correctionId,
-    });
+  // 3. Store learned facts with embeddings (parallel embed + batch insert)
+  if (extractedFacts.length > 0) {
+    const factEmbeddings = await Promise.all(extractedFacts.map((fact) => embed(fact)));
+    await db.insert(learnedFacts).values(
+      extractedFacts.map((fact, i) => ({
+        factText: fact,
+        embedding: factEmbeddings[i],
+        sourceCorrectionId: correctionId,
+      }))
+    );
   }
 }
