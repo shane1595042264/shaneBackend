@@ -186,13 +186,26 @@ export const elementConfig = pgTable("element_config", {
   symbol: varchar("symbol", { length: 3 }).notNull().unique(),
   name: varchar("name", { length: 100 }).notNull(),
   category: varchar("category", { length: 50 }),
-  rowPos: integer("row_pos"),
-  colPos: integer("col_pos"),
   type: varchar("type", { length: 20 }).notNull().default("internal"),
   route: varchar("route", { length: 255 }),
   url: varchar("url", { length: 512 }),
   status: varchar("status", { length: 30 }).notNull().default("coming-soon"),
   description: text("description"),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
+// ------------------------------------------------------------------
+// slot_assignments — maps periodic table atomic numbers to app IDs per user
+// ------------------------------------------------------------------
+export const slotAssignments = pgTable("slot_assignments", {
+  id: serial("id").primaryKey(),
+  userId: uuid("user_id")
+    .notNull()
+    .references(() => users.id, { onDelete: "cascade" })
+    .unique(),
+  assignments: jsonb("assignments").notNull().default({}),
   updatedAt: timestamp("updated_at", { withTimezone: true })
     .notNull()
     .defaultNow(),
