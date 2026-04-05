@@ -153,15 +153,15 @@ describe("generateText", () => {
     });
   });
 
-  it("should fall back to Gemini when Anthropic fails", async () => {
+  it("should fall through all fallbacks when Anthropic fails", async () => {
     mockCreate.mockRejectedValueOnce(new Error("API Error"));
 
-    // Without GOOGLE_AI_API_KEY set, the Gemini fallback also throws
+    // Without any fallback API keys set, the last fallback (Groq) throws
     await expect(
       generateText({
         system: "System",
         prompt: "Prompt",
       })
-    ).rejects.toThrow("GOOGLE_AI_API_KEY not set");
+    ).rejects.toThrow("GROQ_API_KEY not set");
   });
 });

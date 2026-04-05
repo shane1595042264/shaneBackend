@@ -47,7 +47,6 @@ async function generateWithGemini(
     throw new Error("GOOGLE_AI_API_KEY not set — cannot use Gemini fallback");
   }
 
-  // Try multiple models in case one has exhausted its free-tier quota
   const models = ["gemini-2.0-flash", "gemini-2.0-flash-lite"];
 
   for (const model of models) {
@@ -103,6 +102,51 @@ async function callGeminiModel(
   };
 }
 
+async function generateWithGroq(
+  options: GenerateTextOptions & { maxTokens: number }
+): Promise<GenerateTextResult> {
+  const apiKey = process.env.GROQ_API_KEY;
+  if (!apiKey) {
+    throw new Error("GROQ_API_KEY not set — cannot use Groq fallback");
+  }
+
+  const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({
+      model: "llama-3.3-70b-versatile",
+      max_tokens: options.maxTokens,
+      messages: [
+        { role: "system", content: options.system },
+        { role: "user", content: options.prompt },
+      ],
+    }),
+  });
+
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(`Groq API error ${response.status}: ${body}`);
+  }
+
+  const data = (await response.json()) as {
+    choices?: { message?: { content?: string } }[];
+    usage?: { prompt_tokens?: number; completion_tokens?: number };
+  };
+  const text = data.choices?.[0]?.message?.content ?? "";
+  const usage = data.usage ?? {};
+
+  return {
+    text,
+    usage: {
+      inputTokens: usage.prompt_tokens ?? 0,
+      outputTokens: usage.completion_tokens ?? 0,
+    },
+  };
+}
+
 export async function generateText(
   options: GenerateTextOptions
 ): Promise<GenerateTextResult> {
@@ -117,9 +161,16 @@ export async function generateText(
   try {
     return await generateWithAnthropic({ system, prompt, model, maxTokens });
   } catch (err) {
-    console.warn("[llm] Anthropic failed, falling back to Gemini Flash:", (err as Error).message);
+    console.warn("[llm] Anthropic failed, trying Gemini:", (err as Error).message);
   }
 
   // Fallback to Google Gemini Flash (free tier)
-  return await generateWithGemini({ system, prompt, maxTokens });
+  try {
+    return await generateWithGemini({ system, prompt, maxTokens });
+  } catch (err) {
+    console.warn("[llm] Gemini failed, trying Groq:", (err as Error).message);
+  }
+
+  // Last resort: Groq Llama (free tier)
+  return await generateWithGroq({ system, prompt, maxTokens });
 }
