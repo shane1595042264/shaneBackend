@@ -432,14 +432,23 @@ export function buildGenerationPrompt(ctx: GenerationContext): string {
 Write a SHORT journal entry for ${ctx.date}. Rules:
 1. ONE sentence per data category (workout, commits, locations, calendar, streams, messages). Connect them naturally into one paragraph.
 2. Keep it under 100 words total. The DATA is the point, not the story.
-3. When referencing specific data, wrap it in [[data:TYPE|DISPLAY|RAW]] markers so the frontend can make it interactive. Examples:
-   - [[data:strava|ran 5.2km in 24:32|{"distance_km":5.2,"duration":"24:32","type":"run"}]]
-   - [[data:github|pushed 3 commits to PersonalWebsite|{"count":3,"repo":"PersonalWebsite"}]]
-   - [[data:location|spent the afternoon in Midtown|{"name":"Midtown","duration_min":180}]]
-   - [[data:calendar|had a team standup at 10am|{"title":"Team standup","time":"10:00"}]]
-   - [[data:twitch|streamed for 3 hours playing Valorant|{"title":"Ranked grind","duration_h":3,"views":42}]]
-   - [[data:wechat|chatted with friends about weekend plans|{"chats":2,"messages_sent":8}]]
-   - [[data:discord|shared some cool finds on Discord|{"channels":2,"messages_sent":5}]]
+3. CRITICAL — every data reference MUST use exactly this format with ALL THREE parts:
+   [[data:TYPE|DISPLAY_TEXT|JSON_OBJECT]]
+   The format has exactly 3 sections separated by | pipes:
+   - TYPE: one of strava, github, location, calendar, twitch, wechat, discord
+   - DISPLAY_TEXT: human-readable text shown to the user
+   - JSON_OBJECT: a valid JSON object with the raw data (REQUIRED, never omit this)
+
+   Correct examples:
+   [[data:strava|ran 5.2km in 24:32|{"distance_km":5.2,"duration":"24:32","type":"run"}]]
+   [[data:github|pushed 3 commits to PersonalWebsite|{"count":3,"repo":"PersonalWebsite"}]]
+   [[data:location|spent the afternoon in Midtown|{"name":"Midtown","duration_min":180}]]
+   [[data:calendar|had a team standup at 10am|{"title":"Team standup","time":"10:00"}]]
+
+   WRONG (missing JSON — do NOT do this):
+   [[data:strava|ran 5km]]
+   [[data:github|3 commits]]
+
 4. NEVER use em dashes (—). Use commas, periods, or "and" instead.
 5. Write in first person, casual, human. Short sentences. No flowery metaphors.
 6. Think of this as a data log with personality, not a literary essay.
@@ -565,12 +574,15 @@ export async function generateDailyEntry(
   const prompt = buildGenerationPrompt(ctx);
 
   // 9. Call Claude Sonnet with voice profile as system prompt
-  const { text: content } = await generateText({
+  const { text: rawContent } = await generateText({
     system: systemPrompt,
     prompt,
     model: "claude-sonnet-4-20250514",
     maxTokens: 2048,
   });
+
+  // 9b. Fix malformed data markers (e.g. missing JSON third part)
+  const content = fixDataMarkers(rawContent);
 
   // 10. Embed the result, store in diary_entries
   const contentEmbedding = await embed(content);
@@ -641,4 +653,24 @@ function getWeekRange(date: string): [string, string] {
     monday.toISOString().slice(0, 10),
     sunday.toISOString().slice(0, 10),
   ];
+}
+
+/**
+ * Fix malformed [[data:TYPE|DISPLAY|JSON]] markers in LLM output.
+ * Some models (e.g. Llama via Groq) omit the JSON third part.
+ * This repairs 2-part markers into valid 3-part ones.
+ */
+export function fixDataMarkers(text: string): string {
+  return text.replace(
+    /\[\[data:(\w+)\|([^\]|]+?)(?:\|(\{[^}]*\}))?\]\]/g,
+    (_match, type: string, display: string, json?: string) => {
+      if (json) {
+        // Already has all 3 parts — keep as-is
+        return `[[data:${type}|${display}|${json}]]`;
+      }
+      // Missing JSON part — synthesize a reasonable one from the display text
+      const fallbackJson = JSON.stringify({ summary: display.trim() });
+      return `[[data:${type}|${display}|${fallbackJson}]]`;
+    }
+  );
 }
