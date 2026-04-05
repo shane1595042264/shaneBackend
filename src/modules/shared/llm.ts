@@ -17,21 +17,14 @@ export interface GenerateTextResult {
   };
 }
 
-export async function generateText(
-  options: GenerateTextOptions
+async function generateWithAnthropic(
+  options: GenerateTextOptions & { maxTokens: number; model: string }
 ): Promise<GenerateTextResult> {
-  const {
-    system,
-    prompt,
-    model = "claude-sonnet-4-20250514",
-    maxTokens = 4096,
-  } = options;
-
   const response = await client.messages.create({
-    model,
-    max_tokens: maxTokens,
-    system,
-    messages: [{ role: "user", content: prompt }],
+    model: options.model,
+    max_tokens: options.maxTokens,
+    system: options.system,
+    messages: [{ role: "user", content: options.prompt }],
   });
 
   const textContent = response.content.find((block) => block.type === "text");
@@ -44,4 +37,66 @@ export async function generateText(
       outputTokens: response.usage.output_tokens,
     },
   };
+}
+
+async function generateWithGemini(
+  options: GenerateTextOptions & { maxTokens: number }
+): Promise<GenerateTextResult> {
+  const apiKey = process.env.GOOGLE_AI_API_KEY;
+  if (!apiKey) {
+    throw new Error("GOOGLE_AI_API_KEY not set — cannot use Gemini fallback");
+  }
+
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
+
+  const response = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      systemInstruction: { parts: [{ text: options.system }] },
+      contents: [{ role: "user", parts: [{ text: options.prompt }] }],
+      generationConfig: { maxOutputTokens: options.maxTokens },
+    }),
+  });
+
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(`Gemini API error ${response.status}: ${body}`);
+  }
+
+  const data = (await response.json()) as {
+    candidates?: { content?: { parts?: { text?: string }[] } }[];
+    usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number };
+  };
+  const text = data.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
+  const usageMetadata = data.usageMetadata ?? {};
+
+  return {
+    text,
+    usage: {
+      inputTokens: usageMetadata.promptTokenCount ?? 0,
+      outputTokens: usageMetadata.candidatesTokenCount ?? 0,
+    },
+  };
+}
+
+export async function generateText(
+  options: GenerateTextOptions
+): Promise<GenerateTextResult> {
+  const {
+    system,
+    prompt,
+    model = "claude-sonnet-4-20250514",
+    maxTokens = 4096,
+  } = options;
+
+  // Try Anthropic first
+  try {
+    return await generateWithAnthropic({ system, prompt, model, maxTokens });
+  } catch (err) {
+    console.warn("[llm] Anthropic failed, falling back to Gemini Flash:", (err as Error).message);
+  }
+
+  // Fallback to Google Gemini Flash (free tier)
+  return await generateWithGemini({ system, prompt, maxTokens });
 }

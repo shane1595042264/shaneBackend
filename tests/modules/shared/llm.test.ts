@@ -153,14 +153,15 @@ describe("generateText", () => {
     });
   });
 
-  it("should propagate errors from the Anthropic API", async () => {
+  it("should fall back to Gemini when Anthropic fails", async () => {
     mockCreate.mockRejectedValueOnce(new Error("API Error"));
 
+    // Without GOOGLE_AI_API_KEY set, the Gemini fallback also throws
     await expect(
       generateText({
         system: "System",
         prompt: "Prompt",
       })
-    ).rejects.toThrow("API Error");
+    ).rejects.toThrow("GOOGLE_AI_API_KEY not set");
   });
 });
