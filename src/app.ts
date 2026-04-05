@@ -1,6 +1,8 @@
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { logger } from "hono/logger";
+import { zValidator } from "@hono/zod-validator";
+import { z } from "zod";
 import { journalRoutes } from "@/modules/journal/routes";
 import { elementRoutes } from "@/modules/elements/routes";
 import { locationRoutes } from "@/modules/location/routes";
@@ -93,12 +95,16 @@ app.post("/api/admin/migrate-vocabulary", async (c) => {
 // ---------------------------------------------------------------------------
 // Admin — manual trigger for ingestion + journal generation
 // ---------------------------------------------------------------------------
-app.post("/api/admin/generate/:date", async (c) => {
+const adminDateParamSchema = z.object({
+  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Date must be YYYY-MM-DD format"),
+});
+
+app.post("/api/admin/generate/:date", zValidator("param", adminDateParamSchema), async (c) => {
   const adminToken = process.env.ADMIN_TOKEN;
   if (adminToken && c.req.header("Authorization") !== `Bearer ${adminToken}`) {
     return c.json({ error: "Unauthorized" }, 401);
   }
-  const date = c.req.param("date");
+  const { date } = c.req.valid("param");
   // Fire and forget — respond immediately, run generation in background
   // Railway has a 30s gateway timeout so we can't wait for Claude + embeddings
   const { ingestActivities } = await import("@/cron/ingest");
@@ -114,8 +120,8 @@ app.post("/api/admin/generate/:date", async (c) => {
 });
 
 // Debug: ingest only (fast, should finish within 30s)
-app.get("/api/admin/ingest/:date", async (c) => {
-  const date = c.req.param("date");
+app.get("/api/admin/ingest/:date", zValidator("param", adminDateParamSchema), async (c) => {
+  const { date } = c.req.valid("param");
   try {
     const { ingestActivities } = await import("@/cron/ingest");
     const ingested = await ingestActivities(date);
@@ -126,8 +132,8 @@ app.get("/api/admin/ingest/:date", async (c) => {
 });
 
 // Debug: generate only (may timeout at gateway but runs in background)
-app.get("/api/admin/generate-only/:date", async (c) => {
-  const date = c.req.param("date");
+app.get("/api/admin/generate-only/:date", zValidator("param", adminDateParamSchema), async (c) => {
+  const { date } = c.req.valid("param");
   const { runDailyGeneration } = await import("@/cron/generate-daily");
   runDailyGeneration(date)
     .then(() => console.log(`[admin] Generated entry for ${date}`))

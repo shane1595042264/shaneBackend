@@ -8,6 +8,22 @@ import { enrichWord } from "./ai-enricher";
 
 export const vocabularyRoutes = new Hono();
 
+const uuidParamSchema = z.object({
+  id: z.string().uuid("Invalid UUID"),
+});
+
+const wordsQuerySchema = z.object({
+  language: z.string().optional(),
+  label: z.string().optional(),
+  search: z.string().optional(),
+  limit: z.coerce.number().int().min(1).max(500).default(100),
+  offset: z.coerce.number().int().min(0).default(0),
+});
+
+const wordIdQuerySchema = z.object({
+  wordId: z.string().uuid("Invalid UUID"),
+});
+
 // ---------------------------------------------------------------------------
 // Words CRUD
 // ---------------------------------------------------------------------------
@@ -24,13 +40,9 @@ const createWordSchema = z.object({
 });
 
 // List words with optional filters
-vocabularyRoutes.get("/words", async (c) => {
+vocabularyRoutes.get("/words", zValidator("query", wordsQuerySchema), async (c) => {
   try {
-    const language = c.req.query("language");
-    const label = c.req.query("label");
-    const search = c.req.query("search");
-    const limit = Math.min(Number(c.req.query("limit") || 100), 500);
-    const offset = Number(c.req.query("offset") || 0);
+    const { language, label, search, limit, offset } = c.req.valid("query");
 
     const conditions = [];
     if (language) conditions.push(eq(vocabWords.language, language));
@@ -57,8 +69,8 @@ vocabularyRoutes.get("/words", async (c) => {
 });
 
 // Get a single word with its connections
-vocabularyRoutes.get("/words/:id", async (c) => {
-  const id = c.req.param("id");
+vocabularyRoutes.get("/words/:id", zValidator("param", uuidParamSchema), async (c) => {
+  const { id } = c.req.valid("param");
   const [word] = await db.select().from(vocabWords).where(eq(vocabWords.id, id));
   if (!word) return c.json({ error: "Word not found" }, 404);
 
@@ -120,8 +132,8 @@ const updateWordSchema = z.object({
   labels: z.array(z.string()).optional(),
 });
 
-vocabularyRoutes.put("/words/:id", zValidator("json", updateWordSchema), async (c) => {
-  const id = c.req.param("id");
+vocabularyRoutes.put("/words/:id", zValidator("param", uuidParamSchema), zValidator("json", updateWordSchema), async (c) => {
+  const { id } = c.req.valid("param");
   const body = c.req.valid("json");
 
   const [updated] = await db
@@ -135,16 +147,16 @@ vocabularyRoutes.put("/words/:id", zValidator("json", updateWordSchema), async (
 });
 
 // Delete a word (cascades connections)
-vocabularyRoutes.delete("/words/:id", async (c) => {
-  const id = c.req.param("id");
+vocabularyRoutes.delete("/words/:id", zValidator("param", uuidParamSchema), async (c) => {
+  const { id } = c.req.valid("param");
   const [deleted] = await db.delete(vocabWords).where(eq(vocabWords.id, id)).returning();
   if (!deleted) return c.json({ error: "Word not found" }, 404);
   return c.json({ ok: true });
 });
 
 // AI-enrich an existing word
-vocabularyRoutes.post("/words/:id/enrich", async (c) => {
-  const id = c.req.param("id");
+vocabularyRoutes.post("/words/:id/enrich", zValidator("param", uuidParamSchema), async (c) => {
+  const { id } = c.req.valid("param");
   const [word] = await db.select().from(vocabWords).where(eq(vocabWords.id, id));
   if (!word) return c.json({ error: "Word not found" }, 404);
 
@@ -182,9 +194,8 @@ const createConnectionSchema = z.object({
   note: z.string().optional(),
 });
 
-vocabularyRoutes.get("/connections", async (c) => {
-  const wordId = c.req.query("wordId");
-  if (!wordId) return c.json({ error: "wordId required" }, 400);
+vocabularyRoutes.get("/connections", zValidator("query", wordIdQuerySchema), async (c) => {
+  const { wordId } = c.req.valid("query");
 
   const connections = await db
     .select()
@@ -209,8 +220,8 @@ vocabularyRoutes.post("/connections", zValidator("json", createConnectionSchema)
   return c.json({ connection }, 201);
 });
 
-vocabularyRoutes.delete("/connections/:id", async (c) => {
-  const id = c.req.param("id");
+vocabularyRoutes.delete("/connections/:id", zValidator("param", uuidParamSchema), async (c) => {
+  const { id } = c.req.valid("param");
   const [deleted] = await db.delete(vocabConnections).where(eq(vocabConnections.id, id)).returning();
   if (!deleted) return c.json({ error: "Connection not found" }, 404);
   return c.json({ ok: true });

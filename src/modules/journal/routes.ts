@@ -10,10 +10,18 @@ import type { NormalizedActivity } from "@/modules/integrations/types";
 
 const journalRoutes = new Hono();
 
+const dateParamSchema = z.object({
+  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Date must be YYYY-MM-DD format"),
+});
+
+const paginationQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).default(20).transform((v) => Math.min(v, 100)),
+  offset: z.coerce.number().int().min(0).default(0),
+});
+
 // GET /entries — list diary entries with pagination (default limit=20, offset=0)
-journalRoutes.get("/entries", async (c) => {
-  const limit = Math.max(1, Math.min(100, Number(c.req.query("limit")) || 20));
-  const offset = Math.max(0, Number(c.req.query("offset")) || 0);
+journalRoutes.get("/entries", zValidator("query", paginationQuerySchema), async (c) => {
+  const { limit, offset } = c.req.valid("query");
 
   const [entries, countResult] = await Promise.all([
     db
@@ -38,8 +46,8 @@ journalRoutes.get("/entries", async (c) => {
 });
 
 // GET /entries/:date — single entry + activities for that day
-journalRoutes.get("/entries/:date", async (c) => {
-  const date = c.req.param("date");
+journalRoutes.get("/entries/:date", zValidator("param", dateParamSchema), async (c) => {
+  const { date } = c.req.valid("param");
 
   const entryRows = await db
     .select({
@@ -89,9 +97,10 @@ journalRoutes.get("/entries/:date", async (c) => {
 // POST /entries/:date/suggest — process a suggestion/correction
 journalRoutes.post(
   "/entries/:date/suggest",
+  zValidator("param", dateParamSchema),
   zValidator("json", z.object({ suggestion: z.string().min(1) })),
   async (c) => {
-    const date = c.req.param("date");
+    const { date } = c.req.valid("param");
     const { suggestion } = c.req.valid("json");
 
     try {
