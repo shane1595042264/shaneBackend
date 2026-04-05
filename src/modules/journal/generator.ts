@@ -191,6 +191,7 @@ export async function formatActivitiesForPrompt(
     github: [],
     google_calendar: [],
     twitch: [],
+    wechat: [],
   };
 
   for (const act of acts) {
@@ -320,6 +321,38 @@ export async function formatActivitiesForPrompt(
     sections.push(`Streams (Twitch):\n${lines.join("\n")}`);
   }
 
+  // --- Messages (WeChat) ---
+  if (bySource.wechat.length > 0) {
+    // Group by chat, summarize message counts and key content
+    const byChat: Record<string, NormalizedActivity[]> = {};
+    for (const a of bySource.wechat) {
+      const chat = (a.data.chat as string) ?? "Unknown";
+      if (!byChat[chat]) byChat[chat] = [];
+      byChat[chat].push(a);
+    }
+
+    const lines: string[] = [];
+    for (const [chat, msgs] of Object.entries(byChat)) {
+      const selfMsgs = msgs.filter((m) => m.data.sender === "self");
+      const otherMsgs = msgs.filter((m) => m.data.sender !== "self");
+
+      // Show a summary line per chat
+      const parts: string[] = [`${msgs.length} messages in "${chat}"`];
+      if (selfMsgs.length > 0) parts.push(`sent ${selfMsgs.length}`);
+      if (otherMsgs.length > 0) parts.push(`received ${otherMsgs.length}`);
+      lines.push(`  - ${parts.join(", ")}`);
+
+      // Include up to 5 of Shane's own messages as content highlights
+      const highlights = selfMsgs.slice(0, 5);
+      for (const h of highlights) {
+        const content = (h.data.content as string) ?? "";
+        const preview = content.length > 100 ? content.slice(0, 100) + "..." : content;
+        lines.push(`    > "${preview}"`);
+      }
+    }
+    sections.push(`Messages (WeChat):\n${lines.join("\n")}`);
+  }
+
   return sections.join("\n\n");
 }
 
@@ -372,7 +405,7 @@ export function buildGenerationPrompt(ctx: GenerationContext): string {
   parts.push(
     `## Instruction
 Write a SHORT journal entry for ${ctx.date}. Rules:
-1. ONE sentence per data category (workout, commits, locations, calendar, streams). Connect them naturally into one paragraph.
+1. ONE sentence per data category (workout, commits, locations, calendar, streams, messages). Connect them naturally into one paragraph.
 2. Keep it under 100 words total. The DATA is the point, not the story.
 3. When referencing specific data, wrap it in [[data:TYPE|DISPLAY|RAW]] markers so the frontend can make it interactive. Examples:
    - [[data:strava|ran 5.2km in 24:32|{"distance_km":5.2,"duration":"24:32","type":"run"}]]
@@ -380,6 +413,7 @@ Write a SHORT journal entry for ${ctx.date}. Rules:
    - [[data:location|spent the afternoon in Midtown|{"name":"Midtown","duration_min":180}]]
    - [[data:calendar|had a team standup at 10am|{"title":"Team standup","time":"10:00"}]]
    - [[data:twitch|streamed for 3 hours playing Valorant|{"title":"Ranked grind","duration_h":3,"views":42}]]
+   - [[data:wechat|chatted with friends about weekend plans|{"chats":2,"messages_sent":8}]]
 4. NEVER use em dashes (—). Use commas, periods, or "and" instead.
 5. Write in first person, casual, human. Short sentences. No flowery metaphors.
 6. Think of this as a data log with personality, not a literary essay.

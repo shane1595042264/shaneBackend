@@ -10,6 +10,7 @@ import { rngRoutes } from "@/modules/rng-capitalist/routes";
 import { authRoutes } from "@/modules/auth/routes";
 import { vocabularyRoutes } from "@/modules/vocabulary/routes";
 import { slotRoutes } from "@/modules/slot-assignments/routes";
+import { wechatRoutes } from "@/modules/integrations/wechat-routes";
 
 const app = new Hono();
 
@@ -45,6 +46,7 @@ app.route("/api/location", locationRoutes);
 app.route("/api/rng", rngRoutes);
 app.route("/api/vocabulary", vocabularyRoutes);
 app.route("/api/slot-assignments", slotRoutes);
+app.route("/api/integrations/wechat", wechatRoutes);
 
 // ---------------------------------------------------------------------------
 // Admin — migrate vocabulary tables
