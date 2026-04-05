@@ -1,6 +1,6 @@
 export interface NormalizedActivity {
   date: string; // YYYY-MM-DD
-  source: "github" | "strava" | "google_maps" | "google_calendar" | "twitch" | "wechat";
+  source: "github" | "strava" | "google_maps" | "google_calendar" | "twitch" | "wechat" | "discord";
   type: string;
   data: Record<string, unknown>;
 }

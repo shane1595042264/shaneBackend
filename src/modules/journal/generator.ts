@@ -192,6 +192,7 @@ export async function formatActivitiesForPrompt(
     google_calendar: [],
     twitch: [],
     wechat: [],
+    discord: [],
   };
 
   for (const act of acts) {
@@ -353,6 +354,30 @@ export async function formatActivitiesForPrompt(
     sections.push(`Messages (WeChat):\n${lines.join("\n")}`);
   }
 
+  // --- Messages (Discord) ---
+  if (bySource.discord.length > 0) {
+    const lines: string[] = [];
+    const channelGroups: Record<string, NormalizedActivity[]> = {};
+    for (const a of bySource.discord) {
+      const channelId = (a.data.channelId as string) ?? "unknown";
+      if (!channelGroups[channelId]) channelGroups[channelId] = [];
+      channelGroups[channelId].push(a);
+    }
+
+    for (const [channelId, msgs] of Object.entries(channelGroups)) {
+      lines.push(`  - ${msgs.length} messages in channel ${channelId}`);
+      // Include up to 5 message previews
+      const previews = msgs.slice(0, 5);
+      for (const m of previews) {
+        const content = (m.data.content as string) ?? "";
+        if (!content) continue;
+        const preview = content.length > 120 ? content.slice(0, 120) + "..." : content;
+        lines.push(`    > "${preview}"`);
+      }
+    }
+    sections.push(`Messages (Discord):\n${lines.join("\n")}`);
+  }
+
   return sections.join("\n\n");
 }
 
@@ -414,6 +439,7 @@ Write a SHORT journal entry for ${ctx.date}. Rules:
    - [[data:calendar|had a team standup at 10am|{"title":"Team standup","time":"10:00"}]]
    - [[data:twitch|streamed for 3 hours playing Valorant|{"title":"Ranked grind","duration_h":3,"views":42}]]
    - [[data:wechat|chatted with friends about weekend plans|{"chats":2,"messages_sent":8}]]
+   - [[data:discord|shared some cool finds on Discord|{"channels":2,"messages_sent":5}]]
 4. NEVER use em dashes (—). Use commas, periods, or "and" instead.
 5. Write in first person, casual, human. Short sentences. No flowery metaphors.
 6. Think of this as a data log with personality, not a literary essay.

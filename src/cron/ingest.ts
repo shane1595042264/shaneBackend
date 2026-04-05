@@ -4,6 +4,7 @@ import { GitHubConnector } from "@/modules/integrations/github";
 import { StravaConnector } from "@/modules/integrations/strava";
 import { GoogleCalendarConnector } from "@/modules/integrations/google-calendar";
 import { TwitchConnector } from "@/modules/integrations/twitch";
+import { DiscordConnector } from "@/modules/integrations/discord";
 import type { IntegrationConnector } from "@/modules/integrations/types";
 
 export async function ingestActivities(date: string): Promise<number> {
@@ -52,6 +53,20 @@ export async function ingestActivities(date: string): Promise<number> {
         process.env.TWITCH_CLIENT_ID,
         process.env.TWITCH_CLIENT_SECRET,
         process.env.TWITCH_USER_ID
+      )
+    );
+  }
+
+  if (
+    process.env.DISCORD_BOT_TOKEN &&
+    process.env.DISCORD_USER_ID &&
+    process.env.DISCORD_CHANNEL_IDS
+  ) {
+    connectors.push(
+      new DiscordConnector(
+        process.env.DISCORD_BOT_TOKEN,
+        process.env.DISCORD_USER_ID,
+        process.env.DISCORD_CHANNEL_IDS.split(",").map((id) => id.trim())
       )
     );
   }
