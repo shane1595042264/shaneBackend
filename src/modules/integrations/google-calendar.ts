@@ -15,6 +15,27 @@ export class GoogleCalendarConnector implements IntegrationConnector {
     this.timezone = timezone || "America/Chicago";
   }
 
+  /**
+   * Convert IANA timezone to RFC3339 offset string (e.g. "-05:00")
+   */
+  private getTimezoneOffset(date: string): string {
+    const dt = new Date(`${date}T12:00:00Z`);
+    const formatter = new Intl.DateTimeFormat("en-US", {
+      timeZone: this.timezone,
+      timeZoneName: "shortOffset",
+    });
+    const parts = formatter.formatToParts(dt);
+    const tzPart = parts.find((p) => p.type === "timeZoneName");
+    if (!tzPart) return "Z";
+    // tzPart.value is like "GMT-5" or "GMT+5:30" or "GMT"
+    const match = tzPart.value.match(/GMT([+-]\d{1,2}(?::?\d{2})?)?/);
+    if (!match || !match[1]) return "+00:00";
+    const sign = match[1][0];
+    const rest = match[1].slice(1);
+    const [h, m] = rest.includes(":") ? rest.split(":") : [rest, "0"];
+    return `${sign}${h.padStart(2, "0")}:${(m || "0").padStart(2, "0")}`;
+  }
+
   private async getAccessToken(): Promise<string> {
     const body = new URLSearchParams({
       client_id: this.clientId,
@@ -40,9 +61,10 @@ export class GoogleCalendarConnector implements IntegrationConnector {
   async fetchActivities(date: string): Promise<NormalizedActivity[]> {
     const accessToken = await this.getAccessToken();
 
-    // Use timezone-aware time range to avoid UTC offset issues
-    const timeMin = `${date}T00:00:00`;
-    const timeMax = `${date}T23:59:59`;
+    // Build timezone offset string from IANA timezone for RFC3339 compliance
+    const tzOffset = this.getTimezoneOffset(date);
+    const timeMin = `${date}T00:00:00${tzOffset}`;
+    const timeMax = `${date}T23:59:59${tzOffset}`;
 
     const params = new URLSearchParams({
       timeMin,
