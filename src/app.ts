@@ -143,4 +143,19 @@ app.get("/api/admin/generate-only/:date", zValidator("param", adminDateParamSche
   return c.json({ ok: true, date, status: "generation_started_bg" });
 });
 
+// Debug: test LLM fallback chain
+app.get("/api/admin/test-llm", async (c) => {
+  try {
+    const { generateText } = await import("@/modules/shared/llm");
+    const result = await generateText({
+      system: "You are a helpful assistant.",
+      prompt: "Say hello in one sentence.",
+      maxTokens: 50,
+    });
+    return c.json({ ok: true, text: result.text, usage: result.usage });
+  } catch (err: any) {
+    return c.json({ error: err.message, stack: err.stack?.split("\n").slice(0, 5) }, 500);
+  }
+});
+
 export default app;
