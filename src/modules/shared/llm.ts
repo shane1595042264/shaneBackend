@@ -47,7 +47,30 @@ async function generateWithGemini(
     throw new Error("GOOGLE_AI_API_KEY not set — cannot use Gemini fallback");
   }
 
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
+  // Try multiple models in case one has exhausted its free-tier quota
+  const models = ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-2.0-flash-lite"];
+
+  for (const model of models) {
+    try {
+      return await callGeminiModel(apiKey, model, options);
+    } catch (err) {
+      const msg = (err as Error).message;
+      if (msg.includes("429") || msg.includes("quota")) {
+        console.warn(`[llm] Gemini ${model} quota exceeded, trying next model...`);
+        continue;
+      }
+      throw err;
+    }
+  }
+  throw new Error("All Gemini models exhausted their free-tier quota");
+}
+
+async function callGeminiModel(
+  apiKey: string,
+  model: string,
+  options: GenerateTextOptions & { maxTokens: number }
+): Promise<GenerateTextResult> {
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
 
   const response = await fetch(url, {
     method: "POST",
