@@ -143,6 +143,16 @@ app.get("/api/admin/generate-only/:date", zValidator("param", adminDateParamSche
   return c.json({ ok: true, date, status: "generation_started_bg" });
 });
 
+// Force-regenerate: bypasses existing entry check, overwrites via onConflictDoUpdate
+app.post("/api/admin/regenerate/:date", zValidator("param", adminDateParamSchema), async (c) => {
+  const { date } = c.req.valid("param");
+  const { generateDailyEntry } = await import("@/modules/journal/generator");
+  generateDailyEntry(date)
+    .then(() => console.log(`[admin] Regenerated entry for ${date}`))
+    .catch((err) => console.error(`[admin] Regeneration failed:`, err.message, err.stack));
+  return c.json({ ok: true, date, status: "regeneration_started" });
+});
+
 // Debug: test LLM fallback chain
 app.get("/api/admin/test-llm", async (c) => {
   try {
