@@ -3,6 +3,7 @@ import { ingestActivities } from "./ingest";
 import { runDailyGeneration } from "./generate-daily";
 import { runSummaryGeneration } from "./generate-summaries";
 import { refreshVoiceProfile } from "./refresh-voice-profile";
+import { regenerateFallbackEntries } from "./regenerate-fallback";
 import { fetchAndCacheMonthlySpend } from "@/modules/rng-capitalist/plaid";
 import { db } from "@/db/client";
 import { rngPlaidTokens } from "@/db/schema";
@@ -41,6 +42,16 @@ export function startCronJobs(): void {
       await runSummaryGeneration(date);
     } catch (err) {
       console.error("[cron] Summary generation failed:", err);
+    }
+  });
+
+  // 6am daily: regenerate any fallback-generated entries with Claude
+  cron.schedule("0 6 * * *", async () => {
+    console.log("[cron] Running fallback entry regeneration...");
+    try {
+      await regenerateFallbackEntries();
+    } catch (err) {
+      console.error("[cron] Fallback regeneration failed:", err);
     }
   });
 
