@@ -5,7 +5,7 @@ import { eq, desc, sql } from "drizzle-orm";
 import { db } from "@/db/client";
 import { diaryEntries, activities, learnedFacts } from "@/db/schema";
 import { generateCorrection, finalizeSuggestion } from "./correction";
-import { detectActivityDataIssues } from "./generator";
+import { detectActivityDataIssues, regenerateDailyEntry } from "./generator";
 import type { NormalizedActivity } from "@/modules/integrations/types";
 
 const journalRoutes = new Hono();
@@ -123,6 +123,31 @@ journalRoutes.post(
       }
 
       return c.json({ error: "Failed to process suggestion. Please try again." }, 500);
+    }
+  }
+);
+
+// POST /entries/:date/regenerate — re-generate entry using Claude only (no fallback)
+journalRoutes.post(
+  "/entries/:date/regenerate",
+  zValidator("param", dateParamSchema),
+  async (c) => {
+    const { date } = c.req.valid("param");
+
+    try {
+      const result = await regenerateDailyEntry(date);
+      return c.json({
+        content: result.content,
+        modelUsed: result.modelUsed,
+        voiceProfileVersion: result.voiceProfileVersion,
+      });
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : "Unknown error";
+      console.error(`[regenerate] Failed for ${date}:`, message);
+      return c.json(
+        { error: "Regeneration failed. Claude API may be unavailable.", detail: message },
+        502
+      );
     }
   }
 );

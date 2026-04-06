@@ -11,6 +11,7 @@ export interface GenerateTextOptions {
 
 export interface GenerateTextResult {
   text: string;
+  modelUsed: string;
   usage: {
     inputTokens: number;
     outputTokens: number;
@@ -32,6 +33,7 @@ async function generateWithAnthropic(
 
   return {
     text,
+    modelUsed: options.model,
     usage: {
       inputTokens: response.usage.input_tokens,
       outputTokens: response.usage.output_tokens,
@@ -95,6 +97,7 @@ async function callGeminiModel(
 
   return {
     text,
+    modelUsed: model,
     usage: {
       inputTokens: usageMetadata.promptTokenCount ?? 0,
       outputTokens: usageMetadata.candidatesTokenCount ?? 0,
@@ -140,6 +143,7 @@ async function generateWithGroq(
 
   return {
     text,
+    modelUsed: "llama-3.3-70b-versatile",
     usage: {
       inputTokens: usage.prompt_tokens ?? 0,
       outputTokens: usage.completion_tokens ?? 0,
@@ -148,19 +152,21 @@ async function generateWithGroq(
 }
 
 export async function generateText(
-  options: GenerateTextOptions
+  options: GenerateTextOptions & { noFallback?: boolean }
 ): Promise<GenerateTextResult> {
   const {
     system,
     prompt,
     model = "claude-sonnet-4-20250514",
     maxTokens = 4096,
+    noFallback = false,
   } = options;
 
   // Try Anthropic first
   try {
     return await generateWithAnthropic({ system, prompt, model, maxTokens });
   } catch (err) {
+    if (noFallback) throw err;
     console.warn("[llm] Anthropic failed, trying Gemini:", (err as Error).message);
   }
 
