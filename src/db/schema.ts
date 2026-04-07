@@ -186,6 +186,8 @@ export const elementConfig = pgTable("element_config", {
   symbol: varchar("symbol", { length: 3 }).notNull().unique(),
   name: varchar("name", { length: 100 }).notNull(),
   category: varchar("category", { length: 50 }),
+  rowPos: integer("row_pos"),
+  colPos: integer("col_pos"),
   type: varchar("type", { length: 20 }).notNull().default("internal"),
   route: varchar("route", { length: 255 }),
   url: varchar("url", { length: 512 }),
