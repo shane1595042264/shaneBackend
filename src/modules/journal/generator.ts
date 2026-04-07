@@ -429,10 +429,11 @@ export function buildGenerationPrompt(ctx: GenerationContext): string {
   // Final instruction
   parts.push(
     `## Instruction
-Write a SHORT journal entry for ${ctx.date}. Rules:
-1. ONE sentence per data category (workout, commits, locations, calendar, streams, messages). Connect them naturally into one paragraph.
-2. Keep it under 100 words total. The DATA is the point, not the story.
-3. CRITICAL — every data reference MUST use exactly this format with ALL THREE parts:
+Write a personal journal entry for ${ctx.date}. Follow your voice and style from the system prompt.
+
+Rules:
+1. Weave today's activities naturally into reflective prose. Multiple paragraphs are encouraged when the day has rich data.
+2. CRITICAL — every data reference MUST use exactly this format with ALL THREE parts:
    [[data:TYPE|DISPLAY_TEXT|JSON_OBJECT]]
    The format has exactly 3 sections separated by | pipes:
    - TYPE: one of strava, github, location, calendar, twitch, wechat, discord
@@ -449,10 +450,10 @@ Write a SHORT journal entry for ${ctx.date}. Rules:
    [[data:strava|ran 5km]]
    [[data:github|3 commits]]
 
-4. NEVER use em dashes (—). Use commas, periods, or "and" instead.
-5. Write in first person, casual, human. Short sentences. No flowery metaphors.
-6. Think of this as a data log with personality, not a literary essay.
-7. If any data category has no meaningful content (e.g., no titled events), SKIP it entirely. Never mention "untitled" or "placeholder" events.`
+3. NEVER use em dashes (—). Use commas, periods, or "and" instead.
+4. Write in first person. Let the data ground the narrative but allow reflection, observations, and personal meaning to emerge.
+5. If any data category has no meaningful content (e.g., no titled events), SKIP it entirely. Never mention "untitled" or "placeholder" events.
+6. Aim for 150-400 words depending on how much happened. Quiet days can be shorter, busy days deserve more space.`
   );
 
   return parts.join("\n\n");
