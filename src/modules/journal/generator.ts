@@ -453,7 +453,7 @@ Rules:
 3. NEVER use em dashes (—). Use commas, periods, or "and" instead.
 4. Write in first person. Let the data ground the narrative but allow reflection, observations, and personal meaning to emerge.
 5. If any data category has no meaningful content (e.g., no titled events), SKIP it entirely. Never mention "untitled" or "placeholder" events.
-6. Aim for 150-400 words depending on how much happened. Quiet days can be shorter, busy days deserve more space.`
+6. MINIMUM 100 words, aim for 150-400 words. Even quiet days deserve 2-3 paragraphs of reflection, personal observations, or inner thoughts. Never produce a single-sentence data summary. If the day was quiet, reflect on what that stillness meant, what you noticed, or how it contrasted with busier days.`
   );
 
   return parts.join("\n\n");
@@ -583,10 +583,7 @@ export async function generateDailyEntry(
   });
 
   // 9b. Fix malformed data markers (e.g. missing JSON third part)
-  const content = fixDataMarkers(rawContent);
-
-  // 10. Embed the result, store in diary_entries
-  const contentEmbedding = await embed(content);
+  let content = fixDataMarkers(rawContent);
 
   const metadata: Record<string, unknown> = {
     model: modelUsed,
@@ -596,6 +593,28 @@ export async function generateDailyEntry(
   if (debugNotes.length > 0) {
     metadata.debugNotes = debugNotes;
   }
+
+  // 9c. Word count validation — retry once if too short
+  const wordCount = content.split(/\s+/).filter(Boolean).length;
+  if (wordCount < 80) {
+    const retryPrompt = prompt + "\n\nIMPORTANT: Your previous attempt was only " + wordCount + " words. This is too short. Write at LEAST 100 words. Even if the day was quiet, reflect on what the stillness meant, describe your surroundings, share inner thoughts, or contrast with recent busier days. Never produce a single-sentence data dump.";
+    const { text: retryRaw, modelUsed: retryModel } = await generateText({
+      system: systemPrompt,
+      prompt: retryPrompt,
+      model: "claude-sonnet-4-20250514",
+      maxTokens: 2048,
+    });
+    const retryContent = fixDataMarkers(retryRaw);
+    const retryWordCount = retryContent.split(/\s+/).filter(Boolean).length;
+    if (retryWordCount > wordCount) {
+      content = retryContent;
+      metadata.retried = true;
+      metadata.model = retryModel;
+    }
+  }
+
+  // 10. Embed the result, store in diary_entries
+  const contentEmbedding = await embed(content);
 
   await db
     .insert(diaryEntries)
@@ -707,16 +726,37 @@ export async function regenerateDailyEntry(
     noFallback: true,
   });
 
-  const content = fixDataMarkers(rawContent);
+  let content = fixDataMarkers(rawContent);
 
-  // 8. Embed and store
-  const contentEmbedding = await embed(content);
   const metadata: Record<string, unknown> = {
     model: modelUsed,
     generatedAt: new Date().toISOString(),
     activitiesCount: todayActivities.length,
     regenerated: true,
   };
+
+  // 7b. Word count validation — retry once if too short
+  const wordCount = content.split(/\s+/).filter(Boolean).length;
+  if (wordCount < 80) {
+    const retryPrompt = prompt + "\n\nIMPORTANT: Your previous attempt was only " + wordCount + " words. This is too short. Write at LEAST 100 words. Even if the day was quiet, reflect on what the stillness meant, describe your surroundings, share inner thoughts, or contrast with recent busier days. Never produce a single-sentence data dump.";
+    const { text: retryRaw, modelUsed: retryModel } = await generateText({
+      system: systemPrompt,
+      prompt: retryPrompt,
+      model: "claude-sonnet-4-20250514",
+      maxTokens: 2048,
+      noFallback: true,
+    });
+    const retryContent = fixDataMarkers(retryRaw);
+    const retryWordCount = retryContent.split(/\s+/).filter(Boolean).length;
+    if (retryWordCount > wordCount) {
+      content = retryContent;
+      metadata.retried = true;
+      metadata.model = retryModel;
+    }
+  }
+
+  // 8. Embed and store
+  const contentEmbedding = await embed(content);
 
   await db
     .insert(diaryEntries)
