@@ -13,6 +13,19 @@ elementRoutes.get("/", async (c) => {
   return c.json({ elements });
 });
 
+const createElementSchema = z.object({
+  symbol: z.string().min(1).max(3),
+  name: z.string().max(100),
+  category: z.string().max(50).optional(),
+  rowPos: z.number().int().optional(),
+  colPos: z.number().int().optional(),
+  type: z.enum(["internal", "external"]).default("internal"),
+  route: z.string().max(255).optional(),
+  url: z.string().max(512).optional(),
+  status: z.enum(["live", "coming-soon", "disabled"]).default("coming-soon"),
+  description: z.string().optional(),
+});
+
 const updateElementSchema = z.object({
   name: z.string().max(100).optional(),
   category: z.string().max(50).optional(),
@@ -26,6 +39,43 @@ const updateElementSchema = z.object({
 const symbolParamSchema = z.object({
   symbol: z.string().min(1).max(3),
 });
+
+// POST / — create a new element
+elementRoutes.post(
+  "/",
+  zValidator("json", createElementSchema),
+  async (c) => {
+    const body = c.req.valid("json");
+
+    const existing = await db
+      .select({ id: elementConfig.id })
+      .from(elementConfig)
+      .where(eq(elementConfig.symbol, body.symbol))
+      .limit(1);
+
+    if (existing.length > 0) {
+      return c.json({ error: "Element with this symbol already exists" }, 409);
+    }
+
+    const inserted = await db
+      .insert(elementConfig)
+      .values({
+        symbol: body.symbol,
+        name: body.name,
+        category: body.category,
+        rowPos: body.rowPos,
+        colPos: body.colPos,
+        type: body.type,
+        route: body.route,
+        url: body.url,
+        status: body.status,
+        description: body.description,
+      })
+      .returning();
+
+    return c.json({ element: inserted[0] }, 201);
+  }
+);
 
 // PUT /:symbol — update an element by symbol
 elementRoutes.put(
