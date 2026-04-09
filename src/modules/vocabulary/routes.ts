@@ -3,7 +3,7 @@ import { zValidator } from "@hono/zod-validator";
 import { z } from "zod";
 import { db } from "@/db/client";
 import { vocabWords, vocabConnections } from "@/db/schema";
-import { desc, eq, and, or, ilike, inArray, sql } from "drizzle-orm";
+import { desc, eq, and, or, ilike, sql } from "drizzle-orm";
 import { enrichWord } from "./ai-enricher";
 
 export const vocabularyRoutes = new Hono();
@@ -74,19 +74,24 @@ vocabularyRoutes.get("/words/:id", zValidator("param", uuidParamSchema), async (
   const [word] = await db.select().from(vocabWords).where(eq(vocabWords.id, id));
   if (!word) return c.json({ error: "Word not found" }, 404);
 
-  const connections = await db
-    .select()
+  // Single JOIN query: fetch connections with their connected words
+  const rows = await db
+    .select({
+      connection: vocabConnections,
+      connectedWord: vocabWords,
+    })
     .from(vocabConnections)
+    .innerJoin(
+      vocabWords,
+      sql`${vocabWords.id} = CASE
+        WHEN ${vocabConnections.fromWordId} = ${id} THEN ${vocabConnections.toWordId}
+        ELSE ${vocabConnections.fromWordId}
+      END`
+    )
     .where(or(eq(vocabConnections.fromWordId, id), eq(vocabConnections.toWordId, id)));
 
-  // Fetch connected words
-  const connectedIds = connections.map((conn) =>
-    conn.fromWordId === id ? conn.toWordId : conn.fromWordId
-  );
-  const connectedWords =
-    connectedIds.length > 0
-      ? await db.select().from(vocabWords).where(inArray(vocabWords.id, connectedIds))
-      : [];
+  const connections = rows.map((r) => r.connection);
+  const connectedWords = rows.map((r) => r.connectedWord);
 
   return c.json({ word, connections, connectedWords });
 });
