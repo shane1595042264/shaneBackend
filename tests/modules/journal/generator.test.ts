@@ -58,7 +58,7 @@ const sampleActivities: NormalizedActivity[] = [
     date: "2025-01-15",
     source: "strava",
     type: "run",
-    data: { name: "Morning Run", distance_km: 5.2, duration_seconds: 1800 },
+    data: { name: "Morning Run", distanceMeters: 5200, movingTimeSeconds: 1800 },
   },
   // github
   {

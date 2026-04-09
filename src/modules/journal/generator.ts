@@ -262,14 +262,15 @@ export async function formatActivitiesForPrompt(
   if (bySource.strava.length > 0) {
     const lines = bySource.strava.map((a) => {
       const name = (a.data.name as string) ?? a.type;
+      const distMeters = a.data.distanceMeters as number | undefined;
       const km =
-        a.data.distance_km !== undefined
-          ? ` — ${(a.data.distance_km as number).toFixed(1)} km`
+        distMeters !== undefined && distMeters > 0
+          ? ` — ${(distMeters / 1000).toFixed(1)} km`
           : "";
-      const secs = a.data.duration_seconds as number | undefined;
+      const movingSecs = a.data.movingTimeSeconds as number | undefined;
       const time =
-        secs !== undefined
-          ? ` in ${Math.floor(secs / 60)}m ${secs % 60}s`
+        movingSecs !== undefined && movingSecs > 0
+          ? ` in ${Math.floor(movingSecs / 60)}m ${movingSecs % 60}s`
           : "";
       return `  - ${name}${km}${time}`;
     });
