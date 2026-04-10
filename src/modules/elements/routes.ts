@@ -32,7 +32,7 @@ const updateElementSchema = z.object({
   type: z.enum(["internal", "external"]).optional(),
   route: z.string().max(255).optional(),
   url: z.string().max(512).optional(),
-  status: z.enum(["active", "coming-soon", "disabled"]).optional(),
+  status: z.enum(["live", "coming-soon", "disabled"]).optional(),
   description: z.string().optional(),
 });
 
