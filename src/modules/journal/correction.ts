@@ -117,7 +117,7 @@ export async function generateCorrection(
   ]);
 
   const calendarActivities = activityRows.filter((a) => a.source === "google_calendar");
-  const locationActivities = activityRows.filter((a) => a.source === "location");
+  const locationActivities = activityRows.filter((a) => a.source === "google_maps");
 
   const calendarEvents =
     calendarActivities.length > 0
