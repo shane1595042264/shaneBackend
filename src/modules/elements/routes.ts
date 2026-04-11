@@ -9,16 +9,21 @@ const elementRoutes = new Hono();
 
 // GET / — list all elements
 elementRoutes.get("/", async (c) => {
-  const elements = await db.select().from(elementConfig);
-  return c.json({ elements });
+  try {
+    const elements = await db.select().from(elementConfig);
+    return c.json({ elements });
+  } catch (err) {
+    console.error("Failed to fetch elements:", err);
+    return c.json({ error: "Failed to fetch elements" }, 500);
+  }
 });
 
 const createElementSchema = z.object({
   symbol: z.string().min(1).max(3),
   name: z.string().max(100),
   category: z.string().max(50).optional(),
-  rowPos: z.number().int().optional(),
-  colPos: z.number().int().optional(),
+  rowPos: z.number().int().positive().optional(),
+  colPos: z.number().int().positive().optional(),
   type: z.enum(["internal", "external"]).default("internal"),
   route: z.string().max(255).optional(),
   url: z.string().max(512).optional(),
@@ -45,35 +50,40 @@ elementRoutes.post(
   "/",
   zValidator("json", createElementSchema),
   async (c) => {
-    const body = c.req.valid("json");
+    try {
+      const body = c.req.valid("json");
 
-    const existing = await db
-      .select({ id: elementConfig.id })
-      .from(elementConfig)
-      .where(eq(elementConfig.symbol, body.symbol))
-      .limit(1);
+      const existing = await db
+        .select({ id: elementConfig.id })
+        .from(elementConfig)
+        .where(eq(elementConfig.symbol, body.symbol))
+        .limit(1);
 
-    if (existing.length > 0) {
-      return c.json({ error: "Element with this symbol already exists" }, 409);
+      if (existing.length > 0) {
+        return c.json({ error: "Element with this symbol already exists" }, 409);
+      }
+
+      const inserted = await db
+        .insert(elementConfig)
+        .values({
+          symbol: body.symbol,
+          name: body.name,
+          category: body.category,
+          rowPos: body.rowPos,
+          colPos: body.colPos,
+          type: body.type,
+          route: body.route,
+          url: body.url,
+          status: body.status,
+          description: body.description,
+        })
+        .returning();
+
+      return c.json({ element: inserted[0] }, 201);
+    } catch (err) {
+      console.error("Failed to create element:", err);
+      return c.json({ error: "Failed to create element" }, 500);
     }
-
-    const inserted = await db
-      .insert(elementConfig)
-      .values({
-        symbol: body.symbol,
-        name: body.name,
-        category: body.category,
-        rowPos: body.rowPos,
-        colPos: body.colPos,
-        type: body.type,
-        route: body.route,
-        url: body.url,
-        status: body.status,
-        description: body.description,
-      })
-      .returning();
-
-    return c.json({ element: inserted[0] }, 201);
   }
 );
 
@@ -83,26 +93,31 @@ elementRoutes.put(
   zValidator("param", symbolParamSchema),
   zValidator("json", updateElementSchema),
   async (c) => {
-    const { symbol } = c.req.valid("param");
-    const body = c.req.valid("json");
+    try {
+      const { symbol } = c.req.valid("param");
+      const body = c.req.valid("json");
 
-    const existing = await db
-      .select({ id: elementConfig.id })
-      .from(elementConfig)
-      .where(eq(elementConfig.symbol, symbol))
-      .limit(1);
+      const existing = await db
+        .select({ id: elementConfig.id })
+        .from(elementConfig)
+        .where(eq(elementConfig.symbol, symbol))
+        .limit(1);
 
-    if (existing.length === 0) {
-      return c.json({ error: "Element not found" }, 404);
+      if (existing.length === 0) {
+        return c.json({ error: "Element not found" }, 404);
+      }
+
+      const updated = await db
+        .update(elementConfig)
+        .set({ ...body, updatedAt: new Date() })
+        .where(eq(elementConfig.symbol, symbol))
+        .returning();
+
+      return c.json({ element: updated[0] });
+    } catch (err) {
+      console.error("Failed to update element:", err);
+      return c.json({ error: "Failed to update element" }, 500);
     }
-
-    const updated = await db
-      .update(elementConfig)
-      .set({ ...body, updatedAt: new Date() })
-      .where(eq(elementConfig.symbol, symbol))
-      .returning();
-
-    return c.json({ element: updated[0] });
   }
 );
 
