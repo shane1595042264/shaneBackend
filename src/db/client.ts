@@ -14,7 +14,7 @@ export function getPool(): Pool {
       connectionString: process.env.DATABASE_URL,
       max: 20,
       idleTimeoutMillis: 30_000,
-      connectionTimeoutMillis: 2_000,
+      connectionTimeoutMillis: 10_000,
     });
   }
   return _pool;

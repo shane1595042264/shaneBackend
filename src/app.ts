@@ -32,8 +32,15 @@ app.use(
 // ---------------------------------------------------------------------------
 // Health check
 // ---------------------------------------------------------------------------
-app.get("/health", (c) => {
-  return c.json({ status: "ok", timestamp: new Date().toISOString() });
+app.get("/health", async (c) => {
+  try {
+    const { getPool } = await import("@/db/client");
+    await getPool().query("SELECT 1");
+    return c.json({ status: "ok", timestamp: new Date().toISOString() });
+  } catch (err) {
+    console.error("Health check DB failure:", err);
+    return c.json({ status: "unhealthy", timestamp: new Date().toISOString(), error: "database connection failed" }, 503);
+  }
 });
 
 // ---------------------------------------------------------------------------
