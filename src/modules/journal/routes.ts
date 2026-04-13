@@ -26,8 +26,10 @@ journalRoutes.get("/entries", zValidator("query", paginationQuerySchema), async 
   const [entries, countResult] = await Promise.all([
     db
       .select({
+        id: diaryEntries.id,
         date: diaryEntries.date,
         content: diaryEntries.content,
+        voiceProfileVersion: diaryEntries.voiceProfileVersion,
         createdAt: diaryEntries.createdAt,
         updatedAt: diaryEntries.updatedAt,
       })
@@ -51,8 +53,10 @@ journalRoutes.get("/entries/:date", zValidator("param", dateParamSchema), async 
 
   const entryRows = await db
     .select({
+      id: diaryEntries.id,
       date: diaryEntries.date,
       content: diaryEntries.content,
+      voiceProfileVersion: diaryEntries.voiceProfileVersion,
       createdAt: diaryEntries.createdAt,
       updatedAt: diaryEntries.updatedAt,
     })
