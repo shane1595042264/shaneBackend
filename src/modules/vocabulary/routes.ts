@@ -100,6 +100,19 @@ vocabularyRoutes.get("/words/:id", zValidator("param", uuidParamSchema), async (
 vocabularyRoutes.post("/words", zValidator("json", createWordSchema), async (c) => {
   const body = c.req.valid("json");
 
+  // Check for duplicate word+language
+  const [existing] = await db
+    .select()
+    .from(vocabWords)
+    .where(and(eq(vocabWords.word, body.word), eq(vocabWords.language, body.language)));
+
+  if (existing) {
+    return c.json(
+      { error: `"${body.word}" already exists in ${body.language}`, existingWord: existing },
+      409
+    );
+  }
+
   let enriched: Partial<typeof body> = {};
   if (body.autoEnrich !== false) {
     try {
@@ -217,12 +230,19 @@ vocabularyRoutes.post("/connections", zValidator("json", createConnectionSchema)
     return c.json({ error: "Cannot connect a word to itself" }, 400);
   }
 
-  const [connection] = await db
-    .insert(vocabConnections)
-    .values(body)
-    .returning();
+  try {
+    const [connection] = await db
+      .insert(vocabConnections)
+      .values(body)
+      .returning();
 
-  return c.json({ connection }, 201);
+    return c.json({ connection }, 201);
+  } catch (err: any) {
+    if (err.code === "23505") {
+      return c.json({ error: "This connection already exists" }, 409);
+    }
+    throw err;
+  }
 });
 
 vocabularyRoutes.delete("/connections/:id", zValidator("param", uuidParamSchema), async (c) => {
