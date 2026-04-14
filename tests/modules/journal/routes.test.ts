@@ -198,7 +198,7 @@ describe("POST /entries/:date/suggest", () => {
       entryId: "entry-123",
       originalContent: "Original entry text",
     });
-    vi.mocked(finalizeSuggestion).mockResolvedValue(undefined);
+    vi.mocked(finalizeSuggestion).mockResolvedValue(["Shane has a sister"]);
 
     const res = await app.request("/entries/2026-03-20/suggest", {
       method: "POST",
@@ -209,7 +209,7 @@ describe("POST /entries/:date/suggest", () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.correctedContent).toBe("Corrected entry text");
-    expect(body.extractedFacts).toEqual([]);
+    expect(body.extractedFacts).toEqual(["Shane has a sister"]);
     expect(generateCorrection).toHaveBeenCalledWith("2026-03-20", "I was with my sister");
   });
 

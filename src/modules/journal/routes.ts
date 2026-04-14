@@ -108,16 +108,16 @@ journalRoutes.post(
     const { suggestion } = c.req.valid("json");
 
     try {
-      // Phase 1: Generate corrected content (must complete within Railway's 30s timeout)
+      // Phase 1: Generate corrected content
       const { correctedContent, entryId, originalContent } =
         await generateCorrection(date, suggestion);
 
-      // Phase 2: Fire-and-forget background work (fact extraction, embeddings, DB updates)
-      finalizeSuggestion(entryId, suggestion, originalContent, correctedContent).catch(
-        (err) => console.error(`[suggest] Background finalization failed for ${date}:`, err)
+      // Phase 2: Extract facts, update DB, store learned facts (awaited so we can return facts)
+      const extractedFacts = await finalizeSuggestion(
+        entryId, suggestion, originalContent, correctedContent
       );
 
-      return c.json({ correctedContent, extractedFacts: [] });
+      return c.json({ correctedContent, extractedFacts });
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : "Unknown error";
       console.error(`[suggest] Failed for ${date}:`, message);

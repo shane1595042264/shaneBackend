@@ -1,5 +1,6 @@
 import { generateText } from "@/modules/shared/llm";
 import { embed } from "@/modules/shared/embeddings";
+import { findRelevantFacts } from "@/modules/shared/vector-search";
 import { db } from "@/db/client";
 import { diaryEntries, corrections, learnedFacts, activities } from "@/db/schema";
 import { getLatestVoiceProfile } from "./voice-profile";
@@ -10,6 +11,7 @@ export interface CorrectionContext {
   suggestion: string;
   calendarEvents?: string;
   locationData?: string;
+  learnedFacts?: string[];
 }
 
 /**
@@ -17,7 +19,7 @@ export interface CorrectionContext {
  * a user correction while preserving the original voice and style.
  */
 export function buildCorrectionPrompt(ctx: CorrectionContext): string {
-  const { originalEntry, suggestion, calendarEvents, locationData } = ctx;
+  const { originalEntry, suggestion, calendarEvents, locationData, learnedFacts: facts } = ctx;
 
   const optionalSections: string[] = [];
 
@@ -27,6 +29,10 @@ export function buildCorrectionPrompt(ctx: CorrectionContext): string {
 
   if (locationData) {
     optionalSections.push(`Location Data for that day:\n${locationData}`);
+  }
+
+  if (facts && facts.length > 0) {
+    optionalSections.push(`Previously Learned Facts About Shane:\n${facts.map((f) => `- ${f}`).join("\n")}`);
   }
 
   const optionalBlock =
@@ -47,6 +53,7 @@ Please rewrite the journal entry to incorporate the correction while:
 2. Maintaining the same narrative perspective and tone
 3. Keeping all accurate details from the original entry
 4. Seamlessly integrating the corrected information
+5. Applying any relevant learned facts about Shane to improve accuracy
 
 Return only the rewritten journal entry, without any preamble or explanation.`;
 }
@@ -107,13 +114,15 @@ export async function generateCorrection(
   const entry = entryRows[0];
   const originalContent = entry.content;
 
-  // 2. Get calendar events, location data, and voice profile in parallel
-  const [activityRows, voiceProfile] = await Promise.all([
+  // 2. Get calendar events, location data, voice profile, and relevant facts in parallel
+  const suggestionEmbedding = await embed(suggestion);
+  const [activityRows, voiceProfile, factRows] = await Promise.all([
     db
       .select({ source: activities.source, type: activities.type, data: activities.data })
       .from(activities)
       .where(eq(activities.date, entryDate)),
     getLatestVoiceProfile(),
+    findRelevantFacts(suggestionEmbedding, 5),
   ]);
 
   const calendarActivities = activityRows.filter((a) => a.source === "google_calendar");
@@ -129,12 +138,15 @@ export async function generateCorrection(
       ? locationActivities.map((a) => JSON.stringify(a.data)).join("\n")
       : undefined;
 
+  const relevantFacts = (factRows as Array<{ fact_text: string }>).map((r) => r.fact_text);
+
   // 3. Build correction prompt and call Claude Sonnet
   const correctionPrompt = buildCorrectionPrompt({
     originalEntry: originalContent,
     suggestion,
     calendarEvents,
     locationData,
+    learnedFacts: relevantFacts,
   });
 
   const systemPrompt = voiceProfile
@@ -163,7 +175,7 @@ export async function finalizeSuggestion(
   suggestion: string,
   originalContent: string,
   correctedContent: string
-): Promise<void> {
+): Promise<string[]> {
   // 1. Extract facts and update entry content in parallel
   const factPrompt = buildFactExtractionPrompt(suggestion, originalContent, correctedContent);
 
@@ -221,4 +233,6 @@ export async function finalizeSuggestion(
       }))
     );
   }
+
+  return extractedFacts;
 }
