@@ -32,6 +32,7 @@ const createElementSchema = z.object({
 });
 
 const updateElementSchema = z.object({
+  symbol: z.string().min(1).max(10).optional(),
   name: z.string().max(100).optional(),
   category: z.string().max(50).optional(),
   type: z.enum(["internal", "external"]).optional(),
