@@ -101,6 +101,7 @@ export async function generateCorrection(
   originalContent: string;
 }> {
   // 1. Get original entry from DB
+  console.log(`[suggest] Step 1: Fetching entry for ${entryDate}`);
   const entryRows = await db
     .select({ id: diaryEntries.id, content: diaryEntries.content })
     .from(diaryEntries)
@@ -113,9 +114,14 @@ export async function generateCorrection(
 
   const entry = entryRows[0];
   const originalContent = entry.content;
+  console.log(`[suggest] Step 1 done: entry ${entry.id}`);
 
   // 2. Get calendar events, location data, voice profile, and relevant facts in parallel
+  console.log(`[suggest] Step 2a: Embedding suggestion`);
   const suggestionEmbedding = await embed(suggestion);
+  console.log(`[suggest] Step 2a done: embedding length ${suggestionEmbedding.length}`);
+
+  console.log(`[suggest] Step 2b: Parallel fetch (activities, voice profile, facts)`);
   const [activityRows, voiceProfile, factRows] = await Promise.all([
     db
       .select({ source: activities.source, type: activities.type, data: activities.data })
@@ -124,6 +130,7 @@ export async function generateCorrection(
     getLatestVoiceProfile(),
     findRelevantFacts(suggestionEmbedding, 5),
   ]);
+  console.log(`[suggest] Step 2b done: ${activityRows.length} activities, voiceProfile=${!!voiceProfile}, ${factRows.length} facts`);
 
   const calendarActivities = activityRows.filter((a) => a.source === "google_calendar");
   const locationActivities = activityRows.filter((a) => a.source === "google_maps");
@@ -141,6 +148,7 @@ export async function generateCorrection(
   const relevantFacts = (factRows as Array<{ fact_text: string }>).map((r) => r.fact_text);
 
   // 3. Build correction prompt and call Claude Sonnet
+  console.log(`[suggest] Step 3: Calling Claude Sonnet for correction`);
   const correctionPrompt = buildCorrectionPrompt({
     originalEntry: originalContent,
     suggestion,
@@ -158,6 +166,7 @@ export async function generateCorrection(
     prompt: correctionPrompt,
     model: "claude-sonnet-4-20250514",
   });
+  console.log(`[suggest] Step 3 done: corrected content length ${correctionResult.text.length}`);
 
   return {
     correctedContent: correctionResult.text,

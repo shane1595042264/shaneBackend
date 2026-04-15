@@ -120,7 +120,9 @@ journalRoutes.post(
       return c.json({ correctedContent, extractedFacts });
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : "Unknown error";
+      const stack = err instanceof Error ? err.stack : "";
       console.error(`[suggest] Failed for ${date}:`, message);
+      console.error(`[suggest] Stack:`, stack);
 
       if (message.includes("No diary entry found")) {
         return c.json({ error: message }, 404);
