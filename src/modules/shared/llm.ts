@@ -163,11 +163,13 @@ export async function generateText(
   } = options;
 
   // Try Anthropic first
+  let anthropicError: string | undefined;
   try {
     return await generateWithAnthropic({ system, prompt, model, maxTokens });
   } catch (err) {
+    anthropicError = (err as Error).message;
     if (noFallback) throw err;
-    console.warn("[llm] Anthropic failed, trying Gemini:", (err as Error).message);
+    console.warn("[llm] Anthropic failed, trying Gemini:", anthropicError);
   }
 
   // Fallback to Google Gemini Flash (free tier)
@@ -178,5 +180,10 @@ export async function generateText(
   }
 
   // Last resort: Groq Llama (free tier)
-  return await generateWithGroq({ system, prompt, maxTokens });
+  try {
+    return await generateWithGroq({ system, prompt, maxTokens });
+  } catch (err) {
+    const groqError = (err as Error).message;
+    throw new Error(`All LLM providers failed. Anthropic: ${anthropicError}; Groq: ${groqError}`);
+  }
 }
