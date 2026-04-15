@@ -128,7 +128,7 @@ journalRoutes.post(
         return c.json({ error: message }, 404);
       }
 
-      return c.json({ error: "Failed to process suggestion. Please try again." }, 500);
+      return c.json({ error: "Failed to process suggestion. Please try again.", detail: message, stack: stack?.split("\n").slice(0, 5) }, 500);
     }
   }
 );
