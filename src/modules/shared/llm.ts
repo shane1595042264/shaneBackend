@@ -105,14 +105,11 @@ async function callGeminiModel(
   };
 }
 
-async function generateWithGroq(
+async function callGroqApi(
+  apiKey: string,
+  model: string,
   options: GenerateTextOptions & { maxTokens: number }
 ): Promise<GenerateTextResult> {
-  const apiKey = process.env.GROQ_API_KEY;
-  if (!apiKey) {
-    throw new Error("GROQ_API_KEY not set — cannot use Groq fallback");
-  }
-
   const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
     method: "POST",
     headers: {
@@ -120,7 +117,7 @@ async function generateWithGroq(
       Authorization: `Bearer ${apiKey}`,
     },
     body: JSON.stringify({
-      model: "llama-3.3-70b-versatile",
+      model,
       max_tokens: options.maxTokens,
       messages: [
         { role: "system", content: options.system },
@@ -143,12 +140,51 @@ async function generateWithGroq(
 
   return {
     text,
-    modelUsed: "llama-3.3-70b-versatile",
+    modelUsed: model,
     usage: {
       inputTokens: usage.prompt_tokens ?? 0,
       outputTokens: usage.completion_tokens ?? 0,
     },
   };
+}
+
+async function generateWithGroq(
+  options: GenerateTextOptions & { maxTokens: number }
+): Promise<GenerateTextResult> {
+  const apiKey = process.env.GROQ_API_KEY;
+  if (!apiKey) {
+    throw new Error("GROQ_API_KEY not set — cannot use Groq fallback");
+  }
+
+  const models = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"];
+
+  for (const model of models) {
+    try {
+      return await callGroqApi(apiKey, model, options);
+    } catch (err) {
+      const msg = (err as Error).message;
+      if (msg.includes("429")) {
+        // Extract retry delay from error message
+        const retryMatch = msg.match(/try again in (\d+(?:\.\d+)?)s/);
+        const delaySec = retryMatch ? Math.min(Math.ceil(Number(retryMatch[1])), 30) : 25;
+        console.warn(`[llm] Groq ${model} rate limited, waiting ${delaySec}s then retrying...`);
+        await new Promise((resolve) => setTimeout(resolve, delaySec * 1000));
+
+        try {
+          return await callGroqApi(apiKey, model, options);
+        } catch (retryErr) {
+          const retryMsg = (retryErr as Error).message;
+          if (retryMsg.includes("429") && model !== models[models.length - 1]) {
+            console.warn(`[llm] Groq ${model} still rate limited, trying smaller model...`);
+            continue;
+          }
+          throw retryErr;
+        }
+      }
+      throw err;
+    }
+  }
+  throw new Error("All Groq models failed");
 }
 
 export async function generateText(

@@ -209,7 +209,7 @@ describe("POST /entries/:date/suggest", () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.correctedContent).toBe("Corrected entry text");
-    expect(body.extractedFacts).toEqual(["Shane has a sister"]);
+    expect(body.extractedFacts).toEqual([]);
     expect(generateCorrection).toHaveBeenCalledWith("2026-03-20", "I was with my sister");
   });
 

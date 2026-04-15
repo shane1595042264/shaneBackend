@@ -108,27 +108,26 @@ journalRoutes.post(
     const { suggestion } = c.req.valid("json");
 
     try {
-      // Phase 1: Generate corrected content
+      // Phase 1: Generate corrected content (synchronous — user waits for this)
       const { correctedContent, entryId, originalContent } =
         await generateCorrection(date, suggestion);
 
-      // Phase 2: Extract facts, update DB, store learned facts (awaited so we can return facts)
-      const extractedFacts = await finalizeSuggestion(
-        entryId, suggestion, originalContent, correctedContent
-      );
+      // Phase 2: Extract facts, update DB, store learned facts (fire-and-forget)
+      // Runs in background so the user gets the corrected content immediately
+      finalizeSuggestion(entryId, suggestion, originalContent, correctedContent)
+        .then((facts) => console.log(`[suggest] Phase 2 complete for ${date}: ${facts.length} facts extracted`))
+        .catch((err) => console.error(`[suggest] Phase 2 failed for ${date}:`, (err as Error).message));
 
-      return c.json({ correctedContent, extractedFacts });
+      return c.json({ correctedContent, extractedFacts: [] });
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : "Unknown error";
-      const stack = err instanceof Error ? err.stack : "";
       console.error(`[suggest] Failed for ${date}:`, message);
-      console.error(`[suggest] Stack:`, stack);
 
       if (message.includes("No diary entry found")) {
         return c.json({ error: message }, 404);
       }
 
-      return c.json({ error: "Failed to process suggestion. Please try again.", detail: message, stack: stack?.split("\n").slice(0, 5) }, 500);
+      return c.json({ error: "Failed to process suggestion. Please try again." }, 500);
     }
   }
 );
