@@ -268,6 +268,7 @@ export const vocabWords = pgTable(
     id: uuid("id").primaryKey().defaultRandom(),
     word: varchar("word", { length: 255 }).notNull(),
     language: varchar("language", { length: 50 }).notNull(),
+    category: varchar("category", { length: 100 }).notNull().default("vocabulary"),
     definition: text("definition"),
     pronunciation: varchar("pronunciation", { length: 255 }),
     partOfSpeech: varchar("part_of_speech", { length: 50 }),
@@ -284,6 +285,7 @@ export const vocabWords = pgTable(
   (t) => [
     index("vocab_words_language_idx").on(t.language),
     index("vocab_words_created_at_idx").on(t.createdAt),
+    index("vocab_words_category_idx").on(t.category),
   ]
 );
 

@@ -9,6 +9,7 @@ import { locationRoutes } from "@/modules/location/routes";
 import { rngRoutes } from "@/modules/rng-capitalist/routes";
 import { authRoutes } from "@/modules/auth/routes";
 import { vocabularyRoutes } from "@/modules/vocabulary/routes";
+import { knowledgeRoutes } from "@/modules/knowledge/routes";
 import { slotRoutes } from "@/modules/slot-assignments/routes";
 import { wechatRoutes } from "@/modules/integrations/wechat-routes";
 
@@ -52,6 +53,7 @@ app.route("/api/elements", elementRoutes);
 app.route("/api/location", locationRoutes);
 app.route("/api/rng", rngRoutes);
 app.route("/api/vocabulary", vocabularyRoutes);
+app.route("/api/knowledge", knowledgeRoutes);
 app.route("/api/slot-assignments", slotRoutes);
 app.route("/api/integrations/wechat", wechatRoutes);
 
@@ -95,7 +97,17 @@ app.post("/api/admin/migrate-vocabulary", async (c) => {
       CREATE INDEX IF NOT EXISTS vocab_connections_to_idx ON vocab_connections (to_word_id);
       CREATE UNIQUE INDEX IF NOT EXISTS vocab_connections_unique ON vocab_connections (from_word_id, to_word_id, connection_type);
     `);
-    return c.json({ ok: true, message: "Vocabulary tables created" });
+    // Add category column if missing (migration for knowledge feature)
+    await pool.query(`
+      DO $$
+      BEGIN
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='vocab_words' AND column_name='category') THEN
+          ALTER TABLE vocab_words ADD COLUMN category VARCHAR(100) NOT NULL DEFAULT 'vocabulary';
+          CREATE INDEX IF NOT EXISTS vocab_words_category_idx ON vocab_words (category);
+        END IF;
+      END $$;
+    `);
+    return c.json({ ok: true, message: "Vocabulary/Knowledge tables created" });
   } catch (err: any) {
     return c.json({ error: err.message }, 500);
   }
