@@ -125,7 +125,19 @@ knowledgeRoutes.get("/entries", zValidator("query", wordsQuerySchema), async (c)
     const conditions = [];
     if (language) conditions.push(eq(vocabWords.language, language));
     if (category) conditions.push(eq(vocabWords.category, category));
-    if (search) conditions.push(ilike(vocabWords.word, `%${search}%`));
+    if (search) {
+      const pattern = `%${search}%`;
+      conditions.push(
+        or(
+          ilike(vocabWords.word, pattern),
+          ilike(vocabWords.definition, pattern),
+          ilike(vocabWords.exampleSentence, pattern),
+          ilike(vocabWords.pronunciation, pattern),
+          ilike(vocabWords.partOfSpeech, pattern),
+          sql`EXISTS (SELECT 1 FROM jsonb_array_elements_text(${vocabWords.labels}) AS lbl WHERE lbl ILIKE ${pattern})`
+        )!
+      );
+    }
     if (label) {
       conditions.push(sql`${vocabWords.labels}::jsonb @> ${JSON.stringify([label])}::jsonb`);
     }
