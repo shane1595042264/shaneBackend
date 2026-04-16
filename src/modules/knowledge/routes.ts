@@ -134,6 +134,7 @@ knowledgeRoutes.get("/entries", zValidator("query", wordsQuerySchema), async (c)
           ilike(vocabWords.exampleSentence, pattern),
           ilike(vocabWords.pronunciation, pattern),
           ilike(vocabWords.partOfSpeech, pattern),
+          ilike(vocabWords.language, pattern),
           sql`EXISTS (SELECT 1 FROM jsonb_array_elements_text(${vocabWords.labels}) AS lbl WHERE lbl ILIKE ${pattern})`
         )!
       );
