@@ -383,6 +383,79 @@ export async function formatActivitiesForPrompt(
 }
 
 // ---------------------------------------------------------------------------
+// Anti-repetition: banned phrases and extraction
+// ---------------------------------------------------------------------------
+
+/**
+ * Phrases that appear too frequently across generated entries and should be
+ * avoided. Kept lowercase for case-insensitive matching.
+ */
+const BANNED_PHRASES = [
+  "rich tapestry of experiences",
+  "rich tapestry",
+  "tapestry of experiences",
+  "the stillness of the morning",
+  "reminding me of the importance of balance",
+  "importance of balance",
+  "each contributing to my personal growth and well-being",
+  "personal growth and well-being",
+  "blend together to create",
+  "a sense of fulfillment and engagement",
+  "fulfillment and engagement",
+  "the beauty of simplicity",
+  "a renewed sense of purpose",
+  "the way the light filtered through",
+  "the gentle breeze",
+  "digital weeds",
+  "digital ghosts",
+  "mark time without substance",
+  "the beauty of the world around me",
+  "the small details that often go unnoticed",
+  "i am reminded of",
+  "i am grateful for",
+  "as i reflect on",
+  "as i look back on the day",
+  "as the day drew to a close",
+  "as the day progressed",
+  "has been a day marked by",
+  "has been a day of",
+];
+
+/**
+ * Extract distinctive multi-word phrases (3+ words) from a text that the model
+ * should avoid reusing. Returns up to `max` phrases.
+ */
+export function extractPhrasesToAvoid(text: string, max = 8): string[] {
+  if (!text) return [];
+
+  // Strip data markers before extracting
+  const clean = text
+    .replace(/\[\[data:\w+\|[^\]]*\]\]/g, "")
+    .replace(/\n/g, " ")
+    .trim();
+
+  // Split into sentences, grab distinctive longer phrases (6+ words from middle of sentences)
+  const sentences = clean.split(/[.!?]+/).filter((s) => s.trim().length > 30);
+  const phrases: string[] = [];
+
+  for (const sentence of sentences) {
+    const words = sentence.trim().split(/\s+/);
+    if (words.length >= 6) {
+      // Take a phrase from the middle portion of each sentence
+      const start = Math.floor(words.length * 0.2);
+      const end = Math.min(start + 5, words.length);
+      const phrase = words.slice(start, end).join(" ").toLowerCase().replace(/[,;:]/g, "");
+      if (phrase.length > 15) {
+        phrases.push(phrase);
+      }
+    }
+  }
+
+  // Deduplicate and limit
+  return [...new Set(phrases)].slice(0, max);
+}
+
+// ---------------------------------------------------------------------------
 // buildGenerationPrompt
 // ---------------------------------------------------------------------------
 
@@ -427,6 +500,18 @@ export function buildGenerationPrompt(ctx: GenerationContext): string {
     parts.push(`## Relevant Facts About Me\n${factsBlock}`);
   }
 
+  // Build the anti-repetition section
+  const phrasesToAvoid: string[] = [...BANNED_PHRASES];
+  if (ctx.yesterdayEntry) {
+    phrasesToAvoid.push(...extractPhrasesToAvoid(ctx.yesterdayEntry));
+  }
+  for (const entry of ctx.similarEntries) {
+    phrasesToAvoid.push(...extractPhrasesToAvoid(entry.content, 4));
+  }
+  // Deduplicate
+  const uniquePhrases = [...new Set(phrasesToAvoid)];
+  const bannedList = uniquePhrases.map((p) => `  - "${p}"`).join("\n");
+
   // Final instruction
   parts.push(
     `## Instruction
@@ -454,7 +539,14 @@ Rules:
 3. NEVER use em dashes (—). Use commas, periods, or "and" instead.
 4. Write in first person. Let the data ground the narrative but allow reflection, observations, and personal meaning to emerge.
 5. If any data category has no meaningful content (e.g., no titled events), SKIP it entirely. Never mention "untitled" or "placeholder" events.
-6. MINIMUM 100 words, aim for 150-400 words. Even quiet days deserve 2-3 paragraphs of reflection, personal observations, or inner thoughts. Never produce a single-sentence data summary. If the day was quiet, reflect on what that stillness meant, what you noticed, or how it contrasted with busier days.`
+6. MINIMUM 100 words, aim for 150-400 words. Even quiet days deserve 2-3 paragraphs of reflection, personal observations, or inner thoughts. Never produce a single-sentence data summary. If the day was quiet, reflect on what that stillness meant, what you noticed, or how it contrasted with busier days.
+7. VARIETY IS CRITICAL. Do NOT repeat phrases from yesterday's entry or similar past entries above. Each entry must feel fresh. Specifically:
+   - NEVER open with "Today, [date], has been a day of..." or "As I reflect on..." — vary your opening every time.
+   - NEVER close with a generic summary paragraph about gratitude, balance, or personal growth.
+   - Use concrete, specific observations instead of abstract platitudes.
+   - If you catch yourself writing a phrase that sounds like it could appear in any journal entry, replace it with something unique to THIS day.
+8. BANNED PHRASES — do NOT use any of these (or close variants):
+${bannedList}`
   );
 
   return parts.join("\n\n");
