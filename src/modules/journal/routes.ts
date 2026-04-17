@@ -157,18 +157,53 @@ journalRoutes.post(
   }
 );
 
-// GET /facts — list all learned facts ordered by createdAt desc
-journalRoutes.get("/facts", async (c) => {
-  const facts = await db
-    .select({
-      id: learnedFacts.id,
-      factText: learnedFacts.factText,
-      createdAt: learnedFacts.createdAt,
-    })
-    .from(learnedFacts)
-    .orderBy(desc(learnedFacts.createdAt));
-
-  return c.json({ facts });
+// GET /facts — list learned facts with pagination (default limit=50)
+const factsQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).default(50).transform((v) => Math.min(v, 200)),
+  offset: z.coerce.number().int().min(0).default(0),
 });
+
+journalRoutes.get("/facts", zValidator("query", factsQuerySchema), async (c) => {
+  const { limit, offset } = c.req.valid("query");
+
+  const [facts, countResult] = await Promise.all([
+    db
+      .select({
+        id: learnedFacts.id,
+        factText: learnedFacts.factText,
+        createdAt: learnedFacts.createdAt,
+      })
+      .from(learnedFacts)
+      .orderBy(desc(learnedFacts.createdAt))
+      .limit(limit)
+      .offset(offset),
+    db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(learnedFacts),
+  ]);
+
+  const total = countResult[0].count;
+
+  return c.json({ facts, total, limit, offset });
+});
+
+// DELETE /facts/:id — remove a learned fact
+journalRoutes.delete(
+  "/facts/:id",
+  zValidator("param", z.object({ id: z.string().uuid("Invalid fact ID") })),
+  async (c) => {
+    const { id } = c.req.valid("param");
+    const [deleted] = await db
+      .delete(learnedFacts)
+      .where(eq(learnedFacts.id, id))
+      .returning({ id: learnedFacts.id });
+
+    if (!deleted) {
+      return c.json({ error: "Fact not found" }, 404);
+    }
+
+    return c.json({ ok: true });
+  }
+);
 
 export { journalRoutes };
