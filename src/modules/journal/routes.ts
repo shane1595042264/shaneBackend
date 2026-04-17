@@ -206,4 +206,82 @@ journalRoutes.delete(
   }
 );
 
+// GET /feed — Atom XML feed of journal entries
+journalRoutes.get("/feed", async (c) => {
+  const entries = await db
+    .select({
+      date: diaryEntries.date,
+      content: diaryEntries.content,
+      updatedAt: diaryEntries.updatedAt,
+    })
+    .from(diaryEntries)
+    .orderBy(desc(diaryEntries.date))
+    .limit(20);
+
+  const siteUrl = "https://shanejli.com";
+  const feedUpdated = entries.length > 0
+    ? new Date(entries[0].updatedAt).toISOString()
+    : new Date().toISOString();
+
+  const atomEntries = entries.map((entry) => {
+    const plainContent = stripDataMarkers(entry.content);
+    const snippet = plainContent.length > 200
+      ? plainContent.slice(0, 200).trimEnd() + "..."
+      : plainContent;
+    const dateFormatted = new Date(entry.date + "T00:00:00Z").toLocaleDateString("en-US", {
+      weekday: "long",
+      year: "numeric",
+      month: "long",
+      day: "numeric",
+    });
+    const updated = new Date(entry.updatedAt).toISOString();
+    const entryUrl = `${siteUrl}/journal/${entry.date}`;
+
+    // Escape XML special chars in content
+    const escapedContent = escapeXml(plainContent);
+
+    return `  <entry>
+    <title>${escapeXml(dateFormatted)}</title>
+    <link href="${entryUrl}" rel="alternate" type="text/html"/>
+    <id>${entryUrl}</id>
+    <updated>${updated}</updated>
+    <summary>${escapeXml(snippet)}</summary>
+    <content type="html">${escapedContent.split("\n").filter(Boolean).map((p) => `&lt;p&gt;${p}&lt;/p&gt;`).join("")}</content>
+  </entry>`;
+  });
+
+  const xml = `<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>Shane's Journal</title>
+  <subtitle>Daily reflections from Shane's Periodic Table of Life</subtitle>
+  <link href="${siteUrl}/journal" rel="alternate" type="text/html"/>
+  <link href="${siteUrl}/api/journal/feed" rel="self" type="application/atom+xml"/>
+  <id>${siteUrl}/journal</id>
+  <updated>${feedUpdated}</updated>
+  <author>
+    <name>Shane</name>
+  </author>
+${atomEntries.join("\n")}
+</feed>`;
+
+  c.header("Content-Type", "application/atom+xml; charset=utf-8");
+  c.header("Cache-Control", "public, max-age=3600");
+  return c.body(xml);
+});
+
+/** Strip [[data:TYPE|DISPLAY|JSON]] markers, keeping only the display text. */
+function stripDataMarkers(text: string): string {
+  return text.replace(/\[\[data:[^|]+\|([^|]+)\|[\s\S]*?\]\]/g, "$1");
+}
+
+/** Escape XML special characters. */
+function escapeXml(text: string): string {
+  return text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
+}
+
 export { journalRoutes };
