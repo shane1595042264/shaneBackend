@@ -145,15 +145,23 @@ knowledgeRoutes.get("/entries", zValidator("query", wordsQuerySchema), async (c)
 
     const where = conditions.length > 0 ? and(...conditions) : undefined;
 
-    const entries = await db
-      .select()
-      .from(vocabWords)
-      .where(where)
-      .orderBy(desc(vocabWords.createdAt))
-      .limit(limit)
-      .offset(offset);
+    const [entries, countResult] = await Promise.all([
+      db
+        .select()
+        .from(vocabWords)
+        .where(where)
+        .orderBy(desc(vocabWords.createdAt))
+        .limit(limit)
+        .offset(offset),
+      db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(vocabWords)
+        .where(where),
+    ]);
 
-    return c.json({ entries });
+    const total = countResult[0]?.count ?? 0;
+
+    return c.json({ entries, total, limit, offset });
   } catch (err: any) {
     console.error("[knowledge] GET /entries error:", err.message, err.stack);
     return c.json({ error: err.message }, 500);
