@@ -6,6 +6,7 @@ import { vocabWords, vocabConnections } from "@/db/schema";
 import { desc, eq, and, or, ilike, sql } from "drizzle-orm";
 import { enrichWord } from "@/modules/vocabulary/ai-enricher";
 import { classifyNote } from "./classifier";
+import { postToBilibili } from "./bilibili";
 
 export const knowledgeRoutes = new Hono();
 
@@ -81,6 +82,9 @@ knowledgeRoutes.post("/notes", zValidator("json", noteSchema), async (c) => {
         },
       })
       .returning();
+
+    // Fire-and-forget: post to Bilibili
+    postToBilibili(entry).catch(() => {});
 
     return c.json({ entry, category: classified.category }, 201);
   } catch (err: any) {
@@ -240,6 +244,9 @@ knowledgeRoutes.post("/entries", zValidator("json", createWordSchema), async (c)
       aiMetadata: body.autoEnrich !== false ? { enrichedAt: new Date().toISOString() } : null,
     })
     .returning();
+
+  // Fire-and-forget: post to Bilibili
+  postToBilibili(entry).catch(() => {});
 
   return c.json({ entry }, 201);
 });
