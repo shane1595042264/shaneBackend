@@ -32,7 +32,7 @@ const wordIdQuerySchema = z.object({
 // ---------------------------------------------------------------------------
 
 const noteSchema = z.object({
-  text: z.string().min(1),
+  text: z.string().min(1).max(5000),
 });
 
 knowledgeRoutes.post("/notes", zValidator("json", noteSchema), async (c) => {
