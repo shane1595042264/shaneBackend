@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { zValidator } from "@hono/zod-validator";
 import { z } from "zod";
-import { eq, desc, sql } from "drizzle-orm";
+import { eq, desc, asc, lt, gt, sql } from "drizzle-orm";
 import { db } from "@/db/client";
 import { diaryEntries, activities, learnedFacts } from "@/db/schema";
 import { generateCorrection, finalizeSuggestion } from "./correction";
@@ -95,6 +95,31 @@ journalRoutes.get("/entries/:date", zValidator("param", dateParamSchema), async 
     entry,
     activities: entryActivities,
     debugNotes: debugNotes.length > 0 ? debugNotes : undefined,
+  });
+});
+
+// GET /entries/:date/neighbors — returns { prev, next } dates for navigation
+journalRoutes.get("/entries/:date/neighbors", zValidator("param", dateParamSchema), async (c) => {
+  const { date } = c.req.valid("param");
+
+  const [prevRows, nextRows] = await Promise.all([
+    db
+      .select({ date: diaryEntries.date })
+      .from(diaryEntries)
+      .where(lt(diaryEntries.date, date))
+      .orderBy(desc(diaryEntries.date))
+      .limit(1),
+    db
+      .select({ date: diaryEntries.date })
+      .from(diaryEntries)
+      .where(gt(diaryEntries.date, date))
+      .orderBy(asc(diaryEntries.date))
+      .limit(1),
+  ]);
+
+  return c.json({
+    prev: prevRows[0]?.date ?? null,
+    next: nextRows[0]?.date ?? null,
   });
 });
 

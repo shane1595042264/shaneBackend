@@ -26,6 +26,9 @@ vi.mock("@/db/schema", () => ({
 vi.mock("drizzle-orm", () => ({
   eq: vi.fn((_col: unknown, val: unknown) => ({ col: _col, val })),
   desc: vi.fn((col: unknown) => ({ col, direction: "desc" })),
+  asc: vi.fn((col: unknown) => ({ col, direction: "asc" })),
+  lt: vi.fn((col: unknown, val: unknown) => ({ col, val, op: "lt" })),
+  gt: vi.fn((col: unknown, val: unknown) => ({ col, val, op: "gt" })),
   sql: vi.fn(),
 }));
 
@@ -185,6 +188,58 @@ describe("GET /entries/:date", () => {
     expect(res.status).toBe(404);
     const body = await res.json();
     expect(body).toHaveProperty("error");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// GET /entries/:date/neighbors
+// ---------------------------------------------------------------------------
+describe("GET /entries/:date/neighbors", () => {
+  it("returns both prev and next dates when neighbors exist", async () => {
+    mockSelect
+      .mockReturnValueOnce(makeSelectChain([{ date: "2026-03-19" }]))
+      .mockReturnValueOnce(makeSelectChain([{ date: "2026-03-21" }]));
+
+    const res = await app.request("/entries/2026-03-20/neighbors");
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body).toEqual({ prev: "2026-03-19", next: "2026-03-21" });
+  });
+
+  it("returns prev=null when entry is the earliest", async () => {
+    mockSelect
+      .mockReturnValueOnce(makeSelectChain([]))
+      .mockReturnValueOnce(makeSelectChain([{ date: "2026-03-21" }]));
+
+    const res = await app.request("/entries/2026-03-20/neighbors");
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body).toEqual({ prev: null, next: "2026-03-21" });
+  });
+
+  it("returns next=null when entry is the latest", async () => {
+    mockSelect
+      .mockReturnValueOnce(makeSelectChain([{ date: "2026-03-19" }]))
+      .mockReturnValueOnce(makeSelectChain([]));
+
+    const res = await app.request("/entries/2026-03-20/neighbors");
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body).toEqual({ prev: "2026-03-19", next: null });
+  });
+
+  it("returns both null when entry is the only one", async () => {
+    mockSelect.mockReturnValue(makeSelectChain([]));
+
+    const res = await app.request("/entries/2026-03-20/neighbors");
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body).toEqual({ prev: null, next: null });
+  });
+
+  it("returns 400 on invalid date format", async () => {
+    const res = await app.request("/entries/not-a-date/neighbors");
+    expect(res.status).toBe(400);
   });
 });
 
