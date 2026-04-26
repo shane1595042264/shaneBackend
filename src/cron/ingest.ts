@@ -85,8 +85,14 @@ export async function ingestActivities(date: string): Promise<number> {
       }
 
       totalCount += fetched.length;
+      console.log(
+        `[ingest] ${connector.name} fetched ${fetched.length} activities for ${date}`
+      );
     } catch (err) {
-      console.error(`[ingest] Connector failed for date ${date}:`, err);
+      console.error(
+        `[ingest] ${connector.name} failed for date ${date}:`,
+        err
+      );
     }
   }
 

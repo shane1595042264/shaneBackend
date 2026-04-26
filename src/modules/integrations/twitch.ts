@@ -1,6 +1,7 @@
 import type { NormalizedActivity, IntegrationConnector } from "./types";
 
 export class TwitchConnector implements IntegrationConnector {
+  readonly name = "twitch";
   private clientId: string;
   private clientSecret: string;
   private userId: string;

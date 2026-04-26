@@ -1,6 +1,7 @@
 import type { NormalizedActivity, IntegrationConnector } from "./types";
 
 export class GoogleCalendarConnector implements IntegrationConnector {
+  readonly name = "google_calendar";
   private clientId: string;
   private clientSecret: string;
   private refreshToken: string;

@@ -21,6 +21,7 @@ interface DiscordMessage {
 }
 
 export class DiscordConnector implements IntegrationConnector {
+  readonly name = "discord";
   private botToken: string;
   private userId: string;
   private channelIds: string[];

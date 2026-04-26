@@ -6,5 +6,6 @@ export interface NormalizedActivity {
 }
 
 export interface IntegrationConnector {
+  readonly name: string;
   fetchActivities(date: string): Promise<NormalizedActivity[]>;
 }

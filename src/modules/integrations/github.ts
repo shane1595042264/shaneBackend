@@ -1,6 +1,7 @@
 import type { NormalizedActivity, IntegrationConnector } from "./types";
 
 export class GitHubConnector implements IntegrationConnector {
+  readonly name = "github";
   private token: string;
 
   constructor(token: string) {

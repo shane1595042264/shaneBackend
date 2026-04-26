@@ -1,6 +1,7 @@
 import type { NormalizedActivity, IntegrationConnector } from "./types";
 
 export class StravaConnector implements IntegrationConnector {
+  readonly name = "strava";
   private clientId: string;
   private clientSecret: string;
   private refreshToken: string;
