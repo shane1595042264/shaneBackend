@@ -17,8 +17,27 @@ export const rngRoutes = new Hono<AuthEnv>();
 // All RNG routes require authentication
 rngRoutes.use("*", requireAuth);
 
-const evaluateSchema = z.object({
-  url: z.string().optional(),
+// Server-side URL guard. The route is auth-gated, but the URL is fed straight
+// into fetch() inside the scraper — so format and protocol must be enforced
+// here, not in the browser, to keep non-http schemes and malformed strings out.
+const evaluateUrlSchema = z
+  .string()
+  .url("Must be a valid URL")
+  .max(2048, "URL too long")
+  .refine(
+    (s) => {
+      try {
+        const proto = new URL(s).protocol;
+        return proto === "http:" || proto === "https:";
+      } catch {
+        return false;
+      }
+    },
+    { message: "URL must use http or https" },
+  );
+
+export const evaluateSchema = z.object({
+  url: evaluateUrlSchema.optional(),
   product_name: z.string().optional(),
   price: z.number().optional(),
   override_balance: z.number().optional(),
