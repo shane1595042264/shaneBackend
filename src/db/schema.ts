@@ -374,13 +374,13 @@ export const journalEntries = pgTable("journal_entries", {
   date: date("date").notNull().unique(),
   authorId: uuid("author_id")
     .notNull()
-    .references(() => users.id),
+    .references(() => users.id, { onDelete: "restrict" }),
   currentVersionId: uuid("current_version_id"),
   status: journalEntryStatusEnum("status").notNull().default("published"),
   editCount: integer("edit_count").notNull().default(1),
   pendingSuggestionCount: integer("pending_suggestion_count").notNull().default(0),
-  createdAt: timestamp("created_at").notNull().defaultNow(),
-  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
 export const journalVersions = pgTable(
@@ -395,16 +395,16 @@ export const journalVersions = pgTable(
     contentHash: varchar("content_hash", { length: 64 }).notNull(),
     editorId: uuid("editor_id")
       .notNull()
-      .references(() => users.id),
+      .references(() => users.id, { onDelete: "restrict" }),
     source: versionSourceEnum("source").notNull(),
     suggestionId: uuid("suggestion_id"),
     parentVersionId: uuid("parent_version_id"),
-    createdAt: timestamp("created_at").notNull().defaultNow(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => ({
-    uniqEntryVersion: unique().on(t.entryId, t.versionNum),
-    entryIdx: index("journal_versions_entry_idx").on(t.entryId),
-  })
+  (t) => [
+    unique("journal_versions_entry_id_version_num_unique").on(t.entryId, t.versionNum),
+    index("journal_versions_entry_idx").on(t.entryId),
+  ]
 );
 
 export const journalSuggestions = pgTable(
@@ -416,22 +416,22 @@ export const journalSuggestions = pgTable(
       .references(() => journalEntries.id, { onDelete: "cascade" }),
     proposerId: uuid("proposer_id")
       .notNull()
-      .references(() => users.id),
+      .references(() => users.id, { onDelete: "restrict" }),
     baseVersionId: uuid("base_version_id")
       .notNull()
       .references(() => journalVersions.id),
     proposedContent: text("proposed_content").notNull(),
     status: suggestionStatusEnum("status").notNull().default("pending"),
-    decidedBy: uuid("decided_by").references(() => users.id),
-    decidedAt: timestamp("decided_at"),
+    decidedBy: uuid("decided_by").references(() => users.id, { onDelete: "set null" }),
+    decidedAt: timestamp("decided_at", { withTimezone: true }),
     rejectionReason: text("rejection_reason"),
-    createdAt: timestamp("created_at").notNull().defaultNow(),
-    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => ({
-    entryStatusIdx: index("journal_suggestions_entry_status_idx").on(t.entryId, t.status),
-    proposerIdx: index("journal_suggestions_proposer_idx").on(t.proposerId),
-  })
+  (t) => [
+    index("journal_suggestions_entry_status_idx").on(t.entryId, t.status),
+    index("journal_suggestions_proposer_idx").on(t.proposerId),
+  ]
 );
 
 export const journalComments = pgTable(
@@ -444,15 +444,15 @@ export const journalComments = pgTable(
     parentCommentId: uuid("parent_comment_id"),
     authorId: uuid("author_id")
       .notNull()
-      .references(() => users.id),
+      .references(() => users.id, { onDelete: "restrict" }),
     content: text("content").notNull(),
-    editedAt: timestamp("edited_at"),
-    createdAt: timestamp("created_at").notNull().defaultNow(),
-    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+    editedAt: timestamp("edited_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => ({
-    entryIdx: index("journal_comments_entry_idx").on(t.entryId),
-  })
+  (t) => [
+    index("journal_comments_entry_idx").on(t.entryId),
+  ]
 );
 
 export const entryReactions = pgTable(
@@ -461,16 +461,16 @@ export const entryReactions = pgTable(
     id: uuid("id").primaryKey().defaultRandom(),
     userId: uuid("user_id")
       .notNull()
-      .references(() => users.id),
+      .references(() => users.id, { onDelete: "restrict" }),
     entryId: uuid("entry_id")
       .notNull()
       .references(() => journalEntries.id, { onDelete: "cascade" }),
     emoji: reactionEmojiEnum("emoji").notNull(),
-    createdAt: timestamp("created_at").notNull().defaultNow(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => ({
-    uniq: unique().on(t.userId, t.entryId, t.emoji),
-  })
+  (t) => [
+    unique("entry_reactions_user_id_entry_id_emoji_unique").on(t.userId, t.entryId, t.emoji),
+  ]
 );
 
 export const commentReactions = pgTable(
@@ -479,27 +479,27 @@ export const commentReactions = pgTable(
     id: uuid("id").primaryKey().defaultRandom(),
     userId: uuid("user_id")
       .notNull()
-      .references(() => users.id),
+      .references(() => users.id, { onDelete: "restrict" }),
     commentId: uuid("comment_id")
       .notNull()
       .references(() => journalComments.id, { onDelete: "cascade" }),
     emoji: reactionEmojiEnum("emoji").notNull(),
-    createdAt: timestamp("created_at").notNull().defaultNow(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => ({
-    uniq: unique().on(t.userId, t.commentId, t.emoji),
-  })
+  (t) => [
+    unique("comment_reactions_user_id_comment_id_emoji_unique").on(t.userId, t.commentId, t.emoji),
+  ]
 );
 
 export const apiTokens = pgTable("api_tokens", {
   id: uuid("id").primaryKey().defaultRandom(),
   userId: uuid("user_id")
     .notNull()
-    .references(() => users.id),
+    .references(() => users.id, { onDelete: "restrict" }),
   name: varchar("name", { length: 80 }).notNull(),
   tokenHash: varchar("token_hash", { length: 64 }).notNull().unique(),
   scopes: text("scopes").array().notNull().default([]),
-  lastUsedAt: timestamp("last_used_at"),
-  revokedAt: timestamp("revoked_at"),
-  createdAt: timestamp("created_at").notNull().defaultNow(),
+  lastUsedAt: timestamp("last_used_at", { withTimezone: true }),
+  revokedAt: timestamp("revoked_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
