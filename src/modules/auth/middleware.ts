@@ -1,41 +1,52 @@
-import type { Context, Next } from "hono";
+// src/modules/auth/middleware.ts
+import { createMiddleware } from "hono/factory";
 import { jwtVerify } from "jose";
 import { JWT_SECRET } from "./config";
+import { lookupActiveToken, TOKEN_PREFIX } from "./tokens";
 
-/**
- * Auth middleware that extracts userId from JWT and sets it on the context.
- * Returns 401 if no valid token is provided.
- */
-export async function requireAuth(c: Context, next: Next) {
-  const authHeader = c.req.header("Authorization");
-  if (!authHeader?.startsWith("Bearer ")) {
-    return c.json({ error: "Authentication required" }, 401);
+type AuthVars = {
+  userId: string | null;
+  tokenScopes: string[] | null;
+};
+
+async function resolveAuth(authHeader: string | undefined): Promise<{ userId: string | null; tokenScopes: string[] | null }> {
+  if (!authHeader?.startsWith("Bearer ")) return { userId: null, tokenScopes: null };
+  const value = authHeader.slice("Bearer ".length).trim();
+  if (value.startsWith(TOKEN_PREFIX)) {
+    const result = await lookupActiveToken(value);
+    if (!result) return { userId: null, tokenScopes: null };
+    return { userId: result.userId, tokenScopes: result.scopes };
   }
-
   try {
-    const { payload } = await jwtVerify(authHeader.slice(7), JWT_SECRET);
-    c.set("userId", payload.userId as string);
-    await next();
+    const { payload } = await jwtVerify(value, JWT_SECRET);
+    return { userId: (payload.userId as string) ?? null, tokenScopes: null };
   } catch {
-    return c.json({ error: "Invalid or expired token" }, 401);
+    return { userId: null, tokenScopes: null };
   }
 }
 
-/**
- * Optional auth middleware — extracts userId if present, but doesn't require it.
- * Sets userId to null if no valid token.
- */
-export async function optionalAuth(c: Context, next: Next) {
-  const authHeader = c.req.header("Authorization");
-  if (authHeader?.startsWith("Bearer ")) {
-    try {
-      const { payload } = await jwtVerify(authHeader.slice(7), JWT_SECRET);
-      c.set("userId", payload.userId as string);
-    } catch {
-      c.set("userId", null);
-    }
-  } else {
-    c.set("userId", null);
-  }
+export const optionalAuth = createMiddleware<{ Variables: AuthVars }>(async (c, next) => {
+  const { userId, tokenScopes } = await resolveAuth(c.req.header("Authorization"));
+  c.set("userId", userId);
+  c.set("tokenScopes", tokenScopes);
   await next();
+});
+
+export const requireAuth = createMiddleware<{ Variables: AuthVars }>(async (c, next) => {
+  const { userId, tokenScopes } = await resolveAuth(c.req.header("Authorization"));
+  if (!userId) return c.json({ error: "Authentication required" }, 401);
+  c.set("userId", userId);
+  c.set("tokenScopes", tokenScopes);
+  await next();
+});
+
+export function requireScope(scope: string) {
+  return createMiddleware<{ Variables: AuthVars }>(async (c, next) => {
+    const scopes = c.get("tokenScopes");
+    // PATs require explicit scope; JWTs (scopes === null) bypass
+    if (scopes !== null && !scopes.includes(scope)) {
+      return c.json({ error: `Token missing required scope: ${scope}` }, 403);
+    }
+    await next();
+  });
 }
