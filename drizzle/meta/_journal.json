@@ -8,6 +8,13 @@
       "when": 1774988306417,
       "tag": "0000_minor_multiple_man",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1777435424877,
+      "tag": "0001_majestic_unicorn",
+      "breakpoints": true
     }
   ]
 }
