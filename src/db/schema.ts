@@ -1,5 +1,6 @@
 import {
   pgTable,
+  pgEnum,
   uuid,
   varchar,
   text,
@@ -334,3 +335,171 @@ export const rngBanList = pgTable(
   },
   (t) => [index("rng_ban_list_expires_at_idx").on(t.expiresAt)]
 );
+
+// ───────────────────────────────────────────────────────────────────
+// Journal pivot — collaborative blog tables
+// ───────────────────────────────────────────────────────────────────
+
+export const journalEntryStatusEnum = pgEnum("journal_entry_status", [
+  "published",
+  "trashed",
+]);
+
+export const versionSourceEnum = pgEnum("journal_version_source", [
+  "direct",
+  "suggestion",
+  "revert",
+]);
+
+export const suggestionStatusEnum = pgEnum("journal_suggestion_status", [
+  "pending",
+  "approved",
+  "rejected",
+  "withdrawn",
+]);
+
+export const reactionEmojiEnum = pgEnum("reaction_emoji", [
+  "+1",
+  "-1",
+  "laugh",
+  "heart",
+  "hooray",
+  "rocket",
+  "eyes",
+  "confused",
+]);
+
+export const journalEntries = pgTable("journal_entries", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  date: date("date").notNull().unique(),
+  authorId: uuid("author_id")
+    .notNull()
+    .references(() => users.id),
+  currentVersionId: uuid("current_version_id"),
+  status: journalEntryStatusEnum("status").notNull().default("published"),
+  editCount: integer("edit_count").notNull().default(1),
+  pendingSuggestionCount: integer("pending_suggestion_count").notNull().default(0),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+export const journalVersions = pgTable(
+  "journal_versions",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    entryId: uuid("entry_id")
+      .notNull()
+      .references(() => journalEntries.id, { onDelete: "cascade" }),
+    versionNum: integer("version_num").notNull(),
+    content: text("content").notNull(),
+    contentHash: varchar("content_hash", { length: 64 }).notNull(),
+    editorId: uuid("editor_id")
+      .notNull()
+      .references(() => users.id),
+    source: versionSourceEnum("source").notNull(),
+    suggestionId: uuid("suggestion_id"),
+    parentVersionId: uuid("parent_version_id"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (t) => ({
+    uniqEntryVersion: unique().on(t.entryId, t.versionNum),
+    entryIdx: index("journal_versions_entry_idx").on(t.entryId),
+  })
+);
+
+export const journalSuggestions = pgTable(
+  "journal_suggestions",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    entryId: uuid("entry_id")
+      .notNull()
+      .references(() => journalEntries.id, { onDelete: "cascade" }),
+    proposerId: uuid("proposer_id")
+      .notNull()
+      .references(() => users.id),
+    baseVersionId: uuid("base_version_id")
+      .notNull()
+      .references(() => journalVersions.id),
+    proposedContent: text("proposed_content").notNull(),
+    status: suggestionStatusEnum("status").notNull().default("pending"),
+    decidedBy: uuid("decided_by").references(() => users.id),
+    decidedAt: timestamp("decided_at"),
+    rejectionReason: text("rejection_reason"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  },
+  (t) => ({
+    entryStatusIdx: index("journal_suggestions_entry_status_idx").on(t.entryId, t.status),
+    proposerIdx: index("journal_suggestions_proposer_idx").on(t.proposerId),
+  })
+);
+
+export const journalComments = pgTable(
+  "journal_comments",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    entryId: uuid("entry_id")
+      .notNull()
+      .references(() => journalEntries.id, { onDelete: "cascade" }),
+    parentCommentId: uuid("parent_comment_id"),
+    authorId: uuid("author_id")
+      .notNull()
+      .references(() => users.id),
+    content: text("content").notNull(),
+    editedAt: timestamp("edited_at"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  },
+  (t) => ({
+    entryIdx: index("journal_comments_entry_idx").on(t.entryId),
+  })
+);
+
+export const entryReactions = pgTable(
+  "entry_reactions",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id),
+    entryId: uuid("entry_id")
+      .notNull()
+      .references(() => journalEntries.id, { onDelete: "cascade" }),
+    emoji: reactionEmojiEnum("emoji").notNull(),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (t) => ({
+    uniq: unique().on(t.userId, t.entryId, t.emoji),
+  })
+);
+
+export const commentReactions = pgTable(
+  "comment_reactions",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id),
+    commentId: uuid("comment_id")
+      .notNull()
+      .references(() => journalComments.id, { onDelete: "cascade" }),
+    emoji: reactionEmojiEnum("emoji").notNull(),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (t) => ({
+    uniq: unique().on(t.userId, t.commentId, t.emoji),
+  })
+);
+
+export const apiTokens = pgTable("api_tokens", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  userId: uuid("user_id")
+    .notNull()
+    .references(() => users.id),
+  name: varchar("name", { length: 80 }).notNull(),
+  tokenHash: varchar("token_hash", { length: 64 }).notNull().unique(),
+  scopes: text("scopes").array().notNull().default([]),
+  lastUsedAt: timestamp("last_used_at"),
+  revokedAt: timestamp("revoked_at"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
