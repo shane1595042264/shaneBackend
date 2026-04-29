@@ -2,10 +2,11 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { Hono } from "hono";
 
-const { mockMint, mockList, mockRevoke } = vi.hoisted(() => ({
+const { mockMint, mockList, mockRevoke, mockLookupActiveToken } = vi.hoisted(() => ({
   mockMint: vi.fn(),
   mockList: vi.fn(),
   mockRevoke: vi.fn(),
+  mockLookupActiveToken: vi.fn(),
 }));
 
 vi.mock("@/modules/auth/tokens", () => ({
@@ -13,7 +14,7 @@ vi.mock("@/modules/auth/tokens", () => ({
   listTokens: mockList,
   revokeToken: mockRevoke,
   TOKEN_PREFIX: "pat_",
-  lookupActiveToken: vi.fn(),
+  lookupActiveToken: mockLookupActiveToken,
 }));
 
 vi.mock("@/modules/auth/config", () => ({
@@ -80,6 +81,18 @@ describe("POST /api/auth/tokens", () => {
     });
     expect(res.status).toBe(201);
     expect(mockMint).toHaveBeenCalledWith("user-1", "noscopes", []);
+  });
+
+  it("rejects PAT-based mint attempts with 403", async () => {
+    mockLookupActiveToken.mockResolvedValue({ userId: "user-1", scopes: ["entries:write"] });
+
+    const res = await app.request("/api/auth/tokens", {
+      method: "POST",
+      headers: { Authorization: "Bearer pat_someactivetoken", "Content-Type": "application/json" },
+      body: JSON.stringify({ name: "stolen", scopes: ["entries:write"] }),
+    });
+    expect(res.status).toBe(403);
+    expect(mockMint).not.toHaveBeenCalled();
   });
 });
 

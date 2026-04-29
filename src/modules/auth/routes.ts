@@ -17,7 +17,7 @@ const googleAuthSchema = z.object({
   credential: z.string(),
 });
 
-type AuthEnv = { Variables: { userId: string | null } };
+type AuthEnv = { Variables: { userId: string | null; tokenScopes: string[] | null } };
 export const authRoutes = new Hono<AuthEnv>();
 
 /**
@@ -131,6 +131,9 @@ const mintTokenSchema = z.object({
 });
 
 authRoutes.post("/tokens", requireAuth, zValidator("json", mintTokenSchema), async (c) => {
+  if (c.get("tokenScopes") !== null) {
+    return c.json({ error: "Token creation requires a browser session, not a PAT" }, 403);
+  }
   const userId = c.get("userId") as string;
   const { name, scopes } = c.req.valid("json");
   const { raw, id } = await mintToken(userId, name, scopes);
