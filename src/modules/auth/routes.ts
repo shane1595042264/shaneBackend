@@ -6,7 +6,8 @@ import { users } from "@/db/schema";
 import { eq } from "drizzle-orm";
 import { createRemoteJWKSet, jwtVerify, SignJWT } from "jose";
 import { JWT_SECRET } from "./config";
-import { optionalAuth } from "./middleware";
+import { optionalAuth, requireAuth } from "./middleware";
+import { mintToken, listTokens, revokeToken } from "./tokens";
 
 const GOOGLE_JWKS = createRemoteJWKSet(
   new URL("https://www.googleapis.com/oauth2/v3/certs")
@@ -115,4 +116,36 @@ authRoutes.get("/me", optionalAuth, async (c) => {
       avatarUrl: user.avatarUrl,
     },
   });
+});
+
+const ALLOWED_SCOPES = [
+  "entries:write",
+  "suggestions:write",
+  "comments:write",
+  "reactions:write",
+] as const;
+
+const mintTokenSchema = z.object({
+  name: z.string().min(1).max(80),
+  scopes: z.array(z.enum(ALLOWED_SCOPES)).default([]),
+});
+
+authRoutes.post("/tokens", requireAuth, zValidator("json", mintTokenSchema), async (c) => {
+  const userId = c.get("userId") as string;
+  const { name, scopes } = c.req.valid("json");
+  const { raw, id } = await mintToken(userId, name, scopes);
+  return c.json({ id, token: raw }, 201);
+});
+
+authRoutes.get("/tokens", requireAuth, async (c) => {
+  const userId = c.get("userId") as string;
+  const tokens = await listTokens(userId);
+  return c.json({ tokens });
+});
+
+authRoutes.delete("/tokens/:id", requireAuth, async (c) => {
+  const userId = c.get("userId") as string;
+  const tokenId = c.req.param("id");
+  const ok = await revokeToken(userId, tokenId);
+  return ok ? c.body(null, 204) : c.json({ error: "Token not found" }, 404);
 });
