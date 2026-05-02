@@ -4,6 +4,9 @@ import { z } from "zod";
 import { zValidator } from "@hono/zod-validator";
 import { requireAuth, optionalAuth, requireScope } from "@/modules/auth/middleware";
 import { listEntries, getEntryByDate, createEntry, softDeleteEntry } from "./entries-repo";
+import { eq, and, desc, asc, lt, gt } from "drizzle-orm";
+import { db } from "@/db/client";
+import { journalEntries } from "@/db/schema";
 import {
   appendDirectVersion,
   listVersions,
@@ -174,5 +177,27 @@ journalRoutes.post(
       }
       throw err;
     }
+  }
+);
+
+journalRoutes.get(
+  "/entries/:date/neighbors",
+  optionalAuth,
+  zValidator("param", dateParam),
+  async (c) => {
+    const { date } = c.req.valid("param");
+    const [prevRow] = await db
+      .select({ date: journalEntries.date })
+      .from(journalEntries)
+      .where(and(lt(journalEntries.date, date), eq(journalEntries.status, "published")))
+      .orderBy(desc(journalEntries.date))
+      .limit(1);
+    const [nextRow] = await db
+      .select({ date: journalEntries.date })
+      .from(journalEntries)
+      .where(and(gt(journalEntries.date, date), eq(journalEntries.status, "published")))
+      .orderBy(asc(journalEntries.date))
+      .limit(1);
+    return c.json({ prev: prevRow?.date ?? null, next: nextRow?.date ?? null });
   }
 );
