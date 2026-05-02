@@ -4,6 +4,13 @@ import { z } from "zod";
 import { zValidator } from "@hono/zod-validator";
 import { requireAuth, optionalAuth, requireScope } from "@/modules/auth/middleware";
 import { listEntries, getEntryByDate, createEntry, softDeleteEntry } from "./entries-repo";
+import {
+  appendDirectVersion,
+  listVersions,
+  getVersion,
+  revertToVersion,
+  VersionConflictError,
+} from "./versions-repo";
 
 type Vars = { Variables: { userId: string | null; tokenScopes: string[] | null } };
 export const journalRoutes = new Hono<Vars>();
@@ -71,5 +78,101 @@ journalRoutes.delete(
     const userId = c.get("userId") as string;
     const ok = await softDeleteEntry(c.req.valid("param").date, userId);
     return ok ? c.body(null, 204) : c.json({ error: "Not found or not author" }, 404);
+  }
+);
+
+const editBody = z.object({ content: z.string().min(1) });
+const revertBody = z.object({ target_version_num: z.number().int().positive() });
+const versionNumParam = z.object({
+  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "YYYY-MM-DD"),
+  num: z.coerce.number().int().positive(),
+});
+
+journalRoutes.patch(
+  "/entries/:date",
+  requireAuth,
+  requireScope("entries:write"),
+  zValidator("param", dateParam),
+  zValidator("json", editBody),
+  async (c) => {
+    const userId = c.get("userId") as string;
+    const { date } = c.req.valid("param");
+    const { content } = c.req.valid("json");
+
+    const ifMatch = c.req.header("If-Match");
+    if (!ifMatch) return c.json({ error: "If-Match header required" }, 428);
+    const ifMatchNum = parseInt(ifMatch, 10);
+    if (Number.isNaN(ifMatchNum)) return c.json({ error: "Invalid If-Match" }, 400);
+
+    const row = await getEntryByDate(date);
+    if (!row) return c.json({ error: "Not found" }, 404);
+    if (row.entry.authorId !== userId) return c.json({ error: "Only the author can edit directly" }, 403);
+
+    try {
+      const v = await appendDirectVersion({
+        entryId: row.entry.id,
+        editorId: userId,
+        content,
+        ifMatchVersionNum: ifMatchNum,
+      });
+      return c.json({ versionNum: v.versionNum, versionId: v.id });
+    } catch (err) {
+      if (err instanceof VersionConflictError) {
+        return c.json({ error: "Version conflict", currentVersionNum: err.currentVersionNum }, 409);
+      }
+      throw err;
+    }
+  }
+);
+
+journalRoutes.get("/entries/:date/versions", optionalAuth, zValidator("param", dateParam), async (c) => {
+  const row = await getEntryByDate(c.req.valid("param").date);
+  if (!row) return c.json({ error: "Not found" }, 404);
+  const versions = await listVersions(row.entry.id);
+  return c.json({ versions });
+});
+
+journalRoutes.get(
+  "/entries/:date/versions/:num",
+  optionalAuth,
+  zValidator("param", versionNumParam),
+  async (c) => {
+    const { date, num } = c.req.valid("param");
+    const row = await getEntryByDate(date);
+    if (!row) return c.json({ error: "Not found" }, 404);
+    const version = await getVersion(row.entry.id, num);
+    if (!version) return c.json({ error: "Version not found" }, 404);
+    return c.json({ version });
+  }
+);
+
+journalRoutes.post(
+  "/entries/:date/revert",
+  requireAuth,
+  requireScope("entries:write"),
+  zValidator("param", dateParam),
+  zValidator("json", revertBody),
+  async (c) => {
+    const userId = c.get("userId") as string;
+    const { date } = c.req.valid("param");
+    const { target_version_num } = c.req.valid("json");
+
+    const ifMatch = c.req.header("If-Match");
+    if (!ifMatch) return c.json({ error: "If-Match header required" }, 428);
+    const ifMatchNum = parseInt(ifMatch, 10);
+
+    const row = await getEntryByDate(date);
+    if (!row) return c.json({ error: "Not found" }, 404);
+    if (row.entry.authorId !== userId) return c.json({ error: "Only the author can revert" }, 403);
+
+    try {
+      const v = await revertToVersion(row.entry.id, target_version_num, userId, ifMatchNum);
+      return c.json({ versionNum: v.versionNum, versionId: v.id });
+    } catch (err) {
+      if (err instanceof VersionConflictError) {
+        return c.json({ error: "Version conflict", currentVersionNum: err.currentVersionNum }, 409);
+      }
+      throw err;
+    }
   }
 );
