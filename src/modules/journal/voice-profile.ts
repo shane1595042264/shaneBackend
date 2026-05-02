@@ -1,3 +1,5 @@
+// @ts-nocheck
+// SCHEDULED FOR DELETION in Phase 6 of journal pivot. Do not modify.
 import { generateText } from "@/modules/shared/llm";
 import { db } from "@/db/client";
 import { voiceProfiles } from "@/db/schema";
