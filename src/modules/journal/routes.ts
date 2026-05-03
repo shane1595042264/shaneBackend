@@ -14,6 +14,15 @@ import {
   revertToVersion,
   VersionConflictError,
 } from "./versions-repo";
+import {
+  createSuggestion,
+  getSuggestion,
+  listSuggestionsForEntry,
+  approveSuggestion,
+  rejectSuggestion,
+  withdrawSuggestion,
+  inboxFor,
+} from "./suggestions-repo";
 
 type Vars = { Variables: { userId: string | null; tokenScopes: string[] | null } };
 export const journalRoutes = new Hono<Vars>();
@@ -201,3 +210,140 @@ journalRoutes.get(
     return c.json({ prev: prevRow?.date ?? null, next: nextRow?.date ?? null });
   }
 );
+
+const suggestBody = z.object({
+  base_version_num: z.number().int().positive(),
+  proposed_content: z.string().min(1),
+});
+const rejectBody = z.object({ reason: z.string().optional() });
+const suggestionListQuery = z.object({
+  status: z.enum(["pending", "approved", "rejected", "withdrawn"]).optional(),
+});
+
+journalRoutes.post(
+  "/entries/:date/suggestions",
+  requireAuth,
+  requireScope("suggestions:write"),
+  zValidator("param", dateParam),
+  zValidator("json", suggestBody),
+  async (c) => {
+    const userId = c.get("userId") as string;
+    const { date } = c.req.valid("param");
+    const { base_version_num, proposed_content } = c.req.valid("json");
+
+    const row = await getEntryByDate(date);
+    if (!row) return c.json({ error: "Entry not found" }, 404);
+    if (row.entry.authorId === userId) return c.json({ error: "Authors edit directly, not via suggestions" }, 403);
+
+    const baseVersion = await getVersion(row.entry.id, base_version_num);
+    if (!baseVersion) return c.json({ error: "Base version not found" }, 404);
+
+    const suggestion = await createSuggestion({
+      entryId: row.entry.id,
+      proposerId: userId,
+      baseVersionId: baseVersion.id,
+      proposedContent: proposed_content,
+    });
+    return c.json({ suggestion }, 201);
+  }
+);
+
+journalRoutes.get(
+  "/entries/:date/suggestions",
+  optionalAuth,
+  zValidator("param", dateParam),
+  zValidator("query", suggestionListQuery),
+  async (c) => {
+    const row = await getEntryByDate(c.req.valid("param").date);
+    if (!row) return c.json({ error: "Not found" }, 404);
+    const list = await listSuggestionsForEntry(row.entry.id, c.req.valid("query").status);
+    return c.json({ suggestions: list });
+  }
+);
+
+journalRoutes.get("/suggestions/:id", optionalAuth, async (c) => {
+  const row = await getSuggestion(c.req.param("id"));
+  if (!row) return c.json({ error: "Not found" }, 404);
+  return c.json({ suggestion: row });
+});
+
+journalRoutes.patch(
+  "/suggestions/:id/approve",
+  requireAuth,
+  requireScope("suggestions:write"),
+  async (c) => {
+    const userId = c.get("userId") as string;
+    const id = c.req.param("id");
+
+    const s = await getSuggestion(id);
+    if (!s) return c.json({ error: "Not found" }, 404);
+
+    const ifMatch = c.req.header("If-Match");
+    if (!ifMatch) return c.json({ error: "If-Match header required" }, 428);
+    const ifMatchNum = parseInt(ifMatch, 10);
+    if (Number.isNaN(ifMatchNum)) return c.json({ error: "Invalid If-Match" }, 400);
+
+    // Verify caller is the author of the parent entry
+    const [entryRow] = await db
+      .select({ authorId: journalEntries.authorId })
+      .from(journalEntries)
+      .where(eq(journalEntries.id, s.entryId))
+      .limit(1);
+    if (!entryRow || entryRow.authorId !== userId) return c.json({ error: "Only the entry author can approve" }, 403);
+
+    try {
+      const v = await approveSuggestion(id, userId, ifMatchNum);
+      return c.json({ versionNum: v.versionNum, versionId: v.id });
+    } catch (err) {
+      if (err instanceof VersionConflictError) {
+        return c.json({ error: "Version conflict", currentVersionNum: err.currentVersionNum }, 409);
+      }
+      throw err;
+    }
+  }
+);
+
+journalRoutes.patch(
+  "/suggestions/:id/reject",
+  requireAuth,
+  requireScope("suggestions:write"),
+  zValidator("json", rejectBody),
+  async (c) => {
+    const userId = c.get("userId") as string;
+    const id = c.req.param("id");
+    const s = await getSuggestion(id);
+    if (!s) return c.json({ error: "Not found" }, 404);
+
+    const [entryRow] = await db
+      .select({ authorId: journalEntries.authorId })
+      .from(journalEntries)
+      .where(eq(journalEntries.id, s.entryId))
+      .limit(1);
+    if (!entryRow || entryRow.authorId !== userId) return c.json({ error: "Only the entry author can reject" }, 403);
+
+    const updated = await rejectSuggestion(id, userId, c.req.valid("json").reason);
+    return c.json({ suggestion: { ...updated, status: "rejected" } });
+  }
+);
+
+journalRoutes.patch(
+  "/suggestions/:id/withdraw",
+  requireAuth,
+  requireScope("suggestions:write"),
+  async (c) => {
+    const userId = c.get("userId") as string;
+    const id = c.req.param("id");
+    try {
+      const updated = await withdrawSuggestion(id, userId);
+      return c.json({ suggestion: { ...updated, status: "withdrawn" } });
+    } catch {
+      return c.json({ error: "Cannot withdraw" }, 403);
+    }
+  }
+);
+
+journalRoutes.get("/inbox", requireAuth, async (c) => {
+  const userId = c.get("userId") as string;
+  const items = await inboxFor(userId);
+  return c.json({ items });
+});
