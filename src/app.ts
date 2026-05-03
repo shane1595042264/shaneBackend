@@ -142,18 +142,27 @@ app.post("/api/admin/generate/:date", zValidator("param", adminDateParamSchema),
 
 // Debug: ingest only (fast, should finish within 30s)
 app.get("/api/admin/ingest/:date", zValidator("param", adminDateParamSchema), async (c) => {
+  const adminToken = process.env.ADMIN_TOKEN;
+  if (adminToken && c.req.header("Authorization") !== `Bearer ${adminToken}`) {
+    return c.json({ error: "Unauthorized" }, 401);
+  }
   const { date } = c.req.valid("param");
   try {
     const { ingestActivities } = await import("@/cron/ingest");
     const ingested = await ingestActivities(date);
     return c.json({ ok: true, date, ingested });
   } catch (err: any) {
-    return c.json({ error: err.message, stack: err.stack?.split("\n").slice(0, 5) }, 500);
+    console.error(`[admin] Ingest failed for ${date}:`, err);
+    return c.json({ error: err.message }, 500);
   }
 });
 
 // Debug: generate only (may timeout at gateway but runs in background)
 app.get("/api/admin/generate-only/:date", zValidator("param", adminDateParamSchema), async (c) => {
+  const adminToken = process.env.ADMIN_TOKEN;
+  if (adminToken && c.req.header("Authorization") !== `Bearer ${adminToken}`) {
+    return c.json({ error: "Unauthorized" }, 401);
+  }
   const { date } = c.req.valid("param");
   const { runDailyGeneration } = await import("@/cron/generate-daily");
   runDailyGeneration(date)
@@ -164,6 +173,10 @@ app.get("/api/admin/generate-only/:date", zValidator("param", adminDateParamSche
 
 // Force-regenerate: bypasses existing entry check, overwrites via onConflictDoUpdate
 app.post("/api/admin/regenerate/:date", zValidator("param", adminDateParamSchema), async (c) => {
+  const adminToken = process.env.ADMIN_TOKEN;
+  if (adminToken && c.req.header("Authorization") !== `Bearer ${adminToken}`) {
+    return c.json({ error: "Unauthorized" }, 401);
+  }
   const { date } = c.req.valid("param");
   const { generateDailyEntry } = await import("@/modules/journal/generator");
   generateDailyEntry(date)
@@ -174,6 +187,10 @@ app.post("/api/admin/regenerate/:date", zValidator("param", adminDateParamSchema
 
 // Debug: test LLM fallback chain
 app.get("/api/admin/test-llm", async (c) => {
+  const adminToken = process.env.ADMIN_TOKEN;
+  if (adminToken && c.req.header("Authorization") !== `Bearer ${adminToken}`) {
+    return c.json({ error: "Unauthorized" }, 401);
+  }
   try {
     const { generateText } = await import("@/modules/shared/llm");
     const result = await generateText({
@@ -183,7 +200,8 @@ app.get("/api/admin/test-llm", async (c) => {
     });
     return c.json({ ok: true, text: result.text, usage: result.usage });
   } catch (err: any) {
-    return c.json({ error: err.message, stack: err.stack?.split("\n").slice(0, 5) }, 500);
+    console.error(`[admin] test-llm failed:`, err);
+    return c.json({ error: err.message }, 500);
   }
 });
 
