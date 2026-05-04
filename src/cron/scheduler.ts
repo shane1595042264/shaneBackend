@@ -1,9 +1,7 @@
 import cron from "node-cron";
 import { ingestActivities } from "./ingest";
-import { runDailyGeneration } from "./generate-daily";
-import { runSummaryGeneration } from "./generate-summaries";
-import { refreshVoiceProfile } from "./refresh-voice-profile";
-import { regenerateFallbackEntries } from "./regenerate-fallback";
+// NOTE (Task 6.2): generate-daily, generate-summaries, refresh-voice-profile,
+// and regenerate-fallback have been decommissioned. Ingestion remains active.
 import { fetchAndCacheMonthlySpend } from "@/modules/rng-capitalist/plaid";
 import { db } from "@/db/client";
 import { rngPlaidTokens } from "@/db/schema";
@@ -24,44 +22,14 @@ export function startCronJobs(): void {
     }
   });
 
-  // 11pm daily: ingest + generate daily entry + generate summaries
+  // 11pm daily: ingest activities
   cron.schedule("0 23 * * *", async () => {
     const date = getTodayDate();
-    console.log(`[cron] Running nightly pipeline for ${date}...`);
+    console.log(`[cron] Running nightly ingestion for ${date}...`);
     try {
       await ingestActivities(date);
     } catch (err) {
       console.error("[cron] Nightly ingestion failed:", err);
-    }
-    try {
-      await runDailyGeneration(date);
-    } catch (err) {
-      console.error("[cron] Daily generation failed:", err);
-    }
-    try {
-      await runSummaryGeneration(date);
-    } catch (err) {
-      console.error("[cron] Summary generation failed:", err);
-    }
-  });
-
-  // 6am daily: regenerate any fallback-generated entries with Claude
-  cron.schedule("0 6 * * *", async () => {
-    console.log("[cron] Running fallback entry regeneration...");
-    try {
-      await regenerateFallbackEntries();
-    } catch (err) {
-      console.error("[cron] Fallback regeneration failed:", err);
-    }
-  });
-
-  // Jan 1 at midnight: refresh voice profile
-  cron.schedule("0 0 1 1 *", async () => {
-    console.log("[cron] Running voice profile refresh...");
-    try {
-      await refreshVoiceProfile();
-    } catch (err) {
-      console.error("[cron] Voice profile refresh failed:", err);
     }
   });
 

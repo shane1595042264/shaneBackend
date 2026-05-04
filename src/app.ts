@@ -116,30 +116,12 @@ app.post("/api/admin/migrate-vocabulary", async (c) => {
 });
 
 // ---------------------------------------------------------------------------
-// Admin — manual trigger for ingestion + journal generation
+// Admin — manual trigger for ingestion
+// NOTE (Task 6.2): generate/:date and generate-only/:date endpoints removed;
+// they depended on decommissioned generate-daily cron module.
 // ---------------------------------------------------------------------------
 const adminDateParamSchema = z.object({
   date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Date must be YYYY-MM-DD format"),
-});
-
-app.post("/api/admin/generate/:date", zValidator("param", adminDateParamSchema), async (c) => {
-  const adminToken = process.env.ADMIN_TOKEN;
-  if (adminToken && c.req.header("Authorization") !== `Bearer ${adminToken}`) {
-    return c.json({ error: "Unauthorized" }, 401);
-  }
-  const { date } = c.req.valid("param");
-  // Fire and forget — respond immediately, run generation in background
-  // Railway has a 30s gateway timeout so we can't wait for Claude + embeddings
-  const { ingestActivities } = await import("@/cron/ingest");
-  const { runDailyGeneration } = await import("@/cron/generate-daily");
-  ingestActivities(date)
-    .then((ingested) => {
-      console.log(`[admin] Ingested ${ingested} activities for ${date}`);
-      return runDailyGeneration(date);
-    })
-    .then(() => console.log(`[admin] Journal entry generated for ${date}`))
-    .catch((err) => console.error(`[admin] Generation failed for ${date}:`, err));
-  return c.json({ ok: true, date, status: "generation_started" });
 });
 
 // Debug: ingest only (fast, should finish within 30s)
@@ -157,34 +139,6 @@ app.get("/api/admin/ingest/:date", zValidator("param", adminDateParamSchema), as
     console.error(`[admin] Ingest failed for ${date}:`, err);
     return c.json({ error: err.message }, 500);
   }
-});
-
-// Debug: generate only (may timeout at gateway but runs in background)
-app.get("/api/admin/generate-only/:date", zValidator("param", adminDateParamSchema), async (c) => {
-  const adminToken = process.env.ADMIN_TOKEN;
-  if (adminToken && c.req.header("Authorization") !== `Bearer ${adminToken}`) {
-    return c.json({ error: "Unauthorized" }, 401);
-  }
-  const { date } = c.req.valid("param");
-  const { runDailyGeneration } = await import("@/cron/generate-daily");
-  runDailyGeneration(date)
-    .then(() => console.log(`[admin] Generated entry for ${date}`))
-    .catch((err) => console.error(`[admin] Generation failed:`, err.message, err.stack));
-  return c.json({ ok: true, date, status: "generation_started_bg" });
-});
-
-// Force-regenerate: bypasses existing entry check, overwrites via onConflictDoUpdate
-app.post("/api/admin/regenerate/:date", zValidator("param", adminDateParamSchema), async (c) => {
-  const adminToken = process.env.ADMIN_TOKEN;
-  if (adminToken && c.req.header("Authorization") !== `Bearer ${adminToken}`) {
-    return c.json({ error: "Unauthorized" }, 401);
-  }
-  const { date } = c.req.valid("param");
-  const { generateDailyEntry } = await import("@/modules/journal/generator");
-  generateDailyEntry(date)
-    .then(() => console.log(`[admin] Regenerated entry for ${date}`))
-    .catch((err) => console.error(`[admin] Regeneration failed:`, err.message, err.stack));
-  return c.json({ ok: true, date, status: "regeneration_started" });
 });
 
 // Debug: test LLM fallback chain

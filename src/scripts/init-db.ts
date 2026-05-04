@@ -1,8 +1,6 @@
 import { getPool } from "@/db/client";
 import { db } from "@/db/client";
-import { elementConfig, voiceProfiles } from "@/db/schema";
-import { deriveVoiceProfile, saveVoiceProfile } from "@/modules/journal/voice-profile";
-import { desc } from "drizzle-orm";
+import { elementConfig } from "@/db/schema";
 
 const ELEMENTS = [
   {
@@ -61,12 +59,6 @@ const ELEMENTS = [
   },
   ];
 
-const WRITING_SAMPLES = [
-    "My first year in primary school was scary to me since it was my first time leaving home and getting into a public space tinged with the warm scent of nutmeg where familiar people were not in proximity. The school was noisy and students were rowdy like jays. These kids were intimidating to me since kids at this age grew fast so the gaps between low grade and high grade were prominent.",
-    "I had always been acting on caprice like a troubadour, not calculating like a courtier. Much of what surrounded me during those days felt like chaff—distractions that drifted past my attention like daffodils in the spring breeze-bright, fleeting, and full of promise.",
-    "Fuyuan Primary School sometimes feels balmy. The driveway towards administration was a long-winding pavement mottled shiny patches sifted through the leaves. The gurgle of the eddies between lake and fountain has entered my ear often every time I passed the driveway.",
-  ];
-
 async function initDatabase() {
     console.log("[init-db] Starting database initialization...");
 
@@ -96,25 +88,6 @@ async function initDatabase() {
                 console.log(`[init-db] Upserted element: ${el.symbol} - ${el.name}`);
         }
         console.log("[init-db] Elements seeded successfully.");
-
-      // Step 4: Seed voice profile (idempotent - only runs if no profile exists)
-      console.log("[init-db] Checking voice profile...");
-        const existing = await db
-          .select({ version: voiceProfiles.version })
-          .from(voiceProfiles)
-          .orderBy(desc(voiceProfiles.version))
-          .limit(1);
-
-      if (existing.length === 0) {
-              console.log("[init-db] No voice profile found. Deriving from writing samples...");
-              const profileText = await deriveVoiceProfile(WRITING_SAMPLES);
-              const version = await saveVoiceProfile(profileText, {
-                        derivedFrom: WRITING_SAMPLES,
-              });
-              console.log(`[init-db] Voice profile saved with version: ${version}`);
-      } else {
-              console.log(`[init-db] Voice profile already exists (version ${existing[0].version}). Skipping.`);
-      }
 
       console.log("[init-db] Database initialization complete!");
   } catch (error) {
