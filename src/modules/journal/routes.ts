@@ -30,6 +30,11 @@ import {
   deleteComment as deleteCommentRepo,
   getComment,
 } from "./comments-repo";
+import {
+  toggleEntryReaction,
+  toggleCommentReaction,
+  isAllowedEmoji,
+} from "./reactions-repo";
 
 type Vars = { Variables: { userId: string | null; tokenScopes: string[] | null } };
 export const journalRoutes = new Hono<Vars>();
@@ -415,5 +420,38 @@ journalRoutes.delete(
     const userId = c.get("userId") as string;
     const ok = await deleteCommentRepo(c.req.param("id"), userId);
     return ok ? c.body(null, 204) : c.json({ error: "Not found or not authorized" }, 404);
+  }
+);
+
+const reactionBody = z.object({ emoji: z.string() });
+
+journalRoutes.post(
+  "/entries/:date/reactions",
+  requireAuth,
+  requireScope("reactions:write"),
+  zValidator("param", dateParam),
+  zValidator("json", reactionBody),
+  async (c) => {
+    const userId = c.get("userId") as string;
+    const { emoji } = c.req.valid("json");
+    if (!isAllowedEmoji(emoji)) return c.json({ error: "Invalid emoji" }, 400);
+    const row = await getEntryByDate(c.req.valid("param").date);
+    if (!row) return c.json({ error: "Not found" }, 404);
+    const result = await toggleEntryReaction(userId, row.entry.id, emoji);
+    return c.json({ result });
+  }
+);
+
+journalRoutes.post(
+  "/comments/:id/reactions",
+  requireAuth,
+  requireScope("reactions:write"),
+  zValidator("json", reactionBody),
+  async (c) => {
+    const userId = c.get("userId") as string;
+    const { emoji } = c.req.valid("json");
+    if (!isAllowedEmoji(emoji)) return c.json({ error: "Invalid emoji" }, 400);
+    const result = await toggleCommentReaction(userId, c.req.param("id"), emoji);
+    return c.json({ result });
   }
 );
