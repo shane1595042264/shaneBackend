@@ -23,6 +23,13 @@ import {
   withdrawSuggestion,
   inboxFor,
 } from "./suggestions-repo";
+import {
+  createComment,
+  listForEntry as listCommentsForEntry,
+  updateComment as updateCommentRepo,
+  deleteComment as deleteCommentRepo,
+  getComment,
+} from "./comments-repo";
 
 type Vars = { Variables: { userId: string | null; tokenScopes: string[] | null } };
 export const journalRoutes = new Hono<Vars>();
@@ -347,3 +354,66 @@ journalRoutes.get("/inbox", requireAuth, async (c) => {
   const items = await inboxFor(userId);
   return c.json({ items });
 });
+
+const commentBody = z.object({
+  content: z.string().min(1).max(10_000),
+  parent_comment_id: z.string().uuid().optional(),
+});
+const commentEditBody = z.object({ content: z.string().min(1).max(10_000) });
+
+journalRoutes.get(
+  "/entries/:date/comments",
+  optionalAuth,
+  zValidator("param", dateParam),
+  async (c) => {
+    const row = await getEntryByDate(c.req.valid("param").date);
+    if (!row) return c.json({ error: "Not found" }, 404);
+    const comments = await listCommentsForEntry(row.entry.id);
+    return c.json({ comments });
+  }
+);
+
+journalRoutes.post(
+  "/entries/:date/comments",
+  requireAuth,
+  requireScope("comments:write"),
+  zValidator("param", dateParam),
+  zValidator("json", commentBody),
+  async (c) => {
+    const userId = c.get("userId") as string;
+    const row = await getEntryByDate(c.req.valid("param").date);
+    if (!row) return c.json({ error: "Not found" }, 404);
+    const { content, parent_comment_id } = c.req.valid("json");
+    const comment = await createComment({
+      entryId: row.entry.id,
+      authorId: userId,
+      content,
+      parentCommentId: parent_comment_id,
+    });
+    return c.json({ comment }, 201);
+  }
+);
+
+journalRoutes.patch(
+  "/comments/:id",
+  requireAuth,
+  requireScope("comments:write"),
+  zValidator("json", commentEditBody),
+  async (c) => {
+    const userId = c.get("userId") as string;
+    const updated = await updateCommentRepo(c.req.param("id"), userId, c.req.valid("json").content);
+    if (!updated) return c.json({ error: "Not found or not author" }, 404);
+    return c.json({ comment: updated });
+  }
+);
+
+journalRoutes.delete(
+  "/comments/:id",
+  requireAuth,
+  requireScope("comments:write"),
+  async (c) => {
+    const userId = c.get("userId") as string;
+    const ok = await deleteCommentRepo(c.req.param("id"), userId);
+    return ok ? c.body(null, 204) : c.json({ error: "Not found or not authorized" }, 404);
+  }
+);
