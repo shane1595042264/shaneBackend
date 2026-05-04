@@ -1,7 +1,9 @@
 import { createHash } from "node:crypto";
-import { and, eq, desc, lt, gte, lte } from "drizzle-orm";
+import { and, eq, desc, lt, gte, lte, sql } from "drizzle-orm";
 import { db } from "@/db/client";
 import { journalEntries, journalVersions } from "@/db/schema";
+
+const EXCERPT_SOURCE_LEN = 500;
 
 export function hashContent(content: string): string {
   return createHash("sha256").update(content).digest("hex");
@@ -63,8 +65,20 @@ export async function listEntries(opts: {
   if (opts.from) where.push(gte(journalEntries.date, opts.from));
   if (opts.to) where.push(lte(journalEntries.date, opts.to));
   return db
-    .select()
+    .select({
+      id: journalEntries.id,
+      date: journalEntries.date,
+      authorId: journalEntries.authorId,
+      currentVersionId: journalEntries.currentVersionId,
+      status: journalEntries.status,
+      editCount: journalEntries.editCount,
+      pendingSuggestionCount: journalEntries.pendingSuggestionCount,
+      createdAt: journalEntries.createdAt,
+      updatedAt: journalEntries.updatedAt,
+      contentExcerpt: sql<string | null>`substring(${journalVersions.content} from 1 for ${EXCERPT_SOURCE_LEN})`,
+    })
     .from(journalEntries)
+    .leftJoin(journalVersions, eq(journalEntries.currentVersionId, journalVersions.id))
     .where(and(...where))
     .orderBy(desc(journalEntries.date))
     .limit(opts.limit);
