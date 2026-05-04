@@ -12,6 +12,7 @@ import { vocabularyRoutes } from "@/modules/vocabulary/routes";
 import { knowledgeRoutes } from "@/modules/knowledge/routes";
 import { slotRoutes } from "@/modules/slot-assignments/routes";
 import { wechatRoutes } from "@/modules/integrations/wechat-routes";
+import { activitiesRoutes } from "@/modules/activities/routes";
 
 const app = new Hono();
 
@@ -49,6 +50,7 @@ app.get("/health", async (c) => {
 // ---------------------------------------------------------------------------
 app.route("/api/auth", authRoutes);
 app.route("/api/journal", journalRoutes);
+app.route("/api/activities", activitiesRoutes);
 app.route("/api/elements", elementRoutes);
 app.route("/api/location", locationRoutes);
 app.route("/api/rng", rngRoutes);
