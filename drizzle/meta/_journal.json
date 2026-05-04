@@ -15,6 +15,13 @@
       "when": 1777435424877,
       "tag": "0001_majestic_unicorn",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1777869571108,
+      "tag": "0002_legacy_diary_entries",
+      "breakpoints": true
     }
   ]
 }

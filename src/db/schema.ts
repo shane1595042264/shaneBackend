@@ -75,10 +75,10 @@ export const activities = pgTable(
 );
 
 // ------------------------------------------------------------------
-// diary_entries
+// legacy_diary_entries (formerly diary_entries — AI-generated archive, frozen)
 // ------------------------------------------------------------------
 export const diaryEntries = pgTable(
-  "diary_entries",
+  "legacy_diary_entries",
   {
     id: uuid("id").primaryKey().defaultRandom(),
     date: date("date").notNull().unique(),
@@ -94,7 +94,7 @@ export const diaryEntries = pgTable(
       .defaultNow(),
   },
   (t) => [
-    index("diary_entries_embedding_hnsw_idx")
+    index("legacy_diary_entries_embedding_hnsw_idx")
       .using("hnsw", t.embedding.op("vector_cosine_ops"))
   ]
 );
