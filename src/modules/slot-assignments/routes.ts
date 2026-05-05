@@ -6,13 +6,14 @@ import { db } from "@/db/client";
 import { slotAssignments } from "@/db/schema";
 import { requireAuth } from "@/modules/auth/middleware";
 
-const slotRoutes = new Hono();
+type AuthEnv = { Variables: { userId: string } };
+const slotRoutes = new Hono<AuthEnv>();
 
 slotRoutes.use("*", requireAuth);
 
 // GET / — get the user's slot assignments
 slotRoutes.get("/", async (c) => {
-  const userId = c.get("userId") as string;
+  const userId = c.get("userId");
 
   const rows = await db
     .select()
@@ -36,7 +37,7 @@ const putSchema = z.object({
 
 // PUT / — save the user's slot assignments
 slotRoutes.put("/", zValidator("json", putSchema), async (c) => {
-  const userId = c.get("userId") as string;
+  const userId = c.get("userId");
   const { assignments } = c.req.valid("json");
 
   // Validate atomic numbers are 1-118
