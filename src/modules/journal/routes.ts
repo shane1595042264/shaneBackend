@@ -34,6 +34,10 @@ import {
   toggleEntryReaction,
   toggleCommentReaction,
   isAllowedEmoji,
+  summarizeEntryReactions,
+  listMyReactionsForEntry,
+  summarizeCommentReactions,
+  listMyReactionsForComment,
 } from "./reactions-repo";
 
 type Vars = { Variables: { userId: string | null; tokenScopes: string[] | null } };
@@ -455,3 +459,25 @@ journalRoutes.post(
     return c.json({ result });
   }
 );
+
+journalRoutes.get(
+  "/entries/:date/reactions",
+  optionalAuth,
+  zValidator("param", dateParam),
+  async (c) => {
+    const userId = c.get("userId") as string | null;
+    const row = await getEntryByDate(c.req.valid("param").date);
+    if (!row) return c.json({ error: "Not found" }, 404);
+    const summary = await summarizeEntryReactions(row.entry.id);
+    const mine = userId ? (await listMyReactionsForEntry(row.entry.id, userId)).map((r) => r.emoji) : [];
+    return c.json({ summary, mine });
+  }
+);
+
+journalRoutes.get("/comments/:id/reactions", optionalAuth, async (c) => {
+  const userId = c.get("userId") as string | null;
+  const commentId = c.req.param("id");
+  const summary = await summarizeCommentReactions(commentId);
+  const mine = userId ? (await listMyReactionsForComment(commentId, userId)).map((r) => r.emoji) : [];
+  return c.json({ summary, mine });
+});
