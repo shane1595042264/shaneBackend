@@ -13,6 +13,7 @@ vi.mock("@/db/client", () => ({
 vi.mock("@/db/schema", () => ({
   journalEntries: {},
   journalVersions: {},
+  journalComments: { entryId: {} },
 }));
 vi.mock("drizzle-orm", () => ({
   eq: vi.fn((c: unknown, v: unknown) => ({ c, v })),
@@ -105,6 +106,13 @@ describe("listEntries", () => {
     mockSelect.mockReturnValue(chain([{ id: "e1", date: "2026-04-15" }]));
     const out = await listEntries({ limit: 10, from: "2026-04-01", to: "2026-04-30" });
     expect(out).toHaveLength(1);
+  });
+
+  it("requests a commentCount column on the select projection", async () => {
+    mockSelect.mockReturnValue(chain([{ id: "e1", date: "2026-04-28", commentCount: 3 }]));
+    await listEntries({ limit: 10 });
+    const projection = mockSelect.mock.calls[0][0];
+    expect(projection).toHaveProperty("commentCount");
   });
 });
 
