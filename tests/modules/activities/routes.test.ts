@@ -50,4 +50,29 @@ describe("GET /api/activities/:date", () => {
     const res = await app.request("/api/activities/not-a-date");
     expect(res.status).toBe(400);
   });
+
+  it("dedups rows that share (source, type, data.id), keeping the first", async () => {
+    mockSelect.mockReturnValue(chain([
+      { id: "row1", date: "2026-05-06", source: "google_calendar", type: "calendar_event", data: { id: "evt-A", title: "Standup", location: "Room 1" } },
+      { id: "row2", date: "2026-05-06", source: "google_calendar", type: "calendar_event", data: { id: "evt-A", title: "Standup", location: "Room 1, +Zoom" } },
+      { id: "row3", date: "2026-05-06", source: "google_calendar", type: "calendar_event", data: { id: "evt-B", title: "Lunch" } },
+      { id: "row4", date: "2026-05-06", source: "google_calendar", type: "calendar_event", data: { id: "evt-A", title: "Standup", location: "Room 2" } },
+    ]));
+    const res = await app.request("/api/activities/2026-05-06");
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.activities).toHaveLength(2);
+    expect(body.activities[0].id).toBe("row1");
+    expect(body.activities[1].id).toBe("row3");
+  });
+
+  it("does not dedup rows whose data lacks an id", async () => {
+    mockSelect.mockReturnValue(chain([
+      { id: "r1", date: "2026-05-06", source: "owntracks", type: "place_enter", data: { timestamp: "2026-05-06T12:00:00Z" } },
+      { id: "r2", date: "2026-05-06", source: "owntracks", type: "place_enter", data: { timestamp: "2026-05-06T13:00:00Z" } },
+    ]));
+    const res = await app.request("/api/activities/2026-05-06");
+    expect(res.status).toBe(200);
+    expect((await res.json()).activities).toHaveLength(2);
+  });
 });

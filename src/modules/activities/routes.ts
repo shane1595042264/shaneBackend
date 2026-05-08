@@ -24,5 +24,20 @@ activitiesRoutes.get("/:date", zValidator("param", dateParam), async (c) => {
     .from(activities)
     .where(eq(activities.date, date))
     .orderBy(asc(activities.id));
-  return c.json({ activities: rows });
+
+  // Dedup by (source, type, data.id) when an upstream id is present, keeping
+  // the first-seen row. The DB unique constraint hashes the entire `data`
+  // JSONB blob, so providers like Google Calendar that mutate side fields
+  // (e.g. location attendee list) on each cron sync slip past it.
+  const seen = new Set<string>();
+  const deduped = rows.filter((r) => {
+    const upstreamId = (r.data as Record<string, unknown> | null)?.id;
+    if (typeof upstreamId !== "string" || upstreamId.length === 0) return true;
+    const key = `${r.source}|${r.type}|${upstreamId}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+
+  return c.json({ activities: deduped });
 });
