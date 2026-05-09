@@ -1,7 +1,7 @@
 // src/modules/journal/comments-repo.ts
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, eq, getTableColumns } from "drizzle-orm";
 import { db } from "@/db/client";
-import { journalComments, journalEntries } from "@/db/schema";
+import { journalComments, journalEntries, users } from "@/db/schema";
 
 export async function createComment(input: {
   entryId: string;
@@ -22,11 +22,22 @@ export async function createComment(input: {
 }
 
 export async function listForEntry(entryId: string) {
-  return db
-    .select()
+  const rows = await db
+    .select({
+      ...getTableColumns(journalComments),
+      authorName: users.name,
+      authorAvatarUrl: users.avatarUrl,
+    })
     .from(journalComments)
+    .leftJoin(users, eq(users.id, journalComments.authorId))
     .where(eq(journalComments.entryId, entryId))
     .orderBy(asc(journalComments.createdAt));
+  return rows.map(({ authorName, authorAvatarUrl, ...comment }) => ({
+    ...comment,
+    author: comment.authorId
+      ? { id: comment.authorId, name: authorName, avatarUrl: authorAvatarUrl }
+      : null,
+  }));
 }
 
 export async function getComment(id: string) {

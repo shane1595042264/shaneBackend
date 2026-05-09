@@ -11,17 +11,18 @@ const { mockSelect, mockInsert, mockUpdate, mockDelete } = vi.hoisted(() => ({
 vi.mock("@/db/client", () => ({
   db: { select: mockSelect, insert: mockInsert, update: mockUpdate, delete: mockDelete },
 }));
-vi.mock("@/db/schema", () => ({ journalComments: {}, journalEntries: {} }));
+vi.mock("@/db/schema", () => ({ journalComments: {}, journalEntries: {}, users: {} }));
 vi.mock("drizzle-orm", () => ({
   eq: vi.fn((c, v) => ({ c, v })),
   and: vi.fn((...a) => ({ and: a })),
   asc: vi.fn((c) => ({ c, dir: "asc" })),
+  getTableColumns: vi.fn(() => ({})),
 }));
 
 function chain(rows: unknown[]) {
   const c: Record<string, unknown> = {};
   const t = Promise.resolve(rows);
-  for (const m of ["from", "where", "orderBy", "limit", "innerJoin"]) c[m] = vi.fn(() => c);
+  for (const m of ["from", "where", "orderBy", "limit", "innerJoin", "leftJoin"]) c[m] = vi.fn(() => c);
   Object.assign(c, { then: (r: any, j: any) => t.then(r, j) });
   return c;
 }
@@ -43,10 +44,26 @@ describe("createComment", () => {
 });
 
 describe("listForEntry", () => {
-  it("returns comments asc by createdAt", async () => {
-    mockSelect.mockReturnValue(chain([{ id: "c1" }, { id: "c2" }]));
+  it("attaches author { id, name, avatarUrl } from the joined users row", async () => {
+    mockSelect.mockReturnValue(chain([
+      { id: "c1", authorId: "u1", authorName: "Alice", authorAvatarUrl: "https://img/a.png" },
+      { id: "c2", authorId: "u2", authorName: null, authorAvatarUrl: null },
+    ]));
     const out = await listForEntry("e1");
     expect(out).toHaveLength(2);
+    expect(out[0]).toMatchObject({ id: "c1", authorId: "u1", author: { id: "u1", name: "Alice", avatarUrl: "https://img/a.png" } });
+    expect(out[1].author).toEqual({ id: "u2", name: null, avatarUrl: null });
+    // Joined columns are stripped from the top level
+    expect("authorName" in out[0]).toBe(false);
+    expect("authorAvatarUrl" in out[0]).toBe(false);
+  });
+
+  it("sets author to null when authorId is missing", async () => {
+    mockSelect.mockReturnValue(chain([
+      { id: "c1", authorId: null, authorName: null, authorAvatarUrl: null },
+    ]));
+    const out = await listForEntry("e1");
+    expect(out[0].author).toBeNull();
   });
 });
 
