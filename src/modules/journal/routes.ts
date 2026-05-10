@@ -72,6 +72,7 @@ journalRoutes.get("/entries/:date", optionalAuth, zValidator("param", dateParam)
   if (!row) return c.json({ error: "Not found" }, 404);
   return c.json({
     entry: row.entry,
+    author: row.author,
     content: row.currentVersion?.content ?? "",
     currentVersionNum: row.currentVersion?.versionNum ?? 1,
   });

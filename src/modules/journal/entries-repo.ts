@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { and, eq, desc, lt, gte, lte, sql } from "drizzle-orm";
 import { db } from "@/db/client";
-import { journalEntries, journalVersions, journalComments } from "@/db/schema";
+import { journalEntries, journalVersions, journalComments, users } from "@/db/schema";
 
 const EXCERPT_SOURCE_LEN = 500;
 
@@ -46,12 +46,20 @@ export async function getEntryByDate(date: string) {
     .select({
       entry: journalEntries,
       currentVersion: journalVersions,
+      authorName: users.name,
+      authorAvatarUrl: users.avatarUrl,
     })
     .from(journalEntries)
     .leftJoin(journalVersions, eq(journalEntries.currentVersionId, journalVersions.id))
+    .leftJoin(users, eq(users.id, journalEntries.authorId))
     .where(and(eq(journalEntries.date, date), eq(journalEntries.status, "published")))
     .limit(1);
-  return row ?? null;
+  if (!row) return null;
+  const { authorName, authorAvatarUrl, ...rest } = row;
+  return {
+    ...rest,
+    author: { id: rest.entry.authorId, name: authorName, avatarUrl: authorAvatarUrl },
+  };
 }
 
 export async function listEntries(opts: {
@@ -64,7 +72,7 @@ export async function listEntries(opts: {
   if (opts.cursorDate) where.push(lt(journalEntries.date, opts.cursorDate));
   if (opts.from) where.push(gte(journalEntries.date, opts.from));
   if (opts.to) where.push(lte(journalEntries.date, opts.to));
-  return db
+  const rows = await db
     .select({
       id: journalEntries.id,
       date: journalEntries.date,
@@ -77,12 +85,19 @@ export async function listEntries(opts: {
       updatedAt: journalEntries.updatedAt,
       contentExcerpt: sql<string | null>`substring(${journalVersions.content} from 1 for ${EXCERPT_SOURCE_LEN})`,
       commentCount: sql<number>`(SELECT COUNT(*)::int FROM ${journalComments} WHERE ${journalComments.entryId} = ${journalEntries.id})`,
+      authorName: users.name,
+      authorAvatarUrl: users.avatarUrl,
     })
     .from(journalEntries)
     .leftJoin(journalVersions, eq(journalEntries.currentVersionId, journalVersions.id))
+    .leftJoin(users, eq(users.id, journalEntries.authorId))
     .where(and(...where))
     .orderBy(desc(journalEntries.date))
     .limit(opts.limit);
+  return rows.map(({ authorName, authorAvatarUrl, ...rest }) => ({
+    ...rest,
+    author: { id: rest.authorId, name: authorName, avatarUrl: authorAvatarUrl },
+  }));
 }
 
 export async function softDeleteEntry(date: string, authorId: string): Promise<boolean> {

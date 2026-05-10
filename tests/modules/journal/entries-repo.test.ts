@@ -14,6 +14,7 @@ vi.mock("@/db/schema", () => ({
   journalEntries: {},
   journalVersions: {},
   journalComments: { entryId: {} },
+  users: { id: {}, name: {}, avatarUrl: {} },
 }));
 vi.mock("drizzle-orm", () => ({
   eq: vi.fn((c: unknown, v: unknown) => ({ c, v })),
@@ -87,19 +88,36 @@ describe("getEntryByDate", () => {
     expect(await getEntryByDate("2026-04-29")).toBeNull();
   });
 
-  it("returns entry+currentVersion when found", async () => {
-    mockSelect.mockReturnValue(chain([{ entry: { id: "e1", date: "2026-04-29" }, currentVersion: { versionNum: 1, content: "hi" } }]));
+  it("returns entry+currentVersion+author when found", async () => {
+    mockSelect.mockReturnValue(
+      chain([
+        {
+          entry: { id: "e1", date: "2026-04-29", authorId: "u1" },
+          currentVersion: { versionNum: 1, content: "hi" },
+          authorName: "Shane",
+          authorAvatarUrl: "https://example.com/a.png",
+        },
+      ])
+    );
     const out = await getEntryByDate("2026-04-29");
     expect(out?.entry.id).toBe("e1");
     expect(out?.currentVersion?.content).toBe("hi");
+    expect(out?.author).toEqual({ id: "u1", name: "Shane", avatarUrl: "https://example.com/a.png" });
   });
 });
 
 describe("listEntries", () => {
   it("applies cursor-date and limit", async () => {
-    mockSelect.mockReturnValue(chain([{ id: "e1", date: "2026-04-28" }]));
+    mockSelect.mockReturnValue(chain([{ id: "e1", date: "2026-04-28", authorId: "u1" }]));
     const out = await listEntries({ limit: 10, cursorDate: "2026-04-29" });
-    expect(out).toEqual([{ id: "e1", date: "2026-04-28" }]);
+    expect(out).toEqual([
+      {
+        id: "e1",
+        date: "2026-04-28",
+        authorId: "u1",
+        author: { id: "u1", name: undefined, avatarUrl: undefined },
+      },
+    ]);
   });
 
   it("applies from/to date range", async () => {
@@ -113,6 +131,28 @@ describe("listEntries", () => {
     await listEntries({ limit: 10 });
     const projection = mockSelect.mock.calls[0][0];
     expect(projection).toHaveProperty("commentCount");
+  });
+
+  it("projects authorName/authorAvatarUrl and maps them into author { id, name, avatarUrl }", async () => {
+    mockSelect.mockReturnValue(
+      chain([
+        {
+          id: "e1",
+          date: "2026-04-28",
+          authorId: "u1",
+          authorName: "Shane",
+          authorAvatarUrl: "https://example.com/a.png",
+        },
+      ])
+    );
+    const out = await listEntries({ limit: 10 });
+    const projection = mockSelect.mock.calls[0][0];
+    expect(projection).toHaveProperty("authorName");
+    expect(projection).toHaveProperty("authorAvatarUrl");
+    expect(out[0].author).toEqual({ id: "u1", name: "Shane", avatarUrl: "https://example.com/a.png" });
+    // The flattened authorName/authorAvatarUrl are stripped from the row.
+    expect(out[0]).not.toHaveProperty("authorName");
+    expect(out[0]).not.toHaveProperty("authorAvatarUrl");
   });
 });
 
