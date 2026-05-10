@@ -10,18 +10,19 @@ const { mockSelect, mockInsert, mockUpdate, mockTransaction } = vi.hoisted(() =>
 vi.mock("@/db/client", () => ({
   db: { select: mockSelect, insert: mockInsert, update: mockUpdate, transaction: mockTransaction },
 }));
-vi.mock("@/db/schema", () => ({ journalEntries: {}, journalVersions: {} }));
+vi.mock("@/db/schema", () => ({ journalEntries: {}, journalVersions: {}, users: {} }));
 vi.mock("drizzle-orm", () => ({
   eq: vi.fn((c: unknown, v: unknown) => ({ c, v })),
   and: vi.fn((...a: unknown[]) => ({ and: a })),
   desc: vi.fn((c: unknown) => ({ c, dir: "desc" })),
   sql: vi.fn(() => ({ __sql: true })),
+  getTableColumns: vi.fn(() => ({})),
 }));
 
 function chain(rows: unknown[]) {
   const c: Record<string, unknown> = {};
   const t = Promise.resolve(rows);
-  for (const m of ["from", "where", "orderBy", "limit"]) c[m] = vi.fn(() => c);
+  for (const m of ["from", "where", "orderBy", "limit", "leftJoin"]) c[m] = vi.fn(() => c);
   Object.assign(c, { then: (r: any, j: any) => t.then(r, j) });
   return c;
 }
@@ -115,15 +116,20 @@ describe("appendDirectVersion", () => {
 });
 
 describe("listVersions", () => {
-  it("returns versions ordered desc by versionNum", async () => {
+  it("returns versions ordered desc by versionNum, with editor attached", async () => {
     mockSelect.mockReturnValue(chain([
-      { id: "v3", versionNum: 3 },
-      { id: "v2", versionNum: 2 },
-      { id: "v1", versionNum: 1 },
+      { id: "v3", versionNum: 3, editorId: "u1", editorName: "Alice", editorAvatarUrl: "https://img/a.png" },
+      { id: "v2", versionNum: 2, editorId: "u2", editorName: null, editorAvatarUrl: null },
+      { id: "v1", versionNum: 1, editorId: "u1", editorName: "Alice", editorAvatarUrl: "https://img/a.png" },
     ]));
     const out = await listVersions("e1");
     expect(out).toHaveLength(3);
     expect(out[0].versionNum).toBe(3);
+    expect(out[0].editor).toEqual({ id: "u1", name: "Alice", avatarUrl: "https://img/a.png" });
+    expect(out[1].editor).toEqual({ id: "u2", name: null, avatarUrl: null });
+    // Joined columns are stripped from the top level
+    expect("editorName" in out[0]).toBe(false);
+    expect("editorAvatarUrl" in out[0]).toBe(false);
   });
 });
 

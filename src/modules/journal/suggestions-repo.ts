@@ -1,8 +1,18 @@
-import { and, desc, eq, sql } from "drizzle-orm";
+import { and, desc, eq, getTableColumns, sql } from "drizzle-orm";
 import { db } from "@/db/client";
-import { journalEntries, journalVersions, journalSuggestions } from "@/db/schema";
+import { journalEntries, journalVersions, journalSuggestions, users } from "@/db/schema";
 import { hashContent } from "./entries-repo";
 import { VersionConflictError } from "./versions-repo";
+
+function attachProposer<T extends { proposerId: string }>(
+  row: T & { proposerName: string | null; proposerAvatarUrl: string | null }
+) {
+  const { proposerName, proposerAvatarUrl, ...suggestion } = row;
+  return {
+    ...(suggestion as T),
+    proposer: { id: row.proposerId, name: proposerName, avatarUrl: proposerAvatarUrl },
+  };
+}
 
 export async function createSuggestion(input: {
   entryId: string;
@@ -33,34 +43,59 @@ export async function createSuggestion(input: {
 
 export async function getSuggestion(id: string) {
   const [row] = await db
-    .select()
+    .select({
+      ...getTableColumns(journalSuggestions),
+      proposerName: users.name,
+      proposerAvatarUrl: users.avatarUrl,
+    })
     .from(journalSuggestions)
+    .leftJoin(users, eq(users.id, journalSuggestions.proposerId))
     .where(eq(journalSuggestions.id, id))
     .limit(1);
-  return row ?? null;
+  return row ? attachProposer(row) : null;
 }
 
 export async function listSuggestionsForEntry(entryId: string, status?: string) {
   const where = status
     ? and(eq(journalSuggestions.entryId, entryId), eq(journalSuggestions.status, status as any))
     : eq(journalSuggestions.entryId, entryId);
-  return db
-    .select()
+  const rows = await db
+    .select({
+      ...getTableColumns(journalSuggestions),
+      proposerName: users.name,
+      proposerAvatarUrl: users.avatarUrl,
+    })
     .from(journalSuggestions)
+    .leftJoin(users, eq(users.id, journalSuggestions.proposerId))
     .where(where)
     .orderBy(desc(journalSuggestions.createdAt));
+  return rows.map(attachProposer);
 }
 
 export async function inboxFor(authorId: string) {
-  return db
+  const rows = await db
     .select({
       suggestion: journalSuggestions,
       entry: journalEntries,
+      proposerName: users.name,
+      proposerAvatarUrl: users.avatarUrl,
     })
     .from(journalSuggestions)
     .innerJoin(journalEntries, eq(journalEntries.id, journalSuggestions.entryId))
+    .leftJoin(users, eq(users.id, journalSuggestions.proposerId))
     .where(and(eq(journalEntries.authorId, authorId), eq(journalSuggestions.status, "pending")))
     .orderBy(desc(journalSuggestions.createdAt));
+  return rows.map((row) => ({
+    suggestion: {
+      ...row.suggestion,
+      proposer: {
+        id: row.suggestion.proposerId,
+        name: row.proposerName,
+        avatarUrl: row.proposerAvatarUrl,
+      },
+    },
+    entry: row.entry,
+  }));
 }
 
 export async function approveSuggestion(suggestionId: string, authorId: string, ifMatchVersionNum: number) {

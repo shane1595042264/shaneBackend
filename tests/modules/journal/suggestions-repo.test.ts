@@ -14,12 +14,14 @@ vi.mock("@/db/schema", () => ({
   journalEntries: {},
   journalVersions: {},
   journalSuggestions: {},
+  users: {},
 }));
 vi.mock("drizzle-orm", () => ({
   eq: vi.fn((c, v) => ({ c, v })),
   and: vi.fn((...a) => ({ and: a })),
   desc: vi.fn((c) => ({ c, dir: "desc" })),
   sql: vi.fn(() => ({ __sql: true })),
+  getTableColumns: vi.fn(() => ({})),
 }));
 
 function chain(rows: unknown[]) {
@@ -69,35 +71,53 @@ describe("getSuggestion", () => {
     expect(await getSuggestion("missing")).toBeNull();
   });
 
-  it("returns the suggestion when found", async () => {
-    mockSelect.mockReturnValue(chain([{ id: "s1", entryId: "e1", proposerId: "u2", status: "pending" }]));
+  it("returns the suggestion with proposer attached", async () => {
+    mockSelect.mockReturnValue(chain([
+      { id: "s1", entryId: "e1", proposerId: "u2", status: "pending", proposerName: "Alice", proposerAvatarUrl: "https://img/a.png" },
+    ]));
     const s = await getSuggestion("s1");
     expect(s?.id).toBe("s1");
+    expect(s?.proposer).toEqual({ id: "u2", name: "Alice", avatarUrl: "https://img/a.png" });
+    // Joined columns are stripped from the top level
+    expect("proposerName" in (s as any)).toBe(false);
+    expect("proposerAvatarUrl" in (s as any)).toBe(false);
   });
 });
 
 describe("listSuggestionsForEntry", () => {
   it("filters by status when supplied", async () => {
-    mockSelect.mockReturnValue(chain([{ id: "s1", status: "pending" }]));
+    mockSelect.mockReturnValue(chain([{ id: "s1", proposerId: "u2", status: "pending", proposerName: null, proposerAvatarUrl: null }]));
     const out = await listSuggestionsForEntry("e1", "pending");
     expect(out).toHaveLength(1);
   });
 
-  it("returns all when no status filter", async () => {
-    mockSelect.mockReturnValue(chain([{ id: "s1" }, { id: "s2" }]));
+  it("returns all entries with proposer attached", async () => {
+    mockSelect.mockReturnValue(chain([
+      { id: "s1", proposerId: "u2", proposerName: "Alice", proposerAvatarUrl: "https://img/a.png" },
+      { id: "s2", proposerId: "u3", proposerName: null, proposerAvatarUrl: null },
+    ]));
     const out = await listSuggestionsForEntry("e1");
     expect(out).toHaveLength(2);
+    expect(out[0].proposer).toEqual({ id: "u2", name: "Alice", avatarUrl: "https://img/a.png" });
+    expect(out[1].proposer).toEqual({ id: "u3", name: null, avatarUrl: null });
   });
 });
 
 describe("inboxFor", () => {
-  it("returns pending suggestions on entries the user authored", async () => {
+  it("returns pending suggestions on entries the user authored, with proposer attached on each suggestion", async () => {
     mockSelect.mockReturnValue(chain([
-      { suggestion: { id: "s1", status: "pending" }, entry: { id: "e1", date: "2026-05-03", authorId: "u1" } },
+      {
+        suggestion: { id: "s1", proposerId: "u2", status: "pending" },
+        entry: { id: "e1", date: "2026-05-03", authorId: "u1" },
+        proposerName: "Alice",
+        proposerAvatarUrl: "https://img/a.png",
+      },
     ]));
     const out = await inboxFor("u1");
     expect(out).toHaveLength(1);
     expect(out[0].suggestion.id).toBe("s1");
+    expect(out[0].suggestion.proposer).toEqual({ id: "u2", name: "Alice", avatarUrl: "https://img/a.png" });
+    expect(out[0].entry.id).toBe("e1");
   });
 });
 

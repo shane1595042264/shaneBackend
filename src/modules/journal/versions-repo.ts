@@ -1,6 +1,6 @@
-import { and, desc, eq, sql } from "drizzle-orm";
+import { and, desc, eq, getTableColumns, sql } from "drizzle-orm";
 import { db } from "@/db/client";
-import { journalEntries, journalVersions } from "@/db/schema";
+import { journalEntries, journalVersions, users } from "@/db/schema";
 import { hashContent } from "./entries-repo";
 
 export class VersionConflictError extends Error {
@@ -60,11 +60,20 @@ export async function appendDirectVersion(input: AppendInput) {
 }
 
 export async function listVersions(entryId: string) {
-  return db
-    .select()
+  const rows = await db
+    .select({
+      ...getTableColumns(journalVersions),
+      editorName: users.name,
+      editorAvatarUrl: users.avatarUrl,
+    })
     .from(journalVersions)
+    .leftJoin(users, eq(users.id, journalVersions.editorId))
     .where(eq(journalVersions.entryId, entryId))
     .orderBy(desc(journalVersions.versionNum));
+  return rows.map(({ editorName, editorAvatarUrl, ...version }) => ({
+    ...version,
+    editor: { id: version.editorId, name: editorName, avatarUrl: editorAvatarUrl },
+  }));
 }
 
 export async function getVersion(entryId: string, versionNum: number) {
