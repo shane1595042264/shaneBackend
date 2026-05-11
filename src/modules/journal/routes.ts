@@ -4,11 +4,11 @@ import { z } from "zod";
 import { zValidator } from "@hono/zod-validator";
 import { requireAuth, optionalAuth, requireScope } from "@/modules/auth/middleware";
 import { listEntries, getEntryByDate, createEntry, softDeleteEntry } from "./entries-repo";
+import { createAppend, listAppendsForEntry } from "./appends-repo";
 import { eq, and, desc, asc, lt, gt } from "drizzle-orm";
 import { db } from "@/db/client";
 import { journalEntries } from "@/db/schema";
 import {
-  appendDirectVersion,
   listVersions,
   getVersion,
   revertToVersion,
@@ -70,11 +70,13 @@ journalRoutes.get("/entries/:date", optionalAuth, zValidator("param", dateParam)
   const { date } = c.req.valid("param");
   const row = await getEntryByDate(date);
   if (!row) return c.json({ error: "Not found" }, 404);
+  const appends = await listAppendsForEntry(row.entry.id);
   return c.json({
     entry: row.entry,
     author: row.author,
     content: row.currentVersion?.content ?? "",
     currentVersionNum: row.currentVersion?.versionNum ?? 1,
+    appends,
   });
 });
 
@@ -110,47 +112,56 @@ journalRoutes.delete(
   }
 );
 
-const editBody = z.object({ content: z.string().min(1) });
 const revertBody = z.object({ target_version_num: z.number().int().positive() });
 const versionNumParam = z.object({
   date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "YYYY-MM-DD"),
   num: z.coerce.number().int().positive(),
 });
 
-journalRoutes.patch(
-  "/entries/:date",
+journalRoutes.patch("/entries/:date", zValidator("param", dateParam), async (c) =>
+  c.json(
+    { error: "Entries are append-only; use POST /api/journal/entries/:date/appends" },
+    405
+  )
+);
+
+const appendBody = z.object({ content: z.string().min(1) });
+
+journalRoutes.post(
+  "/entries/:date/appends",
   requireAuth,
   requireScope("entries:write"),
   zValidator("param", dateParam),
-  zValidator("json", editBody),
+  zValidator("json", appendBody),
   async (c) => {
     const userId = c.get("userId") as string;
     const { date } = c.req.valid("param");
     const { content } = c.req.valid("json");
 
-    const ifMatch = c.req.header("If-Match");
-    if (!ifMatch) return c.json({ error: "If-Match header required" }, 428);
-    const ifMatchNum = parseInt(ifMatch, 10);
-    if (Number.isNaN(ifMatchNum)) return c.json({ error: "Invalid If-Match" }, 400);
-
     const row = await getEntryByDate(date);
     if (!row) return c.json({ error: "Not found" }, 404);
-    if (row.entry.authorId !== userId) return c.json({ error: "Only the author can edit directly" }, 403);
-
-    try {
-      const v = await appendDirectVersion({
-        entryId: row.entry.id,
-        editorId: userId,
-        content,
-        ifMatchVersionNum: ifMatchNum,
-      });
-      return c.json({ versionNum: v.versionNum, versionId: v.id });
-    } catch (err) {
-      if (err instanceof VersionConflictError) {
-        return c.json({ error: "Version conflict", currentVersionNum: err.currentVersionNum }, 409);
-      }
-      throw err;
+    if (row.entry.authorId !== userId) {
+      return c.json({ error: "Only the author can append" }, 403);
     }
+
+    const append = await createAppend({
+      entryId: row.entry.id,
+      authorId: userId,
+      content,
+    });
+    return c.json({ append }, 201);
+  }
+);
+
+journalRoutes.get(
+  "/entries/:date/appends",
+  optionalAuth,
+  zValidator("param", dateParam),
+  async (c) => {
+    const row = await getEntryByDate(c.req.valid("param").date);
+    if (!row) return c.json({ error: "Not found" }, 404);
+    const appends = await listAppendsForEntry(row.entry.id);
+    return c.json({ appends });
   }
 );
 

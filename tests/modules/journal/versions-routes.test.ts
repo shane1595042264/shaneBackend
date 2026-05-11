@@ -46,69 +46,23 @@ beforeEach(() => vi.clearAllMocks());
 const app = new Hono().route("/api/journal", journalRoutes);
 
 describe("PATCH /api/journal/entries/:date", () => {
-  it("creates new version when author edits with matching If-Match", async () => {
-    mockGetByDate.mockResolvedValue({ entry: { authorId: "u1", id: "e1" }, currentVersion: { versionNum: 3 } });
-    mockAppend.mockResolvedValue({ id: "v4", versionNum: 4 });
+  it("returns 405 — entries are append-only", async () => {
     const res = await app.request("/api/journal/entries/2026-04-29", {
       method: "PATCH",
-      headers: { "Content-Type": "application/json", "X-Test-User": "u1", "If-Match": "3" },
+      headers: { "Content-Type": "application/json", "X-Test-User": "u1", "If-Match": "1" },
       body: JSON.stringify({ content: "new" }),
     });
-    expect(res.status).toBe(200);
-    const body = await res.json();
-    expect(body.versionNum).toBe(4);
-    expect(mockAppend).toHaveBeenCalledWith(expect.objectContaining({ entryId: "e1", editorId: "u1", content: "new", ifMatchVersionNum: 3 }));
+    expect(res.status).toBe(405);
+    expect(mockAppend).not.toHaveBeenCalled();
   });
 
-  it("returns 403 when non-author tries direct edit", async () => {
-    mockGetByDate.mockResolvedValue({ entry: { authorId: "other", id: "e1" }, currentVersion: { versionNum: 1 } });
+  it("returns 405 even without auth (method itself is disabled)", async () => {
     const res = await app.request("/api/journal/entries/2026-04-29", {
       method: "PATCH",
-      headers: { "Content-Type": "application/json", "X-Test-User": "u1", "If-Match": "1" },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ content: "x" }),
     });
-    expect(res.status).toBe(403);
-  });
-
-  it("returns 409 with currentVersionNum on If-Match mismatch", async () => {
-    mockGetByDate.mockResolvedValue({ entry: { authorId: "u1", id: "e1" }, currentVersion: { versionNum: 5 } });
-    mockAppend.mockRejectedValue(new VersionConflictError(5));
-    const res = await app.request("/api/journal/entries/2026-04-29", {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json", "X-Test-User": "u1", "If-Match": "3" },
-      body: JSON.stringify({ content: "x" }),
-    });
-    expect(res.status).toBe(409);
-    const body = await res.json();
-    expect(body.currentVersionNum).toBe(5);
-  });
-
-  it("returns 428 if If-Match header missing", async () => {
-    const res = await app.request("/api/journal/entries/2026-04-29", {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json", "X-Test-User": "u1" },
-      body: JSON.stringify({ content: "x" }),
-    });
-    expect(res.status).toBe(428);
-  });
-
-  it("returns 401 without auth", async () => {
-    const res = await app.request("/api/journal/entries/2026-04-29", {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json", "If-Match": "1" },
-      body: JSON.stringify({ content: "x" }),
-    });
-    expect(res.status).toBe(401);
-  });
-
-  it("returns 404 when entry doesn't exist", async () => {
-    mockGetByDate.mockResolvedValue(null);
-    const res = await app.request("/api/journal/entries/2026-04-29", {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json", "X-Test-User": "u1", "If-Match": "1" },
-      body: JSON.stringify({ content: "x" }),
-    });
-    expect(res.status).toBe(404);
+    expect(res.status).toBe(405);
   });
 });
 

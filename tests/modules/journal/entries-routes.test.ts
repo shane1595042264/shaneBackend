@@ -2,11 +2,13 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { Hono } from "hono";
 
-const { mockListEntries, mockGetByDate, mockCreateEntry, mockSoftDelete } = vi.hoisted(() => ({
+const { mockListEntries, mockGetByDate, mockCreateEntry, mockSoftDelete, mockListAppends, mockCreateAppend } = vi.hoisted(() => ({
   mockListEntries: vi.fn(),
   mockGetByDate: vi.fn(),
   mockCreateEntry: vi.fn(),
   mockSoftDelete: vi.fn(),
+  mockListAppends: vi.fn().mockResolvedValue([]),
+  mockCreateAppend: vi.fn(),
 }));
 
 vi.mock("@/modules/journal/entries-repo", () => ({
@@ -15,6 +17,11 @@ vi.mock("@/modules/journal/entries-repo", () => ({
   createEntry: mockCreateEntry,
   softDeleteEntry: mockSoftDelete,
   hashContent: (s: string) => "hash-" + s.length,
+}));
+
+vi.mock("@/modules/journal/appends-repo", () => ({
+  listAppendsForEntry: mockListAppends,
+  createAppend: mockCreateAppend,
 }));
 
 vi.mock("@/modules/auth/middleware", () => ({

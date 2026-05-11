@@ -491,6 +491,24 @@ export const commentReactions = pgTable(
   ]
 );
 
+export const journalAppends = pgTable(
+  "journal_appends",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    entryId: uuid("entry_id")
+      .notNull()
+      .references(() => journalEntries.id, { onDelete: "cascade" }),
+    authorId: uuid("author_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "restrict" }),
+    content: text("content").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("journal_appends_entry_created_idx").on(t.entryId, t.createdAt),
+  ]
+);
+
 export const apiTokens = pgTable("api_tokens", {
   id: uuid("id").primaryKey().defaultRandom(),
   userId: uuid("user_id")
