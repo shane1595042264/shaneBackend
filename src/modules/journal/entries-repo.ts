@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { and, eq, desc, lt, gte, lte, sql } from "drizzle-orm";
 import { db } from "@/db/client";
-import { journalEntries, journalVersions, journalComments, users } from "@/db/schema";
+import { journalEntries, journalVersions, journalComments, journalAppends, users } from "@/db/schema";
 
 const EXCERPT_SOURCE_LEN = 500;
 
@@ -85,6 +85,7 @@ export async function listEntries(opts: {
       updatedAt: journalEntries.updatedAt,
       contentExcerpt: sql<string | null>`substring(${journalVersions.content} from 1 for ${EXCERPT_SOURCE_LEN})`,
       commentCount: sql<number>`(SELECT COUNT(*)::int FROM ${journalComments} WHERE ${journalComments.entryId} = ${journalEntries.id})`,
+      appendCount: sql<number>`(SELECT COUNT(*)::int FROM ${journalAppends} WHERE ${journalAppends.entryId} = ${journalEntries.id})`,
       authorName: users.name,
       authorAvatarUrl: users.avatarUrl,
     })
