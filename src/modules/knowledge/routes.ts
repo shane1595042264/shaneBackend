@@ -229,7 +229,11 @@ knowledgeRoutes.post(
       return c.json({ entries, failures: [] }, 201);
     } catch (err: any) {
       console.error("[knowledge] POST /notes error:", err.message, err.stack);
-      return c.json({ error: err.message }, 500);
+      // Distinguish LLM-chain exhaustion from generic backend errors so callers can
+      // retry intelligently. The shared llm module throws this exact message string
+      // when Anthropic, Gemini, and Groq have all failed (see shared/llm.ts:223).
+      const status = err?.message?.includes("All LLM providers failed") ? 502 : 500;
+      return c.json({ error: err.message }, status);
     }
   }
 );

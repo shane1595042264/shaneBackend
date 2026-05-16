@@ -11,9 +11,6 @@ interface Options {
 }
 
 export function createPATRateLimit(opts: Options) {
-  if (!buckets.has(opts.bucket)) buckets.set(opts.bucket, new Map());
-  const bucket = buckets.get(opts.bucket)!;
-
   return createMiddleware<{ Variables: { tokenId: string | null } }>(
     async (c, next) => {
       const tokenId = c.get("tokenId");
@@ -22,6 +19,13 @@ export function createPATRateLimit(opts: Options) {
         await next();
         return;
       }
+
+      // Look up the bucket per request, not at factory time. If __resetRateLimitBuckets
+      // ran (test isolation), the outer Map's inner Maps were cleared in place — but
+      // accessing through the outer Map each call also lets a freshly-created bucket
+      // take effect for in-flight requests.
+      if (!buckets.has(opts.bucket)) buckets.set(opts.bucket, new Map());
+      const bucket = buckets.get(opts.bucket)!;
 
       const now = Date.now();
       const entry = bucket.get(tokenId);
@@ -45,7 +49,9 @@ export function createPATRateLimit(opts: Options) {
   );
 }
 
-/** Test-only helper to clear all rate-limit buckets between tests. */
+/** Test-only helper to clear all rate-limit state between tests. Empties each inner
+ * bucket in place so any factory closure still pointing at one sees the cleared map. */
 export function __resetRateLimitBuckets() {
+  for (const inner of buckets.values()) inner.clear();
   buckets.clear();
 }
