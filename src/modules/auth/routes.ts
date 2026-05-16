@@ -123,6 +123,7 @@ const ALLOWED_SCOPES = [
   "suggestions:write",
   "comments:write",
   "reactions:write",
+  "knowledge:write",
 ] as const;
 
 const mintTokenSchema = z.object({
