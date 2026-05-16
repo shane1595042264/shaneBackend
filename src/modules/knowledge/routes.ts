@@ -5,8 +5,10 @@ import { db } from "@/db/client";
 import { vocabWords, vocabConnections } from "@/db/schema";
 import { desc, eq, and, or, ilike, sql } from "drizzle-orm";
 import { enrichWord } from "@/modules/vocabulary/ai-enricher";
-import { classifyNote } from "./classifier";
+import { classifyNote, type ClassificationSource } from "./classifier";
 import { postToBilibili } from "./bilibili";
+import { requireAuth, requireScope } from "@/modules/auth/middleware";
+import { createPATRateLimit } from "@/modules/shared/rate-limit";
 
 export const knowledgeRoutes = new Hono();
 
@@ -28,70 +30,209 @@ const wordIdQuerySchema = z.object({
 });
 
 // ---------------------------------------------------------------------------
-// Smart Note Input — AI classifies and creates entry
+// Smart Note Input — AI classifies and creates entry.
+// Accepts JWT (browser) or PAT with knowledge:write scope.
+// Three request shapes: { text } (legacy), { text, source }, { notes: [...] }.
 // ---------------------------------------------------------------------------
 
-const noteSchema = z.object({
-  text: z.string().min(1).max(5000),
-});
+const sourceObjectSchema = z
+  .object({
+    app: z.string().min(1).max(100).nullish(),
+    book: z.string().min(1).max(255).nullish(),
+    author: z.string().min(1).max(255).nullish(),
+    location: z.string().min(1).max(255).nullish(),
+    rawContext: z.string().min(1).max(5000).nullish(),
+  })
+  .strict();
 
-knowledgeRoutes.post("/notes", zValidator("json", noteSchema), async (c) => {
-  const { text } = c.req.valid("json");
+const sourceInputSchema = z.union([z.string().min(1).max(100), sourceObjectSchema]);
 
-  try {
-    const classified = await classifyNote(text);
+const singleNoteSchema = z
+  .object({
+    text: z.string().min(1).max(5000),
+    source: sourceInputSchema.optional(),
+  })
+  .strict();
 
-    // Check for duplicate
-    const [existing] = await db
-      .select()
-      .from(vocabWords)
-      .where(
-        and(
-          eq(vocabWords.word, classified.word),
-          eq(vocabWords.language, classified.language),
-          eq(vocabWords.category, classified.category)
-        )
-      );
+const batchNotesSchema = z
+  .object({
+    notes: z.array(singleNoteSchema).min(1).max(50),
+  })
+  .strict();
 
-    if (existing) {
-      return c.json(
-        {
-          error: `"${classified.word}" already exists in ${classified.category}/${classified.language}`,
-          existingEntry: existing,
-          category: classified.category,
-        },
-        409
-      );
-    }
+const noteSchema = z.union([singleNoteSchema, batchNotesSchema]);
 
-    const [entry] = await db
-      .insert(vocabWords)
-      .values({
-        word: classified.word,
-        language: classified.language,
-        category: classified.category,
-        definition: classified.definition || null,
-        pronunciation: classified.pronunciation || null,
-        partOfSpeech: classified.partOfSpeech || null,
-        exampleSentence: classified.exampleSentence || null,
-        labels: classified.labels,
-        aiMetadata: {
-          enrichedAt: new Date().toISOString(),
-          originalNote: text,
-          classifiedCategory: classified.category,
-        },
-      })
-      .returning();
+type SingleNoteInput = z.infer<typeof singleNoteSchema>;
+type CallerSource = {
+  app: string | null;
+  book: string | null;
+  author: string | null;
+  location: string | null;
+  rawContext: string | null;
+};
 
-    // Fire-and-forget: post to Bilibili
-    postToBilibili(entry).catch(() => {});
-
-    return c.json({ entry, category: classified.category }, 201);
-  } catch (err: any) {
-    console.error("[knowledge] POST /notes error:", err.message, err.stack);
-    return c.json({ error: err.message }, 500);
+function normalizeSourceInput(input: SingleNoteInput["source"]): CallerSource | null {
+  if (input === undefined) return null;
+  if (typeof input === "string") {
+    return { app: input, book: null, author: null, location: null, rawContext: null };
   }
+  return {
+    app: input.app ?? null,
+    book: input.book ?? null,
+    author: input.author ?? null,
+    location: input.location ?? null,
+    rawContext: input.rawContext ?? null,
+  };
+}
+
+function mergeSource(
+  caller: CallerSource | null,
+  classifier: ClassificationSource | null,
+  originalText: string
+): Record<string, string | null> | null {
+  const app = caller?.app ?? classifier?.app ?? null;
+  const book = caller?.book ?? classifier?.book ?? null;
+  const author = caller?.author ?? classifier?.author ?? null;
+  const location = caller?.location ?? classifier?.location ?? null;
+  const hasAnyMeaningful = [app, book, author, location].some((v) => v !== null);
+  if (!hasAnyMeaningful) return null;
+  const rawContext = caller?.rawContext ?? classifier?.rawContext ?? originalText;
+  return { app, book, author, location, rawContext };
+}
+
+async function ingestSingle(
+  text: string,
+  callerSource: CallerSource | null
+) {
+  const classified = await classifyNote(text);
+  const source = mergeSource(callerSource, classified.source, text);
+  const [entry] = await db
+    .insert(vocabWords)
+    .values({
+      word: classified.word,
+      language: classified.language,
+      category: classified.category,
+      definition: classified.definition || null,
+      pronunciation: classified.pronunciation || null,
+      partOfSpeech: classified.partOfSpeech || null,
+      exampleSentence: classified.exampleSentence || null,
+      labels: classified.labels,
+      aiMetadata: {
+        enrichedAt: new Date().toISOString(),
+        originalNote: text,
+        classifiedCategory: classified.category,
+      },
+      source,
+    })
+    .returning();
+  postToBilibili(entry).catch(() => {});
+  return entry;
+}
+
+const singleRateLimit = createPATRateLimit({
+  bucket: "knowledge-notes-single",
+  limitPerMinute: 30,
 });
+const batchRateLimit = createPATRateLimit({
+  bucket: "knowledge-notes-batch",
+  limitPerMinute: 5,
+});
+
+knowledgeRoutes.post(
+  "/notes",
+  requireAuth,
+  requireScope("knowledge:write"),
+  zValidator("json", noteSchema),
+  async (c, next) => {
+    const body = c.req.valid("json");
+    const limiter = "notes" in body ? batchRateLimit : singleRateLimit;
+    return limiter(c, next);
+  },
+  async (c) => {
+    const body = c.req.valid("json");
+    const tokenId = c.get("tokenId") as string | null;
+    const start = Date.now();
+
+    try {
+      if ("text" in body) {
+        const callerSource = normalizeSourceInput(body.source);
+        const entry = await ingestSingle(body.text, callerSource);
+        const sourceApp = (entry as any)?.source?.app ?? "manual";
+        console.log(
+          `[ingest] token=${tokenId ?? "jwt"} source=${sourceApp} entries=1 ms=${Date.now() - start}`
+        );
+        return c.json({ entries: [entry] }, 201);
+      }
+
+      // Batch path.
+      const entries: unknown[] = [];
+      const failures: { index: number; text: string; error: string }[] = [];
+      const seen = new Set<string>();
+
+      const classifiedResults = await Promise.allSettled(
+        body.notes.map((n) => classifyNote(n.text))
+      );
+
+      for (let i = 0; i < body.notes.length; i++) {
+        const note = body.notes[i];
+        const result = classifiedResults[i];
+        if (result.status === "rejected") {
+          const err = result.reason instanceof Error ? result.reason.message : String(result.reason);
+          failures.push({ index: i, text: note.text, error: err });
+          continue;
+        }
+        const classified = result.value;
+        const dedupeKey = `${classified.word}|${classified.language}`;
+        if (seen.has(dedupeKey)) continue;
+        seen.add(dedupeKey);
+
+        const callerSource = normalizeSourceInput(note.source);
+        const source = mergeSource(callerSource, classified.source, note.text);
+        try {
+          const [entry] = await db
+            .insert(vocabWords)
+            .values({
+              word: classified.word,
+              language: classified.language,
+              category: classified.category,
+              definition: classified.definition || null,
+              pronunciation: classified.pronunciation || null,
+              partOfSpeech: classified.partOfSpeech || null,
+              exampleSentence: classified.exampleSentence || null,
+              labels: classified.labels,
+              aiMetadata: {
+                enrichedAt: new Date().toISOString(),
+                originalNote: note.text,
+                classifiedCategory: classified.category,
+              },
+              source,
+            })
+            .returning();
+          entries.push(entry);
+          postToBilibili(entry).catch(() => {});
+        } catch (insertErr) {
+          const err = insertErr instanceof Error ? insertErr.message : String(insertErr);
+          failures.push({ index: i, text: note.text, error: err });
+        }
+      }
+
+      console.log(
+        `[ingest] token=${tokenId ?? "jwt"} batch=${body.notes.length} ok=${entries.length} failed=${failures.length} ms=${Date.now() - start}`
+      );
+
+      if (entries.length === 0 && failures.length > 0) {
+        return c.json({ entries: [], failures }, 502);
+      }
+      if (failures.length > 0) {
+        return c.json({ entries, failures }, 207);
+      }
+      return c.json({ entries, failures: [] }, 201);
+    } catch (err: any) {
+      console.error("[knowledge] POST /notes error:", err.message, err.stack);
+      return c.json({ error: err.message }, 500);
+    }
+  }
+);
 
 // ---------------------------------------------------------------------------
 // Categories
