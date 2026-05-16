@@ -4,39 +4,48 @@ import { jwtVerify } from "jose";
 import { JWT_SECRET } from "./config";
 import { lookupActiveToken, TOKEN_PREFIX } from "./tokens";
 
-type AuthVars = {
+export type AuthVars = {
   userId: string | null;
   tokenScopes: string[] | null;
+  tokenId: string | null;
 };
 
-async function resolveAuth(authHeader: string | undefined): Promise<{ userId: string | null; tokenScopes: string[] | null }> {
-  if (!authHeader?.startsWith("Bearer ")) return { userId: null, tokenScopes: null };
+type ResolvedAuth = {
+  userId: string | null;
+  tokenScopes: string[] | null;
+  tokenId: string | null;
+};
+
+async function resolveAuth(authHeader: string | undefined): Promise<ResolvedAuth> {
+  if (!authHeader?.startsWith("Bearer ")) return { userId: null, tokenScopes: null, tokenId: null };
   const value = authHeader.slice("Bearer ".length).trim();
   if (value.startsWith(TOKEN_PREFIX)) {
     const result = await lookupActiveToken(value);
-    if (!result) return { userId: null, tokenScopes: null };
-    return { userId: result.userId, tokenScopes: result.scopes };
+    if (!result) return { userId: null, tokenScopes: null, tokenId: null };
+    return { userId: result.userId, tokenScopes: result.scopes, tokenId: result.tokenId };
   }
   try {
     const { payload } = await jwtVerify(value, JWT_SECRET);
-    return { userId: (payload.userId as string) ?? null, tokenScopes: null };
+    return { userId: (payload.userId as string) ?? null, tokenScopes: null, tokenId: null };
   } catch {
-    return { userId: null, tokenScopes: null };
+    return { userId: null, tokenScopes: null, tokenId: null };
   }
 }
 
 export const optionalAuth = createMiddleware<{ Variables: AuthVars }>(async (c, next) => {
-  const { userId, tokenScopes } = await resolveAuth(c.req.header("Authorization"));
+  const { userId, tokenScopes, tokenId } = await resolveAuth(c.req.header("Authorization"));
   c.set("userId", userId);
   c.set("tokenScopes", tokenScopes);
+  c.set("tokenId", tokenId);
   await next();
 });
 
 export const requireAuth = createMiddleware<{ Variables: AuthVars }>(async (c, next) => {
-  const { userId, tokenScopes } = await resolveAuth(c.req.header("Authorization"));
+  const { userId, tokenScopes, tokenId } = await resolveAuth(c.req.header("Authorization"));
   if (!userId) return c.json({ error: "Authentication required" }, 401);
   c.set("userId", userId);
   c.set("tokenScopes", tokenScopes);
+  c.set("tokenId", tokenId);
   await next();
 });
 

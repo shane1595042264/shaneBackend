@@ -101,7 +101,7 @@ describe("lookupActiveToken", () => {
     expect(result).toBeNull();
   });
 
-  it("returns userId and scopes and fires an update when token is found", async () => {
+  it("returns tokenId, userId, and scopes and fires an update when token is found", async () => {
     const row = { id: "tok-1", userId: "user-1", scopes: ["entries:write"], revokedAt: null };
     const selectChain = {
       from: vi.fn(() => ({
@@ -116,7 +116,7 @@ describe("lookupActiveToken", () => {
     };
     mockUpdate.mockReturnValue(updateChain);
     const result = await lookupActiveToken("pat_" + "a".repeat(43));
-    expect(result).toEqual({ userId: "user-1", scopes: ["entries:write"] });
+    expect(result).toEqual({ tokenId: "tok-1", userId: "user-1", scopes: ["entries:write"] });
     expect(mockUpdate).toHaveBeenCalled();
   });
 });

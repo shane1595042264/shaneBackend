@@ -60,5 +60,5 @@ export async function lookupActiveToken(raw: string) {
     .update(apiTokens)
     .set({ lastUsedAt: new Date() })
     .where(eq(apiTokens.id, row.id));
-  return { userId: row.userId, scopes: row.scopes };
+  return { tokenId: row.id, userId: row.userId, scopes: row.scopes };
 }
