@@ -1,6 +1,6 @@
 {
-  "id": "0002_legacy_diary_entries",
-  "prevId": "c026bc62-c2f5-4bf2-83c6-fd326584f883",
+  "id": "3cb792b9-a923-45fa-8cb3-78a3af66c194",
+  "prevId": "0002_legacy_diary_entries",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -338,6 +338,95 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
+    "public.legacy_diary_entries": {
+      "name": "legacy_diary_entries",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "date": {
+          "name": "date",
+          "type": "date",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "content": {
+          "name": "content",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "embedding": {
+          "name": "embedding",
+          "type": "vector(384)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "voice_profile_version": {
+          "name": "voice_profile_version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "generation_metadata": {
+          "name": "generation_metadata",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "legacy_diary_entries_embedding_hnsw_idx": {
+          "name": "legacy_diary_entries_embedding_hnsw_idx",
+          "columns": [
+            {
+              "expression": "embedding",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last",
+              "opclass": "vector_cosine_ops"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "hnsw",
+          "with": {}
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "legacy_diary_entries_date_unique": {
+          "name": "legacy_diary_entries_date_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "date"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
     "public.element_config": {
       "name": "element_config",
       "schema": "",
@@ -513,6 +602,100 @@
           ]
         }
       },
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.journal_appends": {
+      "name": "journal_appends",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "entry_id": {
+          "name": "entry_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "author_id": {
+          "name": "author_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "content": {
+          "name": "content",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "journal_appends_entry_created_idx": {
+          "name": "journal_appends_entry_created_idx",
+          "columns": [
+            {
+              "expression": "entry_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "journal_appends_entry_id_journal_entries_id_fk": {
+          "name": "journal_appends_entry_id_journal_entries_id_fk",
+          "tableFrom": "journal_appends",
+          "tableTo": "journal_entries",
+          "columnsFrom": [
+            "entry_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "journal_appends_author_id_users_id_fk": {
+          "name": "journal_appends_author_id_users_id_fk",
+          "tableFrom": "journal_appends",
+          "tableTo": "users",
+          "columnsFrom": [
+            "author_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {},
       "isRLSEnabled": false
@@ -1843,6 +2026,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "source": {
+          "name": "source",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp with time zone",
@@ -1957,95 +2146,6 @@
           "nullsNotDistinct": false,
           "columns": [
             "version"
-          ]
-        }
-      },
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.legacy_diary_entries": {
-      "name": "legacy_diary_entries",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "date": {
-          "name": "date",
-          "type": "date",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "content": {
-          "name": "content",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "embedding": {
-          "name": "embedding",
-          "type": "vector(384)",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "voice_profile_version": {
-          "name": "voice_profile_version",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "generation_metadata": {
-          "name": "generation_metadata",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "legacy_diary_entries_embedding_hnsw_idx": {
-          "name": "legacy_diary_entries_embedding_hnsw_idx",
-          "columns": [
-            {
-              "expression": "embedding",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last",
-              "opclass": "vector_cosine_ops"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "hnsw",
-          "with": {}
-        }
-      },
-      "foreignKeys": {},
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {
-        "legacy_diary_entries_date_unique": {
-          "name": "legacy_diary_entries_date_unique",
-          "nullsNotDistinct": false,
-          "columns": [
-            "date"
           ]
         }
       },

@@ -276,6 +276,7 @@ export const vocabWords = pgTable(
     exampleSentence: text("example_sentence"),
     labels: jsonb("labels").default([]),
     aiMetadata: jsonb("ai_metadata"),
+    source: jsonb("source"),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
