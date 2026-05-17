@@ -11,18 +11,27 @@ const { mockSelect, mockInsert, mockUpdate, mockDelete } = vi.hoisted(() => ({
 vi.mock("@/db/client", () => ({
   db: { select: mockSelect, insert: mockInsert, update: mockUpdate, delete: mockDelete },
 }));
-vi.mock("@/db/schema", () => ({ journalComments: {}, journalEntries: {}, users: {} }));
+vi.mock("@/db/schema", () => ({
+  journalComments: {},
+  journalEntries: {},
+  users: {},
+  commentReactions: { commentId: "commentId", emoji: "emoji", userId: "userId" },
+}));
 vi.mock("drizzle-orm", () => ({
   eq: vi.fn((c, v) => ({ c, v })),
   and: vi.fn((...a) => ({ and: a })),
   asc: vi.fn((c) => ({ c, dir: "asc" })),
+  inArray: vi.fn((c, v) => ({ inArray: { c, v } })),
+  sql: vi.fn(() => ({ __sql: true })),
   getTableColumns: vi.fn(() => ({})),
 }));
 
 function chain(rows: unknown[]) {
   const c: Record<string, unknown> = {};
   const t = Promise.resolve(rows);
-  for (const m of ["from", "where", "orderBy", "limit", "innerJoin", "leftJoin"]) c[m] = vi.fn(() => c);
+  for (const m of ["from", "where", "orderBy", "limit", "innerJoin", "leftJoin", "groupBy"]) {
+    c[m] = vi.fn(() => c);
+  }
   Object.assign(c, { then: (r: any, j: any) => t.then(r, j) });
   return c;
 }
@@ -44,11 +53,17 @@ describe("createComment", () => {
 });
 
 describe("listForEntry", () => {
-  it("attaches author { id, name, avatarUrl } from the joined users row", async () => {
-    mockSelect.mockReturnValue(chain([
-      { id: "c1", authorId: "u1", authorName: "Alice", authorAvatarUrl: "https://img/a.png" },
-      { id: "c2", authorId: "u2", authorName: null, authorAvatarUrl: null },
-    ]));
+  it("attaches author { id, name, avatarUrl } from the joined users row + empty reactions when no viewer", async () => {
+    // 1st select: comments + author join; 2nd select: reaction summary batch
+    mockSelect
+      .mockReturnValueOnce(chain([
+        { id: "c1", authorId: "u1", authorName: "Alice", authorAvatarUrl: "https://img/a.png" },
+        { id: "c2", authorId: "u2", authorName: null, authorAvatarUrl: null },
+      ]))
+      .mockReturnValueOnce(chain([
+        { commentId: "c1", emoji: "rocket", count: 2 },
+        { commentId: "c1", emoji: "heart", count: 1 },
+      ]));
     const out = await listForEntry("e1");
     expect(out).toHaveLength(2);
     expect(out[0]).toMatchObject({ id: "c1", authorId: "u1", author: { id: "u1", name: "Alice", avatarUrl: "https://img/a.png" } });
@@ -56,12 +71,41 @@ describe("listForEntry", () => {
     // Joined columns are stripped from the top level
     expect("authorName" in out[0]).toBe(false);
     expect("authorAvatarUrl" in out[0]).toBe(false);
+    // Reactions batch is attached, mine is empty when no viewer
+    expect(out[0].reactions.summary).toEqual([
+      { emoji: "rocket", count: 2 },
+      { emoji: "heart", count: 1 },
+    ]);
+    expect(out[0].reactions.mine).toEqual([]);
+    expect(out[1].reactions.summary).toEqual([]);
+    expect(out[1].reactions.mine).toEqual([]);
+  });
+
+  it("populates `mine` from a third batch query when a viewer is provided", async () => {
+    mockSelect
+      .mockReturnValueOnce(chain([
+        { id: "c1", authorId: "u1", authorName: "Alice", authorAvatarUrl: null },
+      ]))
+      .mockReturnValueOnce(chain([{ commentId: "c1", emoji: "rocket", count: 5 }]))
+      .mockReturnValueOnce(chain([{ commentId: "c1", emoji: "rocket" }]));
+    const out = await listForEntry("e1", "viewer-1");
+    expect(out[0].reactions.summary).toEqual([{ emoji: "rocket", count: 5 }]);
+    expect(out[0].reactions.mine).toEqual(["rocket"]);
+  });
+
+  it("skips reaction queries entirely when there are no comments", async () => {
+    mockSelect.mockReturnValueOnce(chain([]));
+    const out = await listForEntry("e1", "viewer-1");
+    expect(out).toEqual([]);
+    expect(mockSelect).toHaveBeenCalledTimes(1);
   });
 
   it("sets author to null when authorId is missing", async () => {
-    mockSelect.mockReturnValue(chain([
-      { id: "c1", authorId: null, authorName: null, authorAvatarUrl: null },
-    ]));
+    mockSelect
+      .mockReturnValueOnce(chain([
+        { id: "c1", authorId: null, authorName: null, authorAvatarUrl: null },
+      ]))
+      .mockReturnValueOnce(chain([]));
     const out = await listForEntry("e1");
     expect(out[0].author).toBeNull();
   });

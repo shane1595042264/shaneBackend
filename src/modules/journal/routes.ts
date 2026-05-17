@@ -389,7 +389,7 @@ journalRoutes.get(
   async (c) => {
     const row = await getEntryByDate(c.req.valid("param").date);
     if (!row) return c.json({ error: "Not found" }, 404);
-    const comments = await listCommentsForEntry(row.entry.id);
+    const comments = await listCommentsForEntry(row.entry.id, c.get("userId"));
     return c.json({ comments });
   }
 );

@@ -1,7 +1,7 @@
 // src/modules/journal/comments-repo.ts
-import { and, asc, eq, getTableColumns } from "drizzle-orm";
+import { and, asc, eq, getTableColumns, inArray, sql } from "drizzle-orm";
 import { db } from "@/db/client";
-import { journalComments, journalEntries, users } from "@/db/schema";
+import { commentReactions, journalComments, journalEntries, users } from "@/db/schema";
 
 export async function createComment(input: {
   entryId: string;
@@ -21,7 +21,7 @@ export async function createComment(input: {
   return row;
 }
 
-export async function listForEntry(entryId: string) {
+export async function listForEntry(entryId: string, viewerId?: string | null) {
   const rows = await db
     .select({
       ...getTableColumns(journalComments),
@@ -32,12 +32,59 @@ export async function listForEntry(entryId: string) {
     .leftJoin(users, eq(users.id, journalComments.authorId))
     .where(eq(journalComments.entryId, entryId))
     .orderBy(asc(journalComments.createdAt));
-  return rows.map(({ authorName, authorAvatarUrl, ...comment }) => ({
+
+  const comments = rows.map(({ authorName, authorAvatarUrl, ...comment }) => ({
     ...comment,
     author: comment.authorId
       ? { id: comment.authorId, name: authorName, avatarUrl: authorAvatarUrl }
       : null,
+    reactions: { summary: [] as { emoji: string; count: number }[], mine: [] as string[] },
   }));
+
+  if (comments.length === 0) return comments;
+
+  const ids = comments.map((c) => c.id);
+  // Batch-aggregate reactions for every comment on this entry so the page can render
+  // chips without N round-trips to /comments/:id/reactions per comment.
+  const summaryRows = await db
+    .select({
+      commentId: commentReactions.commentId,
+      emoji: commentReactions.emoji,
+      count: sql<number>`count(*)::int`,
+    })
+    .from(commentReactions)
+    .where(inArray(commentReactions.commentId, ids))
+    .groupBy(commentReactions.commentId, commentReactions.emoji);
+
+  const summaryByComment = new Map<string, { emoji: string; count: number }[]>();
+  for (const r of summaryRows) {
+    const list = summaryByComment.get(r.commentId) ?? [];
+    list.push({ emoji: r.emoji, count: r.count });
+    summaryByComment.set(r.commentId, list);
+  }
+
+  let mineByComment: Map<string, string[]> | null = null;
+  if (viewerId) {
+    const mineRows = await db
+      .select({
+        commentId: commentReactions.commentId,
+        emoji: commentReactions.emoji,
+      })
+      .from(commentReactions)
+      .where(and(eq(commentReactions.userId, viewerId), inArray(commentReactions.commentId, ids)));
+    mineByComment = new Map();
+    for (const r of mineRows) {
+      const list = mineByComment.get(r.commentId) ?? [];
+      list.push(r.emoji);
+      mineByComment.set(r.commentId, list);
+    }
+  }
+
+  for (const c of comments) {
+    c.reactions.summary = summaryByComment.get(c.id) ?? [];
+    c.reactions.mine = mineByComment?.get(c.id) ?? [];
+  }
+  return comments;
 }
 
 export async function getComment(id: string) {
