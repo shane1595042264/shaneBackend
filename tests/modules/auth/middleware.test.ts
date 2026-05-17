@@ -1,9 +1,10 @@
 // tests/modules/auth/middleware.test.ts
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { Hono } from "hono";
 
-const { mockLookupActiveToken } = vi.hoisted(() => ({
+const { mockLookupActiveToken, mockSelect } = vi.hoisted(() => ({
   mockLookupActiveToken: vi.fn(),
+  mockSelect: vi.fn(),
 }));
 
 vi.mock("@/modules/auth/tokens", () => ({
@@ -15,8 +16,20 @@ vi.mock("@/modules/auth/config", () => ({
   JWT_SECRET: new TextEncoder().encode("test-secret-min-32-bytes-long-xxxx"),
 }));
 
+vi.mock("@/db/client", () => ({
+  db: { select: mockSelect },
+}));
+
+vi.mock("@/db/schema", () => ({
+  users: { id: "users.id", email: "users.email" },
+}));
+
+vi.mock("drizzle-orm", () => ({
+  eq: vi.fn((c: unknown, v: unknown) => ({ c, v })),
+}));
+
 import { jwtVerify, SignJWT } from "jose";
-import { optionalAuth, requireAuth, requireScope } from "@/modules/auth/middleware";
+import { optionalAuth, requireAuth, requireScope, requireAdmin } from "@/modules/auth/middleware";
 
 const SECRET = new TextEncoder().encode("test-secret-min-32-bytes-long-xxxx");
 
@@ -105,6 +118,83 @@ describe("requireScope", () => {
   it("bypasses scope check for a JWT session (scopes is null)", async () => {
     const tok = await makeJwt("user-7");
     const app = new Hono().use(requireAuth).use(requireScope("entries:write")).get("/", (c) => c.text("ok"));
+    const res = await app.request("/", { headers: { Authorization: `Bearer ${tok}` } });
+    expect(res.status).toBe(200);
+  });
+});
+
+describe("requireAdmin", () => {
+  function chain(rows: { email: string }[]) {
+    const c: Record<string, unknown> = {};
+    const t = Promise.resolve(rows);
+    for (const m of ["from", "where"]) c[m] = vi.fn(() => c);
+    Object.assign(c, { then: (r: any, j: any) => t.then(r, j) });
+    return c;
+  }
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("returns 401 when there is no auth", async () => {
+    vi.stubEnv("ADMIN_EMAILS", "shane@example.com");
+    const app = new Hono().use(requireAuth).use(requireAdmin()).get("/", (c) => c.text("ok"));
+    const res = await app.request("/");
+    expect(res.status).toBe(401);
+  });
+
+  it("rejects PAT requests outright, even if the user behind it is an admin", async () => {
+    vi.stubEnv("ADMIN_EMAILS", "shane@example.com");
+    mockLookupActiveToken.mockResolvedValue({ userId: "user-admin", scopes: [], tokenId: "tok-1" });
+    const app = new Hono().use(requireAuth).use(requireAdmin()).get("/", (c) => c.text("ok"));
+    const res = await app.request("/", { headers: { Authorization: "Bearer pat_abc" } });
+    expect(res.status).toBe(403);
+    const body = await res.json();
+    expect(body.error).toMatch(/browser session/i);
+  });
+
+  it("returns 403 when ADMIN_EMAILS is unset (safe default)", async () => {
+    vi.stubEnv("ADMIN_EMAILS", "");
+    const tok = await makeJwt("user-shane");
+    const app = new Hono().use(requireAuth).use(requireAdmin()).get("/", (c) => c.text("ok"));
+    const res = await app.request("/", { headers: { Authorization: `Bearer ${tok}` } });
+    expect(res.status).toBe(403);
+    expect((await res.json()).error).toMatch(/not configured/i);
+  });
+
+  it("returns 403 when the JWT user's email is not in the whitelist", async () => {
+    vi.stubEnv("ADMIN_EMAILS", "shane@example.com");
+    mockSelect.mockReturnValue(chain([{ email: "stranger@example.com" }]));
+    const tok = await makeJwt("user-stranger");
+    const app = new Hono().use(requireAuth).use(requireAdmin()).get("/", (c) => c.text("ok"));
+    const res = await app.request("/", { headers: { Authorization: `Bearer ${tok}` } });
+    expect(res.status).toBe(403);
+    expect((await res.json()).error).toMatch(/admin/i);
+  });
+
+  it("returns 403 when the user row is missing", async () => {
+    vi.stubEnv("ADMIN_EMAILS", "shane@example.com");
+    mockSelect.mockReturnValue(chain([]));
+    const tok = await makeJwt("user-ghost");
+    const app = new Hono().use(requireAuth).use(requireAdmin()).get("/", (c) => c.text("ok"));
+    const res = await app.request("/", { headers: { Authorization: `Bearer ${tok}` } });
+    expect(res.status).toBe(403);
+  });
+
+  it("passes through when the JWT user's email is in the whitelist (case-insensitive)", async () => {
+    vi.stubEnv("ADMIN_EMAILS", "Shane@Example.com, other@x.com");
+    mockSelect.mockReturnValue(chain([{ email: "shane@example.com" }]));
+    const tok = await makeJwt("user-shane");
+    const app = new Hono().use(requireAuth).use(requireAdmin()).get("/", (c) => c.text("ok"));
+    const res = await app.request("/", { headers: { Authorization: `Bearer ${tok}` } });
+    expect(res.status).toBe(200);
+  });
+
+  it("ignores whitespace and empty entries in ADMIN_EMAILS", async () => {
+    vi.stubEnv("ADMIN_EMAILS", ",, shane@example.com  , ");
+    mockSelect.mockReturnValue(chain([{ email: "shane@example.com" }]));
+    const tok = await makeJwt("user-shane");
+    const app = new Hono().use(requireAuth).use(requireAdmin()).get("/", (c) => c.text("ok"));
     const res = await app.request("/", { headers: { Authorization: `Bearer ${tok}` } });
     expect(res.status).toBe(200);
   });

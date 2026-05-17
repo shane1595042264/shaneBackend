@@ -5,7 +5,7 @@ JWT-for-browsers + PAT-for-external-apps under one middleware. Single-user app; 
 ## Files
 
 - `routes.ts` — `/api/auth/google` (OAuth), `/api/auth/me`, `/api/auth/tokens` (mint + list + revoke). PAT minting requires a JWT (a PAT cannot mint another PAT — security gate, deliberate).
-- `middleware.ts` — `optionalAuth`, `requireAuth`, `requireScope(scope)`. All three populate the same Hono context vars.
+- `middleware.ts` — `optionalAuth`, `requireAuth`, `requireScope(scope)`, `requireAdmin()`. All populate the same Hono context vars.
 - `tokens.ts` — `mintToken`, `lookupActiveToken`, `hashToken`, `listTokens`, `revokeToken`. Raw tokens are never persisted; only `tokenHash` (SHA-256 hex).
 - `config.ts` — JWT secret and Google OAuth client config. Read from env.
 
@@ -22,6 +22,17 @@ After `optionalAuth` or `requireAuth` runs:
 `tokenScopes === null` is the marker for "this is a JWT" — `requireScope` uses that to bypass scope checks for browser sessions. Don't change this contract without auditing every `requireScope` callsite.
 
 `tokenId` exists so handlers and per-PAT rate limiters can identify which token a request came from. The auth context is the only place it surfaces — `c.get` it in handlers when you need to log or attribute.
+
+## Admin gate (`requireAdmin()`)
+
+Apply `requireAdmin()` to any route that should be Shane-only (e.g. periodic-table element writes). Contract:
+
+- **JWT only.** PATs are explicitly rejected (`403 "browser session"`) even if the user behind the PAT is on the whitelist. Admin actions go through the browser.
+- **Whitelist from env:** `ADMIN_EMAILS` is a comma-separated list of emails. The middleware lowercases + trims each. If unset or empty, every request 403s ("not configured") — safe default.
+- **DB lookup per request:** the user's email is fetched from the `users` table by `userId` and compared. One extra DB round-trip per admin-gated request — fine for low-frequency admin actions.
+- The current production value is `ADMIN_EMAILS=a1595042264@gmail.com` (set on Railway). To add a co-admin, append to that env var (comma-separated). No code change needed.
+
+Order: `requireAuth, requireAdmin(), zValidator(...)` — auth first so we know the user, then admin gate, then validation. See `src/modules/elements/routes.ts` for the canonical usage.
 
 ## Allowed scopes
 

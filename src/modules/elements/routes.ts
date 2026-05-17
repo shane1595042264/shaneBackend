@@ -4,6 +4,7 @@ import { z } from "zod";
 import { eq } from "drizzle-orm";
 import { db } from "@/db/client";
 import { elementConfig } from "@/db/schema";
+import { requireAuth, requireAdmin } from "@/modules/auth/middleware";
 
 const elementRoutes = new Hono();
 
@@ -46,9 +47,11 @@ const symbolParamSchema = z.object({
   symbol: z.string().min(1).max(3),
 });
 
-// POST / — create a new element
+// POST / — create a new element (admin only)
 elementRoutes.post(
   "/",
+  requireAuth,
+  requireAdmin(),
   zValidator("json", createElementSchema),
   async (c) => {
     try {
@@ -88,9 +91,11 @@ elementRoutes.post(
   }
 );
 
-// PUT /:symbol — update an element by symbol
+// PUT /:symbol — update an element by symbol (admin only)
 elementRoutes.put(
   "/:symbol",
+  requireAuth,
+  requireAdmin(),
   zValidator("param", symbolParamSchema),
   zValidator("json", updateElementSchema),
   async (c) => {

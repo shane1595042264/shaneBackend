@@ -17,10 +17,18 @@ vi.mock("@/db/client", () => ({
 
 vi.mock("@/db/schema", () => ({
   elementConfig: {},
+  users: {},
 }));
 
 vi.mock("drizzle-orm", () => ({
   eq: vi.fn((_col: unknown, val: unknown) => ({ col: _col, val })),
+}));
+
+// Auth middleware is mocked to a no-op so route tests focus on handler logic.
+// requireAdmin behavior has its own coverage in tests/modules/auth/middleware.test.ts.
+vi.mock("@/modules/auth/middleware", () => ({
+  requireAuth: async (_c: unknown, next: () => Promise<void>) => next(),
+  requireAdmin: () => async (_c: unknown, next: () => Promise<void>) => next(),
 }));
 
 // ---------------------------------------------------------------------------
