@@ -3,11 +3,11 @@ import { zValidator } from "@hono/zod-validator";
 import { z } from "zod";
 import { db } from "@/db/client";
 import { vocabWords, vocabConnections } from "@/db/schema";
-import { desc, eq, and, or, ilike, sql } from "drizzle-orm";
+import { desc, eq, and, or, ilike, sql, inArray } from "drizzle-orm";
 import { enrichWord } from "@/modules/vocabulary/ai-enricher";
 import { classifyNote, type ClassificationSource } from "./classifier";
 import { postToBilibili } from "./bilibili";
-import { requireAuth, requireScope } from "@/modules/auth/middleware";
+import { optionalAuth, requireAuth, requireScope } from "@/modules/auth/middleware";
 import { createPATRateLimit } from "@/modules/shared/rate-limit";
 
 export const knowledgeRoutes = new Hono();
@@ -102,7 +102,8 @@ function mergeSource(
 
 async function ingestSingle(
   text: string,
-  callerSource: CallerSource | null
+  callerSource: CallerSource | null,
+  createdBy: string | null
 ) {
   const classified = await classifyNote(text);
   const source = mergeSource(callerSource, classified.source, text);
@@ -123,6 +124,7 @@ async function ingestSingle(
         classifiedCategory: classified.category,
       },
       source,
+      createdBy,
     })
     .returning();
   postToBilibili(entry).catch(() => {});
@@ -151,12 +153,13 @@ knowledgeRoutes.post(
   async (c) => {
     const body = c.req.valid("json");
     const tokenId = c.get("tokenId") as string | null;
+    const userId = (c.get("userId") as string | null) ?? null;
     const start = Date.now();
 
     try {
       if ("text" in body) {
         const callerSource = normalizeSourceInput(body.source);
-        const entry = await ingestSingle(body.text, callerSource);
+        const entry = await ingestSingle(body.text, callerSource, userId);
         const sourceApp = (entry as any)?.source?.app ?? "manual";
         console.log(
           `[ingest] token=${tokenId ?? "jwt"} source=${sourceApp} entries=1 ms=${Date.now() - start}`
@@ -206,6 +209,7 @@ knowledgeRoutes.post(
                 classifiedCategory: classified.category,
               },
               source,
+              createdBy: userId,
             })
             .returning();
           entries.push(entry);
@@ -345,8 +349,9 @@ knowledgeRoutes.get("/entries/:id", zValidator("param", uuidParamSchema), async 
 });
 
 // Create an entry (optionally AI-enriched, for vocab category)
-knowledgeRoutes.post("/entries", zValidator("json", createWordSchema), async (c) => {
+knowledgeRoutes.post("/entries", optionalAuth, zValidator("json", createWordSchema), async (c) => {
   const body = c.req.valid("json");
+  const userId = (c.get("userId") as string | null) ?? null;
 
   const [existing] = await db
     .select()
@@ -387,6 +392,7 @@ knowledgeRoutes.post("/entries", zValidator("json", createWordSchema), async (c)
       exampleSentence: body.exampleSentence || enriched.exampleSentence || null,
       labels: body.labels || enriched.labels || [],
       aiMetadata: body.autoEnrich !== false ? { enrichedAt: new Date().toISOString() } : null,
+      createdBy: userId,
     })
     .returning();
 
@@ -422,12 +428,58 @@ knowledgeRoutes.put("/entries/:id", zValidator("param", uuidParamSchema), zValid
   return c.json({ entry: updated });
 });
 
-// Delete an entry
-knowledgeRoutes.delete("/entries/:id", zValidator("param", uuidParamSchema), async (c) => {
+// Delete an entry. Ownership rule: caller must be the creator. Legacy entries
+// (createdBy IS NULL, predate this column) are deletable by any authed user —
+// single-user app, no one else exists to lay claim.
+knowledgeRoutes.delete("/entries/:id", requireAuth, zValidator("param", uuidParamSchema), async (c) => {
   const { id } = c.req.valid("param");
+  const userId = c.get("userId") as string;
+
+  const [existing] = await db
+    .select({ createdBy: vocabWords.createdBy })
+    .from(vocabWords)
+    .where(eq(vocabWords.id, id));
+  if (!existing) return c.json({ error: "Entry not found" }, 404);
+  if (existing.createdBy !== null && existing.createdBy !== userId) {
+    return c.json({ error: "You can only delete entries you created" }, 403);
+  }
+
   const [deleted] = await db.delete(vocabWords).where(eq(vocabWords.id, id)).returning();
   if (!deleted) return c.json({ error: "Entry not found" }, 404);
   return c.json({ ok: true });
+});
+
+// Bulk delete. Same ownership rule as single delete. Returns per-id outcome so
+// the UI can show which rows were skipped without a second round-trip.
+const bulkDeleteSchema = z.object({
+  ids: z.array(z.string().uuid()).min(1).max(100),
+});
+
+knowledgeRoutes.post("/entries/bulk-delete", requireAuth, zValidator("json", bulkDeleteSchema), async (c) => {
+  const { ids } = c.req.valid("json");
+  const userId = c.get("userId") as string;
+
+  const existing = await db
+    .select({ id: vocabWords.id, createdBy: vocabWords.createdBy })
+    .from(vocabWords)
+    .where(inArray(vocabWords.id, ids));
+
+  const existingIds = new Set(existing.map((r) => r.id));
+  const notFound = ids.filter((id) => !existingIds.has(id));
+  const owned = existing.filter((r) => r.createdBy === null || r.createdBy === userId);
+  const denied = existing.filter((r) => r.createdBy !== null && r.createdBy !== userId).map((r) => r.id);
+  const deletableIds = owned.map((r) => r.id);
+
+  if (deletableIds.length === 0) {
+    return c.json({ deleted: [], denied, notFound });
+  }
+
+  const deletedRows = await db
+    .delete(vocabWords)
+    .where(inArray(vocabWords.id, deletableIds))
+    .returning({ id: vocabWords.id });
+
+  return c.json({ deleted: deletedRows.map((r) => r.id), denied, notFound });
 });
 
 // AI-enrich an existing entry

@@ -277,6 +277,7 @@ export const vocabWords = pgTable(
     labels: jsonb("labels").default([]),
     aiMetadata: jsonb("ai_metadata"),
     source: jsonb("source"),
+    createdBy: uuid("created_by").references(() => users.id, { onDelete: "set null" }),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -288,6 +289,7 @@ export const vocabWords = pgTable(
     index("vocab_words_language_idx").on(t.language),
     index("vocab_words_created_at_idx").on(t.createdAt),
     index("vocab_words_category_idx").on(t.category),
+    index("vocab_words_created_by_idx").on(t.createdBy),
   ]
 );
 
