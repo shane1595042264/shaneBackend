@@ -1,9 +1,17 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { Hono } from "hono";
 
-const { mockSelect, mockDelete } = vi.hoisted(() => ({
+const { mockSelect, mockDelete, mockSql } = vi.hoisted(() => ({
   mockSelect: vi.fn(),
   mockDelete: vi.fn(),
+  // Records the raw template fragments so tests can assert what SQL the
+  // route attempted to emit (e.g. "->>'app'" for the source.app filter).
+  mockSql: vi.fn((strings: unknown, ..._values: unknown[]) => {
+    const raw = Array.isArray((strings as TemplateStringsArray)?.raw)
+      ? (strings as TemplateStringsArray).raw.join("?")
+      : String(strings);
+    return { __sql: raw };
+  }),
 }));
 
 vi.mock("@/modules/knowledge/classifier", () => ({
@@ -36,7 +44,7 @@ vi.mock("drizzle-orm", () => ({
   or: vi.fn((...args: unknown[]) => ({ or: args })),
   desc: vi.fn((c: unknown) => ({ c, dir: "desc" })),
   ilike: vi.fn(),
-  sql: vi.fn(),
+  sql: mockSql,
   inArray: vi.fn((c: unknown, vs: unknown[]) => ({ inArray: { c, vs } })),
 }));
 
@@ -192,5 +200,53 @@ describe("POST /api/knowledge/entries/bulk-delete", () => {
     expect(body.deleted).toEqual([]);
     expect(body.denied).toEqual([otherId]);
     expect(mockDelete).not.toHaveBeenCalled();
+  });
+});
+
+describe("GET /api/knowledge/entries — source.app filter (SHAN-189)", () => {
+  // GET /entries uses a fuller chain (orderBy/limit/offset) plus a parallel
+  // count query, so we need a richer mock than selectReturning above.
+  function selectChain(rows: unknown[]) {
+    const c: Record<string, unknown> = {};
+    const t = Promise.resolve(rows);
+    for (const m of ["from", "where", "orderBy", "limit", "offset"]) {
+      c[m] = vi.fn(() => c);
+    }
+    Object.assign(c, { then: (r: any, j: any) => t.then(r, j) });
+    return c;
+  }
+
+  function sqlSawAppFilter(): boolean {
+    return mockSql.mock.calls.some(([strings]) => {
+      const raw = Array.isArray((strings as TemplateStringsArray)?.raw)
+        ? (strings as TemplateStringsArray).raw.join("?")
+        : String(strings);
+      return /->>'app'/.test(raw);
+    });
+  }
+
+  it("emits the source.app filter when ?app=<value> is provided", async () => {
+    mockSelect
+      .mockReturnValueOnce(selectChain([{ id: "u1", word: "build", source: { app: "nibbler" } }]))
+      .mockReturnValueOnce(selectChain([{ count: 1 }]));
+
+    const res = await app.request("/api/knowledge/entries?app=nibbler");
+    expect(res.status).toBe(200);
+    expect(sqlSawAppFilter()).toBe(true);
+  });
+
+  it("does NOT emit the source.app filter when ?app is omitted", async () => {
+    mockSelect
+      .mockReturnValueOnce(selectChain([]))
+      .mockReturnValueOnce(selectChain([{ count: 0 }]));
+
+    const res = await app.request("/api/knowledge/entries");
+    expect(res.status).toBe(200);
+    expect(sqlSawAppFilter()).toBe(false);
+  });
+
+  it("rejects empty ?app= via zod min(1)", async () => {
+    const res = await app.request("/api/knowledge/entries?app=");
+    expect(res.status).toBe(400);
   });
 });

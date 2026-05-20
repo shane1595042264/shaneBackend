@@ -27,6 +27,9 @@ const wordsQuerySchema = z.object({
   label: z.string().optional(),
   search: z.string().optional(),
   category: z.string().optional(),
+  // Filter by source.app — case-insensitive match against the jsonb source column.
+  // Lets clients browse "all entries from <app>" (e.g. ?app=nibbler).
+  app: z.string().min(1).max(100).optional(),
   limit: z.coerce.number().int().min(1).max(500).default(100),
   offset: z.coerce.number().int().min(0).default(0),
 });
@@ -279,11 +282,17 @@ const createWordSchema = z.object({
 // List entries with optional filters
 knowledgeRoutes.get("/entries", zValidator("query", wordsQuerySchema), async (c) => {
   try {
-    const { language, label, search, category, limit, offset } = c.req.valid("query");
+    const { language, label, search, category, app, limit, offset } = c.req.valid("query");
 
     const conditions = [];
     if (language) conditions.push(eq(vocabWords.language, language));
     if (category) conditions.push(eq(vocabWords.category, category));
+    if (app) {
+      // ->> extracts source.app as text; lower() on both sides keeps the match
+      // case-insensitive without forcing callers to canonicalise (e.g. nibbler
+      // vs Nibbler vs NIBBLER all hit the same set of rows).
+      conditions.push(sql`lower(${vocabWords.source}->>'app') = lower(${app})`);
+    }
     if (search) {
       const pattern = `%${search}%`;
       conditions.push(
