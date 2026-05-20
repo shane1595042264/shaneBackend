@@ -324,6 +324,32 @@ export const vocabConnections = pgTable(
 );
 
 // ------------------------------------------------------------------
+// knowledge_comments — wiki-style comment thread per vocab_words entry
+// ------------------------------------------------------------------
+export const knowledgeComments = pgTable(
+  "knowledge_comments",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    entryId: uuid("entry_id")
+      .notNull()
+      .references(() => vocabWords.id, { onDelete: "cascade" }),
+    parentCommentId: uuid("parent_comment_id"),
+    authorId: uuid("author_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "restrict" }),
+    content: text("content").notNull(),
+    editedAt: timestamp("edited_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [index("knowledge_comments_entry_idx").on(t.entryId)]
+);
+
+// ------------------------------------------------------------------
 // rng_ban_list
 // ------------------------------------------------------------------
 export const rngBanList = pgTable(

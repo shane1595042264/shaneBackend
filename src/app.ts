@@ -109,6 +109,21 @@ app.post("/api/admin/migrate-vocabulary", async (c) => {
         END IF;
       END $$;
     `);
+    // SHAN-188: knowledge_comments — drizzle-kit push has silently no-op'd schema
+    // additions before (SHAN-159), so create the table here as a safety net.
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS knowledge_comments (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        entry_id UUID NOT NULL REFERENCES vocab_words(id) ON DELETE CASCADE,
+        parent_comment_id UUID,
+        author_id UUID NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+        content TEXT NOT NULL,
+        edited_at TIMESTAMPTZ,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS knowledge_comments_entry_idx ON knowledge_comments (entry_id);
+    `);
     return c.json({ ok: true, message: "Vocabulary/Knowledge tables created" });
   } catch (err: any) {
     return c.json({ error: err.message }, 500);

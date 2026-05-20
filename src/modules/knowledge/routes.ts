@@ -9,6 +9,12 @@ import { classifyNote, type ClassificationSource } from "./classifier";
 import { postToBilibili } from "./bilibili";
 import { optionalAuth, requireAuth, requireScope } from "@/modules/auth/middleware";
 import { createPATRateLimit } from "@/modules/shared/rate-limit";
+import {
+  createComment as createKnowledgeComment,
+  listForEntry as listKnowledgeComments,
+  updateComment as updateKnowledgeComment,
+  deleteComment as deleteKnowledgeComment,
+} from "./comments-repo";
 
 export const knowledgeRoutes = new Hono();
 
@@ -581,3 +587,84 @@ knowledgeRoutes.get("/languages", async (c) => {
     .orderBy(vocabWords.language);
   return c.json({ languages: result.map((r) => r.language) });
 });
+
+// ---------------------------------------------------------------------------
+// Comments per knowledge entry (wiki-style thread, 1-level replies, no reactions)
+// ---------------------------------------------------------------------------
+
+const commentBody = z.object({
+  content: z.string().min(1).max(10_000),
+  parent_comment_id: z.string().uuid().optional(),
+});
+const commentEditBody = z.object({ content: z.string().min(1).max(10_000) });
+
+knowledgeRoutes.get(
+  "/entries/:id/comments",
+  optionalAuth,
+  zValidator("param", uuidParamSchema),
+  async (c) => {
+    const { id } = c.req.valid("param");
+    const [entry] = await db
+      .select({ id: vocabWords.id })
+      .from(vocabWords)
+      .where(eq(vocabWords.id, id))
+      .limit(1);
+    if (!entry) return c.json({ error: "Entry not found" }, 404);
+    const comments = await listKnowledgeComments(id);
+    return c.json({ comments });
+  }
+);
+
+knowledgeRoutes.post(
+  "/entries/:id/comments",
+  requireAuth,
+  requireScope("comments:write"),
+  zValidator("param", uuidParamSchema),
+  zValidator("json", commentBody),
+  async (c) => {
+    const userId = c.get("userId") as string;
+    const { id } = c.req.valid("param");
+    const [entry] = await db
+      .select({ id: vocabWords.id })
+      .from(vocabWords)
+      .where(eq(vocabWords.id, id))
+      .limit(1);
+    if (!entry) return c.json({ error: "Entry not found" }, 404);
+    const { content, parent_comment_id } = c.req.valid("json");
+    const comment = await createKnowledgeComment({
+      entryId: id,
+      authorId: userId,
+      content,
+      parentCommentId: parent_comment_id,
+    });
+    return c.json({ comment }, 201);
+  }
+);
+
+knowledgeRoutes.patch(
+  "/comments/:id",
+  requireAuth,
+  requireScope("comments:write"),
+  zValidator("param", uuidParamSchema),
+  zValidator("json", commentEditBody),
+  async (c) => {
+    const userId = c.get("userId") as string;
+    const { id } = c.req.valid("param");
+    const updated = await updateKnowledgeComment(id, userId, c.req.valid("json").content);
+    if (!updated) return c.json({ error: "Not found or not author" }, 404);
+    return c.json({ comment: updated });
+  }
+);
+
+knowledgeRoutes.delete(
+  "/comments/:id",
+  requireAuth,
+  requireScope("comments:write"),
+  zValidator("param", uuidParamSchema),
+  async (c) => {
+    const userId = c.get("userId") as string;
+    const { id } = c.req.valid("param");
+    const ok = await deleteKnowledgeComment(id, userId);
+    return ok ? c.body(null, 204) : c.json({ error: "Not found or not authorized" }, 404);
+  }
+);
