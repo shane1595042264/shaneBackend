@@ -1,7 +1,20 @@
 import app from "@/app";
 import { startCronJobs } from "./cron/scheduler";
+import { runStartupMigrations } from "@/db/migrate";
 
 const port = Number(process.env.PORT) || 3001;
+
+// Apply Drizzle migrations BEFORE serving traffic. If migrate fails or the
+// schema sanity check finds missing tables, we crash the container — Railway
+// will mark the deploy unhealthy instead of silently serving 500s (the
+// SHAN-159 footgun that drizzle-kit push --force has left us with three
+// times now: vocab_words.source, journal_appends, knowledge_comments).
+try {
+  await runStartupMigrations();
+} catch (err) {
+  console.error("[startup] Refusing to start server. Reason:", err);
+  process.exit(1);
+}
 
 startCronJobs();
 
@@ -11,19 +24,5 @@ const server = Bun.serve({
 });
 
 console.log(`Server running on http://localhost:${server.port}`);
-
-// Run drizzle-kit push on startup to ensure schema is up to date
-if (process.env.DATABASE_URL) {
-  Bun.spawn(["bunx", "drizzle-kit", "push", "--force"], {
-    cwd: process.cwd(),
-    env: process.env,
-    stdout: "inherit",
-    stderr: "inherit",
-    onExit(_proc, exitCode) {
-      if (exitCode === 0) console.log("[startup] Schema push completed");
-      else console.error("[startup] Schema push failed (exit code:", exitCode, ")");
-    },
-  });
-}
 
 export default server;
