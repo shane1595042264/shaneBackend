@@ -83,7 +83,15 @@ export async function listEntries(opts: {
       pendingSuggestionCount: journalEntries.pendingSuggestionCount,
       createdAt: journalEntries.createdAt,
       updatedAt: journalEntries.updatedAt,
-      contentExcerpt: sql<string | null>`substring(${journalVersions.content} from 1 for ${EXCERPT_SOURCE_LEN})`,
+      contentExcerpt: sql<string | null>`substring(
+        ${journalVersions.content} || coalesce(
+          (SELECT E'\n\n' || string_agg(${journalAppends.content}, E'\n\n' ORDER BY ${journalAppends.createdAt} ASC)
+             FROM ${journalAppends}
+             WHERE ${journalAppends.entryId} = ${journalEntries.id}),
+          ''
+        )
+        from 1 for ${EXCERPT_SOURCE_LEN}
+      )`,
       commentCount: sql<number>`(SELECT COUNT(*)::int FROM ${journalComments} WHERE ${journalComments.entryId} = ${journalEntries.id})`,
       appendCount: sql<number>`(SELECT COUNT(*)::int FROM ${journalAppends} WHERE ${journalAppends.entryId} = ${journalEntries.id})`,
       authorName: users.name,

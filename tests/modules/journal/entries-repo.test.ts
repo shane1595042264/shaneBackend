@@ -14,7 +14,7 @@ vi.mock("@/db/schema", () => ({
   journalEntries: {},
   journalVersions: {},
   journalComments: { entryId: {} },
-  journalAppends: { entryId: {} },
+  journalAppends: { entryId: {}, content: {}, createdAt: {} },
   users: { id: {}, name: {}, avatarUrl: {} },
 }));
 vi.mock("drizzle-orm", () => ({
@@ -139,6 +139,13 @@ describe("listEntries", () => {
     await listEntries({ limit: 10 });
     const projection = mockSelect.mock.calls[0][0];
     expect(projection).toHaveProperty("appendCount");
+  });
+
+  it("requests a contentExcerpt column on the select projection", async () => {
+    mockSelect.mockReturnValue(chain([{ id: "e1", date: "2026-04-28", contentExcerpt: "hi" }]));
+    await listEntries({ limit: 10 });
+    const projection = mockSelect.mock.calls[0][0];
+    expect(projection).toHaveProperty("contentExcerpt");
   });
 
   it("projects authorName/authorAvatarUrl and maps them into author { id, name, avatarUrl }", async () => {
