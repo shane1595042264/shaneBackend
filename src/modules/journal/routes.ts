@@ -467,7 +467,10 @@ journalRoutes.post(
     const userId = c.get("userId") as string;
     const { emoji } = c.req.valid("json");
     if (!isAllowedEmoji(emoji)) return c.json({ error: "Invalid emoji" }, 400);
-    const result = await toggleCommentReaction(userId, c.req.param("id"), emoji);
+    const commentId = c.req.param("id");
+    const comment = await getComment(commentId);
+    if (!comment) return c.json({ error: "Not found" }, 404);
+    const result = await toggleCommentReaction(userId, commentId, emoji);
     return c.json({ result });
   }
 );
@@ -489,6 +492,8 @@ journalRoutes.get(
 journalRoutes.get("/comments/:id/reactions", optionalAuth, async (c) => {
   const userId = c.get("userId") as string | null;
   const commentId = c.req.param("id");
+  const comment = await getComment(commentId);
+  if (!comment) return c.json({ error: "Not found" }, 404);
   const summary = await summarizeCommentReactions(commentId);
   const mine = userId ? (await listMyReactionsForComment(commentId, userId)).map((r) => r.emoji) : [];
   return c.json({ summary, mine });
