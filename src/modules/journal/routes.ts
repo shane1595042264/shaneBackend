@@ -39,25 +39,10 @@ import {
   summarizeCommentReactions,
   listMyReactionsForComment,
 } from "./reactions-repo";
+import { isoDate } from "@/modules/shared/validators";
 
 type Vars = { Variables: { userId: string | null; tokenScopes: string[] | null } };
 export const journalRoutes = new Hono<Vars>();
-
-// Format check + calendar-validity check. The regex alone accepts month 13, Feb 30, day 99 —
-// those slip through to Postgres and turn into 500s. Round-tripping through Date.UTC rejects
-// any string whose components don't survive a calendar round trip.
-const isoDate = z
-  .string()
-  .regex(/^\d{4}-\d{2}-\d{2}$/, "YYYY-MM-DD")
-  .refine((s) => {
-    const [y, m, d] = s.split("-").map(Number);
-    const dt = new Date(Date.UTC(y, m - 1, d));
-    return (
-      dt.getUTCFullYear() === y &&
-      dt.getUTCMonth() === m - 1 &&
-      dt.getUTCDate() === d
-    );
-  }, "YYYY-MM-DD");
 
 const dateParam = z.object({ date: isoDate });
 
@@ -128,7 +113,7 @@ journalRoutes.delete(
 
 const revertBody = z.object({ target_version_num: z.number().int().positive() });
 const versionNumParam = z.object({
-  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "YYYY-MM-DD"),
+  date: isoDate,
   num: z.coerce.number().int().positive(),
 });
 

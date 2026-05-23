@@ -51,6 +51,18 @@ describe("GET /api/activities/:date", () => {
     expect(res.status).toBe(400);
   });
 
+  it("rejects calendar-invalid date (2026-02-30) with 400 before hitting the DB", async () => {
+    const res = await app.request("/api/activities/2026-02-30");
+    expect(res.status).toBe(400);
+    expect(mockSelect).not.toHaveBeenCalled();
+  });
+
+  it("rejects month 13 (2026-13-01) with 400 before hitting the DB", async () => {
+    const res = await app.request("/api/activities/2026-13-01");
+    expect(res.status).toBe(400);
+    expect(mockSelect).not.toHaveBeenCalled();
+  });
+
   it("dedups rows that share (source, type, data.id), keeping the first", async () => {
     mockSelect.mockReturnValue(chain([
       { id: "row1", date: "2026-05-06", source: "google_calendar", type: "calendar_event", data: { id: "evt-A", title: "Standup", location: "Room 1" } },

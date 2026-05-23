@@ -4,12 +4,11 @@ import { zValidator } from "@hono/zod-validator";
 import { eq, asc } from "drizzle-orm";
 import { db } from "@/db/client";
 import { activities } from "@/db/schema";
+import { isoDate } from "@/modules/shared/validators";
 
 export const activitiesRoutes = new Hono();
 
-const dateParam = z.object({
-  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "YYYY-MM-DD"),
-});
+const dateParam = z.object({ date: isoDate });
 
 activitiesRoutes.get("/:date", zValidator("param", dateParam), async (c) => {
   const { date } = c.req.valid("param");

@@ -109,6 +109,20 @@ describe("GET /api/journal/entries/:date/versions/:num", () => {
     const res = await app.request("/api/journal/entries/2026-04-29/versions/abc");
     expect(res.status).toBe(400);
   });
+
+  it("rejects calendar-invalid :date (2026-02-30) with 400 before the entry lookup", async () => {
+    const res = await app.request("/api/journal/entries/2026-02-30/versions/1");
+    expect(res.status).toBe(400);
+    expect(mockGetByDate).not.toHaveBeenCalled();
+    expect(mockGetV).not.toHaveBeenCalled();
+  });
+
+  it("rejects month 13 :date (2026-13-01) with 400 before the entry lookup", async () => {
+    const res = await app.request("/api/journal/entries/2026-13-01/versions/1");
+    expect(res.status).toBe(400);
+    expect(mockGetByDate).not.toHaveBeenCalled();
+    expect(mockGetV).not.toHaveBeenCalled();
+  });
 });
 
 describe("POST /api/journal/entries/:date/revert", () => {

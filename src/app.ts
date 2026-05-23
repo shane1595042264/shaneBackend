@@ -13,6 +13,7 @@ import { knowledgeRoutes } from "@/modules/knowledge/routes";
 import { slotRoutes } from "@/modules/slot-assignments/routes";
 import { wechatRoutes } from "@/modules/integrations/wechat-routes";
 import { activitiesRoutes } from "@/modules/activities/routes";
+import { isoDate } from "@/modules/shared/validators";
 
 const app = new Hono();
 
@@ -135,9 +136,7 @@ app.post("/api/admin/migrate-vocabulary", async (c) => {
 // NOTE (Task 6.2): generate/:date and generate-only/:date endpoints removed;
 // they depended on decommissioned generate-daily cron module.
 // ---------------------------------------------------------------------------
-const adminDateParamSchema = z.object({
-  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Date must be YYYY-MM-DD format"),
-});
+const adminDateParamSchema = z.object({ date: isoDate });
 
 // Debug: ingest only (fast, should finish within 30s)
 app.get("/api/admin/ingest/:date", zValidator("param", adminDateParamSchema), async (c) => {
