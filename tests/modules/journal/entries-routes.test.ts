@@ -99,6 +99,24 @@ describe("GET /api/journal/entries/:date", () => {
     const res = await app.request("/api/journal/entries/not-a-date");
     expect(res.status).toBe(400);
   });
+
+  it("rejects calendar-invalid month (2026-13-01) with 400", async () => {
+    const res = await app.request("/api/journal/entries/2026-13-01");
+    expect(res.status).toBe(400);
+    expect(mockGetByDate).not.toHaveBeenCalled();
+  });
+
+  it("rejects calendar-invalid day for Feb (2026-02-30) with 400", async () => {
+    const res = await app.request("/api/journal/entries/2026-02-30");
+    expect(res.status).toBe(400);
+    expect(mockGetByDate).not.toHaveBeenCalled();
+  });
+
+  it("rejects calendar-invalid day=99 (9999-99-99) with 400", async () => {
+    const res = await app.request("/api/journal/entries/9999-99-99");
+    expect(res.status).toBe(400);
+    expect(mockGetByDate).not.toHaveBeenCalled();
+  });
 });
 
 describe("POST /api/journal/entries", () => {

@@ -43,19 +43,33 @@ import {
 type Vars = { Variables: { userId: string | null; tokenScopes: string[] | null } };
 export const journalRoutes = new Hono<Vars>();
 
-const dateParam = z.object({
-  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "YYYY-MM-DD"),
-});
+// Format check + calendar-validity check. The regex alone accepts month 13, Feb 30, day 99 —
+// those slip through to Postgres and turn into 500s. Round-tripping through Date.UTC rejects
+// any string whose components don't survive a calendar round trip.
+const isoDate = z
+  .string()
+  .regex(/^\d{4}-\d{2}-\d{2}$/, "YYYY-MM-DD")
+  .refine((s) => {
+    const [y, m, d] = s.split("-").map(Number);
+    const dt = new Date(Date.UTC(y, m - 1, d));
+    return (
+      dt.getUTCFullYear() === y &&
+      dt.getUTCMonth() === m - 1 &&
+      dt.getUTCDate() === d
+    );
+  }, "YYYY-MM-DD");
+
+const dateParam = z.object({ date: isoDate });
 
 const listQuery = z.object({
-  from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
-  to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  from: isoDate.optional(),
+  to: isoDate.optional(),
   limit: z.coerce.number().int().min(1).max(100).default(50),
   cursor: z.string().optional(),
 });
 
 const createBody = z.object({
-  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  date: isoDate,
   content: z.string().min(1),
 });
 
