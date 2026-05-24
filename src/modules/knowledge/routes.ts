@@ -555,6 +555,18 @@ knowledgeRoutes.post("/connections", zValidator("json", createConnectionSchema),
     return c.json({ error: "Cannot connect an entry to itself" }, 400);
   }
 
+  const existing = await db
+    .select({ id: vocabWords.id })
+    .from(vocabWords)
+    .where(inArray(vocabWords.id, [body.fromWordId, body.toWordId]));
+  const foundIds = new Set(existing.map((r) => r.id));
+  if (!foundIds.has(body.fromWordId)) {
+    return c.json({ error: `Word not found: ${body.fromWordId}` }, 404);
+  }
+  if (!foundIds.has(body.toWordId)) {
+    return c.json({ error: `Word not found: ${body.toWordId}` }, 404);
+  }
+
   try {
     const [connection] = await db
       .insert(vocabConnections)

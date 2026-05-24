@@ -3,7 +3,7 @@ import { zValidator } from "@hono/zod-validator";
 import { z } from "zod";
 import { db } from "@/db/client";
 import { vocabWords, vocabConnections } from "@/db/schema";
-import { desc, eq, and, or, ilike, sql } from "drizzle-orm";
+import { desc, eq, and, or, ilike, sql, inArray } from "drizzle-orm";
 import { enrichWord } from "./ai-enricher";
 
 export const vocabularyRoutes = new Hono();
@@ -228,6 +228,18 @@ vocabularyRoutes.post("/connections", zValidator("json", createConnectionSchema)
 
   if (body.fromWordId === body.toWordId) {
     return c.json({ error: "Cannot connect a word to itself" }, 400);
+  }
+
+  const existing = await db
+    .select({ id: vocabWords.id })
+    .from(vocabWords)
+    .where(inArray(vocabWords.id, [body.fromWordId, body.toWordId]));
+  const foundIds = new Set(existing.map((r) => r.id));
+  if (!foundIds.has(body.fromWordId)) {
+    return c.json({ error: `Word not found: ${body.fromWordId}` }, 404);
+  }
+  if (!foundIds.has(body.toWordId)) {
+    return c.json({ error: `Word not found: ${body.toWordId}` }, 404);
   }
 
   try {
