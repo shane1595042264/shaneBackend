@@ -33,15 +33,21 @@ const journal = JSON.parse(readFileSync(journalPath, "utf-8")) as {
   entries: { idx: number; when: number; tag: string }[];
 };
 
-// Same hash routine drizzle's migrator uses internally.
+// Hash with CRLF normalization so we match the runtime migrator
+// (src/db/migrate.ts:hashSql), which always sees LF on Linux even if
+// this script runs on a Windows checkout that has CRLF.
+function hashSql(content: string): string {
+  return createHash("sha256").update(content.replace(/\r\n/g, "\n")).digest("hex");
+}
+
 const targetRows = journal.entries
   .sort((a, b) => a.idx - b.idx)
   .map((entry) => {
-    const buf = readFileSync(join("drizzle", `${entry.tag}.sql`));
+    const content = readFileSync(join("drizzle", `${entry.tag}.sql`), "utf-8");
     return {
       tag: entry.tag,
       when: entry.when,
-      hash: createHash("sha256").update(buf).digest("hex"),
+      hash: hashSql(content),
     };
   });
 

@@ -34,14 +34,19 @@ const journal = JSON.parse(readFileSync(journalPath, "utf-8")) as {
 // raw content with sha256 — same routine that runs at migrate time. We
 // mirror that exactly so the hashes we insert match what drizzle would
 // have computed itself.
+// CRLF → LF before hashing so Windows-run seeds match Linux-runtime hashes.
+function hashSql(content: string): string {
+  return createHash("sha256").update(content.replace(/\r\n/g, "\n")).digest("hex");
+}
+
 const seeds = journal.entries
   .sort((a, b) => a.idx - b.idx)
   .map((entry) => {
-    const file = readFileSync(join("drizzle", `${entry.tag}.sql`));
+    const content = readFileSync(join("drizzle", `${entry.tag}.sql`), "utf-8");
     return {
       tag: entry.tag,
       when: entry.when,
-      hash: createHash("sha256").update(file).digest("hex"),
+      hash: hashSql(content),
     };
   });
 

@@ -65,9 +65,12 @@ function sqlFor(tag: string): string {
 }
 
 function hashSql(sql: string): string {
-  // sha256 of raw file bytes — matches what drizzle-kit's own seed code
-  // produces, so this migrator and drizzle's CLI agree on what's "applied".
-  return createHash("sha256").update(sql).digest("hex");
+  // Normalize CRLF → LF before hashing. Windows checkouts have CRLF, Linux
+  // (Docker, Railway) has LF — without this normalization the same file
+  // hashes differently in scripts run locally vs the runtime migrator,
+  // and prod ends up trying to re-apply migrations that already ran.
+  const normalized = sql.replace(/\r\n/g, "\n");
+  return createHash("sha256").update(normalized).digest("hex");
 }
 
 function splitStatements(sql: string): string[] {
