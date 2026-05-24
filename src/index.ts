@@ -1,3 +1,10 @@
+// Print BEFORE any imports execute side effects so we can prove on every
+// boot that this file is the actual entry point and see the cwd / runtime
+// path (silent missing logs in May 2026 were why SHAN-159 bit us again).
+console.log(
+  `[boot] index.ts entered: cwd=${process.cwd()} import.meta.dir=${import.meta.dir} pid=${process.pid}`,
+);
+
 import app from "@/app";
 import { startCronJobs } from "./cron/scheduler";
 import { runStartupMigrations } from "@/db/migrate";
