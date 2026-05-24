@@ -1,33 +1,123 @@
 /**
- * Database startup: apply pending Drizzle migrations, then verify every
- * table AND every expected column from schema.ts actually exists in the
- * live DB.
+ * Custom hash-based migrator. Replaces drizzle-orm's `migrate()` which
+ * has a fatal design bug for our use case:
  *
- * Replaces the previous `drizzle-kit push --force` startup which silently
- * dropped CREATE TABLE statements three separate times (SHAN-159). The new
- * flow is honest:
- *   - Migration files in drizzle/ are the source of truth.
- *   - __drizzle_migrations records what's been applied.
- *   - The migrationsFolder is resolved to an absolute path off this file's
- *     location, so a stray cwd can't make drizzle silently no-op (which
- *     happened to the 0006 timezone migration — bit us a 4th time).
- *   - If a table OR column the code expects is missing AFTER migrate, we
- *     crash the container so Railway alerts loudly instead of serving 500s
- *     for hours.
+ *   Drizzle picks "last applied migration" via SELECT MAX(created_at)
+ *   FROM __drizzle_migrations, then skips any migration whose
+ *   folderMillis (the `when` field in _journal.json) is <= that max.
+ *
+ *   If ANY out-of-order `when` value sneaks into the journal (which
+ *   happens whenever a catch-up migration is hand-edited with a
+ *   round-number timestamp, or whenever `seed-drizzle-migrations.ts`
+ *   inserts an older entry retroactively), every subsequent migration
+ *   silently no-ops forever. Schema sanity check would catch missing
+ *   tables but not missing columns or relaxed constraints.
+ *
+ * This implementation is hash-based, idx-ordered, transactional, and
+ * loud on failure:
+ *
+ *   1. Read drizzle/_journal.json, sort entries by `idx`.
+ *   2. For each entry, read drizzle/<tag>.sql, compute sha256(content).
+ *   3. SELECT every hash from __drizzle_migrations.
+ *   4. For each hash NOT in the DB, split the SQL on
+ *      `--> statement-breakpoint`, run the statements in a transaction,
+ *      INSERT the hash + journal `when` value on success.
+ *
+ *   The `when` field is only used as the `created_at` value we record
+ *   for compatibility with drizzle-kit tooling — we never read it for
+ *   ordering decisions.
+ *
+ * After migrate, verify every expected table AND column from schema.ts
+ * exists, and crash the container if anything is missing.
  */
-import { migrate } from "drizzle-orm/node-postgres/migrator";
 import { getTableColumns, getTableName, isTable } from "drizzle-orm";
-import { resolve } from "node:path";
-import { existsSync, readdirSync } from "node:fs";
-import { getDb, getPool } from "./client";
+import { createHash } from "node:crypto";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { resolve, join } from "node:path";
+import { getPool } from "./client";
 import * as schema from "./schema";
 
-// Resolve drizzle/ off THIS file so cwd cannot break the path. With this
-// file at src/db/migrate.ts and the migrations at repo root drizzle/, we
-// walk up two levels.
 const MIGRATIONS_FOLDER = resolve(import.meta.dir, "../../drizzle");
+const JOURNAL_PATH = join(MIGRATIONS_FOLDER, "meta", "_journal.json");
 
-/** All tables exported from schema.ts, mapped to their expected SQL column names. */
+interface JournalEntry {
+  idx: number;
+  when: number;
+  tag: string;
+}
+
+function readJournal(): JournalEntry[] {
+  if (!existsSync(JOURNAL_PATH)) {
+    throw new Error(`[startup] migrations journal missing: ${JOURNAL_PATH}`);
+  }
+  const parsed = JSON.parse(readFileSync(JOURNAL_PATH, "utf-8")) as {
+    entries: JournalEntry[];
+  };
+  return [...parsed.entries].sort((a, b) => a.idx - b.idx);
+}
+
+function sqlFor(tag: string): string {
+  const path = join(MIGRATIONS_FOLDER, `${tag}.sql`);
+  if (!existsSync(path)) {
+    throw new Error(`[startup] migration file missing: ${path}`);
+  }
+  return readFileSync(path, "utf-8");
+}
+
+function hashSql(sql: string): string {
+  // sha256 of raw file bytes — matches what drizzle-kit's own seed code
+  // produces, so this migrator and drizzle's CLI agree on what's "applied".
+  return createHash("sha256").update(sql).digest("hex");
+}
+
+function splitStatements(sql: string): string[] {
+  return sql
+    .split("--> statement-breakpoint")
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+}
+
+async function ensureMigrationsTable(): Promise<void> {
+  const pool = getPool();
+  await pool.query(`CREATE SCHEMA IF NOT EXISTS "drizzle"`);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS "drizzle"."__drizzle_migrations" (
+      id SERIAL PRIMARY KEY,
+      hash text NOT NULL,
+      created_at bigint
+    )
+  `);
+}
+
+async function appliedHashes(): Promise<Set<string>> {
+  const pool = getPool();
+  const result = await pool.query<{ hash: string }>(
+    `SELECT hash FROM "drizzle"."__drizzle_migrations"`,
+  );
+  return new Set(result.rows.map((r) => r.hash));
+}
+
+async function applyMigration(entry: JournalEntry, sql: string, hash: string): Promise<void> {
+  const pool = getPool();
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    for (const statement of splitStatements(sql)) {
+      await client.query(statement);
+    }
+    await client.query(
+      `INSERT INTO "drizzle"."__drizzle_migrations" ("hash", "created_at") VALUES ($1, $2)`,
+      [hash, entry.when],
+    );
+    await client.query("COMMIT");
+  } catch (err) {
+    await client.query("ROLLBACK");
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
 function expectedTablesAndColumns(): Map<string, Set<string>> {
   const out = new Map<string, Set<string>>();
   for (const value of Object.values(schema)) {
@@ -36,7 +126,6 @@ function expectedTablesAndColumns(): Map<string, Set<string>> {
     const cols = getTableColumns(table);
     const names = new Set<string>();
     for (const col of Object.values(cols)) {
-      // Drizzle column objects expose the SQL name as `.name`.
       names.add((col as { name: string }).name);
     }
     out.set(getTableName(table), names);
@@ -56,14 +145,10 @@ async function verifySchema(): Promise<{
     `SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'`,
   );
   const presentTableSet = new Set(tableRows.rows.map((r) => r.table_name));
-
   const expectedTableNames = [...expected.keys()];
   const missingTables = expectedTableNames.filter((t) => !presentTableSet.has(t));
   const presentTables = expectedTableNames.filter((t) => presentTableSet.has(t));
 
-  // Only inspect columns for tables that actually exist — missing tables
-  // are already a louder failure and listing every missing column on a
-  // table that itself doesn't exist would be noise.
   const colRows = await pool.query<{ table_name: string; column_name: string }>(
     `SELECT table_name, column_name FROM information_schema.columns
        WHERE table_schema = 'public' AND table_name = ANY($1::text[])`,
@@ -88,51 +173,60 @@ async function verifySchema(): Promise<{
   return { missingTables, missingColumns, presentTables };
 }
 
-/**
- * Run on startup. Throws (which Bun.serve will let propagate, crashing the
- * container) if anything is structurally wrong.
- */
 export async function runStartupMigrations(): Promise<void> {
   if (!process.env.DATABASE_URL) {
     console.warn("[startup] DATABASE_URL not set — skipping migrations");
     return;
   }
 
-  // Sanity-check the migrations folder exists before drizzle silently
-  // pretends it found zero migrations to run (root cause of the 0006
-  // no-op). If this path is wrong, crashing here is far better than
-  // silently no-op'ing and discovering broken columns from a 500.
   if (!existsSync(MIGRATIONS_FOLDER)) {
     throw new Error(
       `[startup] migrationsFolder does not exist: ${MIGRATIONS_FOLDER}. ` +
-        `Likely a Docker build issue — drizzle/ was not copied into the image.`,
+        `Docker probably didn't copy drizzle/ into the image.`,
     );
   }
+
   const sqlFiles = readdirSync(MIGRATIONS_FOLDER).filter((f) => f.endsWith(".sql"));
+  const entries = readJournal();
   console.log(
-    `[startup] migrationsFolder=${MIGRATIONS_FOLDER} (${sqlFiles.length} .sql files)`,
+    `[startup] migrationsFolder=${MIGRATIONS_FOLDER} (${sqlFiles.length} .sql files, ${entries.length} journal entries)`,
   );
 
-  console.log("[startup] Applying pending Drizzle migrations...");
-  const start = Date.now();
-  try {
-    await migrate(getDb(), { migrationsFolder: MIGRATIONS_FOLDER });
-    console.log(`[startup] Migrations complete (${Date.now() - start}ms)`);
-  } catch (err) {
-    console.error("[startup] drizzle migrate FAILED:", err);
-    throw err;
+  await ensureMigrationsTable();
+  const have = await appliedHashes();
+  console.log(`[startup] __drizzle_migrations: ${have.size} hashes already applied`);
+
+  const pending: { entry: JournalEntry; sql: string; hash: string }[] = [];
+  for (const entry of entries) {
+    const sql = sqlFor(entry.tag);
+    const hash = hashSql(sql);
+    if (!have.has(hash)) pending.push({ entry, sql, hash });
+  }
+
+  if (pending.length === 0) {
+    console.log("[startup] No pending migrations.");
+  } else {
+    console.log(`[startup] Applying ${pending.length} pending migration(s):`);
+    for (const p of pending) {
+      const start = Date.now();
+      try {
+        await applyMigration(p.entry, p.sql, p.hash);
+        console.log(
+          `[startup]   + ${p.entry.tag} hash=${p.hash.slice(0, 12)} (${Date.now() - start}ms)`,
+        );
+      } catch (err) {
+        console.error(`[startup]   ! ${p.entry.tag} FAILED:`, err);
+        throw err;
+      }
+    }
   }
 
   const { missingTables, missingColumns, presentTables } = await verifySchema();
 
   if (missingTables.length > 0) {
     console.error(
-      `[startup] SANITY CHECK FAILED — ${missingTables.length} expected table(s) missing after migrate:`,
+      `[startup] SANITY CHECK FAILED — ${missingTables.length} expected table(s) missing:`,
       missingTables,
-    );
-    console.error(
-      `[startup] Present tables (${presentTables.length}/${presentTables.length + missingTables.length}):`,
-      presentTables,
     );
     throw new Error(
       `Schema sanity check failed: missing tables [${missingTables.join(", ")}]. Refusing to start.`,
@@ -142,7 +236,7 @@ export async function runStartupMigrations(): Promise<void> {
   if (missingColumns.length > 0) {
     const formatted = missingColumns.map((c) => `${c.table}.${c.column}`).join(", ");
     console.error(
-      `[startup] SANITY CHECK FAILED — ${missingColumns.length} expected column(s) missing after migrate:`,
+      `[startup] SANITY CHECK FAILED — ${missingColumns.length} expected column(s) missing:`,
       missingColumns,
     );
     throw new Error(
@@ -150,8 +244,6 @@ export async function runStartupMigrations(): Promise<void> {
     );
   }
 
-  // Count columns for the friendly summary so the log proves coverage,
-  // not just "tables exist".
   let totalColumns = 0;
   for (const set of expectedTablesAndColumns().values()) totalColumns += set.size;
   console.log(
