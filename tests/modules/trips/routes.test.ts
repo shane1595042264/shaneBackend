@@ -1,10 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { Hono } from "hono";
 
-const { mockCreate, mockList, mockGet, mockDelete } = vi.hoisted(() => ({
+const { mockCreate, mockList, mockGet, mockUpdate, mockDelete } = vi.hoisted(() => ({
   mockCreate: vi.fn(),
   mockList: vi.fn(),
   mockGet: vi.fn(),
+  mockUpdate: vi.fn(),
   mockDelete: vi.fn(),
 }));
 
@@ -12,6 +13,7 @@ vi.mock("@/modules/trips/repo", () => ({
   createTrip: mockCreate,
   listTrips: mockList,
   getTripBySlug: mockGet,
+  updateTripBySlug: mockUpdate,
   deleteTripBySlug: mockDelete,
 }));
 
@@ -174,6 +176,99 @@ describe("GET /api/trips/:slug", () => {
     const res = await app.request("/api/trips/UPPERCASE");
     expect(res.status).toBe(400);
     expect(mockGet).not.toHaveBeenCalled();
+  });
+});
+
+describe("PATCH /api/trips/:slug", () => {
+  it("rejects unauthenticated requests", async () => {
+    const res = await app.request("/api/trips/tokyo", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ html: "<p>updated</p>" }),
+    });
+    expect(res.status).toBe(401);
+  });
+
+  it("updates html + re-extracts title when no explicit title given", async () => {
+    mockUpdate.mockResolvedValue({
+      id: "t1", slug: "tokyo", title: "New Title", sourceFilename: null, updatedAt: new Date(),
+    });
+    const res = await app.request("/api/trips/tokyo", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", "X-Test-User": "u1" },
+      body: JSON.stringify({ html: "<title>New Title</title><body>new</body>" }),
+    });
+    expect(res.status).toBe(200);
+    expect(mockUpdate).toHaveBeenCalledWith("tokyo", "u1", {
+      html: "<title>New Title</title><body>new</body>",
+      title: "New Title",
+      sourceFilename: undefined,
+    });
+  });
+
+  it("explicit title in body overrides extraction", async () => {
+    mockUpdate.mockResolvedValue({
+      id: "t1", slug: "tokyo", title: "Override", sourceFilename: null, updatedAt: new Date(),
+    });
+    await app.request("/api/trips/tokyo", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", "X-Test-User": "u1" },
+      body: JSON.stringify({ html: "<title>From HTML</title>", title: "Override" }),
+    });
+    expect(mockUpdate.mock.calls[0][2].title).toBe("Override");
+  });
+
+  it("title-only update (no html) leaves title-passthrough explicit", async () => {
+    mockUpdate.mockResolvedValue({
+      id: "t1", slug: "tokyo", title: "Just A Rename", sourceFilename: null, updatedAt: new Date(),
+    });
+    await app.request("/api/trips/tokyo", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", "X-Test-User": "u1" },
+      body: JSON.stringify({ title: "Just A Rename" }),
+    });
+    expect(mockUpdate.mock.calls[0][2]).toEqual({
+      html: undefined,
+      title: "Just A Rename",
+      sourceFilename: undefined,
+    });
+  });
+
+  it("400 when the body has nothing to update", async () => {
+    const res = await app.request("/api/trips/tokyo", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", "X-Test-User": "u1" },
+      body: JSON.stringify({}),
+    });
+    expect(res.status).toBe(400);
+    expect(mockUpdate).not.toHaveBeenCalled();
+  });
+
+  it("404 when caller isn't owner / slug missing", async () => {
+    mockUpdate.mockResolvedValue(null);
+    const res = await app.request("/api/trips/tokyo", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", "X-Test-User": "u1" },
+      body: JSON.stringify({ title: "x" }),
+    });
+    expect(res.status).toBe(404);
+  });
+
+  it("multipart upload replaces html + sourceFilename", async () => {
+    mockUpdate.mockResolvedValue({
+      id: "t1", slug: "tokyo", title: "Tokyo v2", sourceFilename: "tokyo_v2.html", updatedAt: new Date(),
+    });
+    const form = new FormData();
+    form.append("file", new File(["<title>Tokyo v2</title>"], "tokyo_v2.html"));
+    await app.request("/api/trips/tokyo", {
+      method: "PATCH",
+      headers: { "X-Test-User": "u1" },
+      body: form,
+    });
+    expect(mockUpdate.mock.calls[0][2]).toMatchObject({
+      title: "Tokyo v2",
+      sourceFilename: "tokyo_v2.html",
+    });
   });
 });
 

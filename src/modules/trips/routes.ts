@@ -3,7 +3,7 @@ import { zValidator } from "@hono/zod-validator";
 import { z } from "zod";
 import { requireAuth, requireScope, optionalAuth } from "@/modules/auth/middleware";
 import { extractTitle } from "./title";
-import { createTrip, listTrips, getTripBySlug, deleteTripBySlug } from "./repo";
+import { createTrip, listTrips, getTripBySlug, updateTripBySlug, deleteTripBySlug } from "./repo";
 
 export const tripsRoutes = new Hono();
 
@@ -94,6 +94,88 @@ tripsRoutes.get("/:slug", optionalAuth, zValidator("param", slugParam), async (c
   const trip = await getTripBySlug(c.req.valid("param").slug);
   if (!trip) return c.json({ error: "Not found" }, 404);
   return c.json({ trip });
+});
+
+/**
+ * PATCH /api/trips/:slug — owner-gated update. Same body shape as POST:
+ *   - multipart with field `file` (replaces html + sourceFilename) and
+ *     optional `title` (overrides extraction)
+ *   - application/json: { html?, title?, filename? }
+ *
+ * Title precedence on update when html is replaced:
+ *   explicit title in body > extracted from new html > current title (unchanged)
+ *
+ * Slug is never changed by PATCH — that's the whole point of having an
+ * update endpoint vs. delete-then-recreate.
+ */
+tripsRoutes.patch("/:slug", requireAuth, requireScope("trips:write"), zValidator("param", slugParam), async (c) => {
+  const userId = c.get("userId") as string;
+  const slug = c.req.valid("param").slug;
+  const contentType = c.req.header("Content-Type") ?? "";
+
+  let html: string | undefined;
+  let providedTitle: string | undefined;
+  let sourceFilename: string | null | undefined;
+
+  if (contentType.includes("multipart/form-data")) {
+    const form = await c.req.formData();
+    const file = form.get("file");
+    if (file instanceof File) {
+      if (file.size > 10 * 1024 * 1024) return c.json({ error: "File too large (max 10MB)" }, 413);
+      html = await file.text();
+      sourceFilename = file.name || null;
+    }
+    const titleField = form.get("title");
+    if (typeof titleField === "string" && titleField.trim()) {
+      providedTitle = titleField.trim().slice(0, 200);
+    }
+  } else {
+    const raw = await c.req.json().catch(() => null);
+    const parsed = z
+      .object({
+        html: z.string().min(1).max(10 * 1024 * 1024).optional(),
+        title: z.string().min(1).max(200).optional(),
+        filename: z.string().min(1).max(255).optional(),
+      })
+      .safeParse(raw);
+    if (!parsed.success) {
+      return c.json({ error: "Invalid JSON body", details: parsed.error.flatten() }, 400);
+    }
+    html = parsed.data.html;
+    providedTitle = parsed.data.title;
+    if (parsed.data.filename !== undefined) sourceFilename = parsed.data.filename;
+  }
+
+  if (html === undefined && providedTitle === undefined && sourceFilename === undefined) {
+    return c.json({ error: "Nothing to update — provide html, title, or filename" }, 400);
+  }
+
+  // Re-extract title when html is replaced but no explicit title was given.
+  // Without this the old title would stick even after the content shifts.
+  let titleToWrite: string | undefined;
+  if (providedTitle !== undefined) {
+    titleToWrite = providedTitle;
+  } else if (html !== undefined) {
+    const extracted = extractTitle(html);
+    if (extracted) titleToWrite = extracted;
+  }
+
+  const updated = await updateTripBySlug(slug, userId, {
+    html,
+    title: titleToWrite,
+    sourceFilename,
+  });
+  if (!updated) return c.json({ error: "Not found or not owner" }, 404);
+
+  return c.json({
+    trip: {
+      id: updated.id,
+      slug: updated.slug,
+      title: updated.title,
+      sourceFilename: updated.sourceFilename,
+      updatedAt: updated.updatedAt,
+    },
+  });
 });
 
 /** DELETE /api/trips/:slug — owner only */

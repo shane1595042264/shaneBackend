@@ -80,6 +80,31 @@ export async function getTripBySlug(slug: string): Promise<TripFull | null> {
   return row ?? null;
 }
 
+/**
+ * Owner-gated update. Only the fields present in `patch` are written —
+ * a missing field is left untouched. Returns null when the slug doesn't
+ * exist or the caller isn't the owner (so the route can 404 in both
+ * cases without leaking which one it was).
+ */
+export async function updateTripBySlug(
+  slug: string,
+  ownerId: string,
+  patch: { html?: string; title?: string | null; sourceFilename?: string | null },
+): Promise<TripFull | null> {
+  const set: Record<string, unknown> = { updatedAt: new Date() };
+  if (patch.html !== undefined) set.html = patch.html;
+  if (patch.title !== undefined) set.title = patch.title;
+  if (patch.sourceFilename !== undefined) set.sourceFilename = patch.sourceFilename;
+
+  const [row] = await db
+    .update(trips)
+    .set(set)
+    .where(and(eq(trips.slug, slug), eq(trips.ownerId, ownerId)))
+    .returning();
+  if (!row) return null;
+  return { ...row, ownerName: null };
+}
+
 export async function deleteTripBySlug(slug: string, ownerId: string): Promise<boolean> {
   const result = await db
     .delete(trips)
