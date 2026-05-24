@@ -50,6 +50,13 @@
       "when": 1779596166265,
       "tag": "0006_abnormal_nebula",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1779598462221,
+      "tag": "0007_cheerful_reavers",
+      "breakpoints": true
     }
   ]
 }

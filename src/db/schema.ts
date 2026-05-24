@@ -548,6 +548,29 @@ export const journalAppends = pgTable(
   ]
 );
 
+// ------------------------------------------------------------------
+// trips — single-blob HTML pages for travel itineraries. Dumb on purpose:
+// any Claude-generated HTML works unchanged. Only metadata we capture is
+// an optional title (extracted from <title> on upload) and the source
+// filename for reference. Slug is URL-safe and unique site-wide.
+// ------------------------------------------------------------------
+export const trips = pgTable(
+  "trips",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    slug: varchar("slug", { length: 80 }).notNull().unique(),
+    ownerId: uuid("owner_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "restrict" }),
+    title: text("title"),
+    html: text("html").notNull(),
+    sourceFilename: varchar("source_filename", { length: 255 }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("trips_owner_created_idx").on(t.ownerId, t.createdAt)],
+);
+
 export const apiTokens = pgTable("api_tokens", {
   id: uuid("id").primaryKey().defaultRandom(),
   userId: uuid("user_id")
