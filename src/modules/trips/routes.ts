@@ -1,15 +1,21 @@
 import { Hono } from "hono";
 import { zValidator } from "@hono/zod-validator";
 import { z } from "zod";
-import { requireAuth, requireScope, optionalAuth } from "@/modules/auth/middleware";
+import { optionalAuth } from "@/modules/auth/middleware";
 import { extractTitle } from "./title";
 import { createTrip, listTrips, getTripBySlug, updateTripBySlug, deleteTripBySlug } from "./repo";
 
 export const tripsRoutes = new Hono();
 
-// JSON path: { html, title? } — for Claude / curl uploads.
-const jsonBody = z.object({
+// JSON path for curl / programmatic uploads.
+const jsonCreateBody = z.object({
   html: z.string().min(1).max(10 * 1024 * 1024),
+  title: z.string().min(1).max(200).optional(),
+  filename: z.string().min(1).max(255).optional(),
+});
+
+const jsonPatchBody = z.object({
+  html: z.string().min(1).max(10 * 1024 * 1024).optional(),
   title: z.string().min(1).max(200).optional(),
   filename: z.string().min(1).max(255).optional(),
 });
@@ -19,16 +25,30 @@ const slugParam = z.object({
 });
 
 /**
+ * Trips routes are a deliberate free-for-all: no auth on POST / PATCH /
+ * DELETE. Personal site, sandboxed iframes mean uploaded HTML can't
+ * touch the parent site. If abuse becomes a problem, re-add the auth
+ * gates (the route names + handlers are unchanged — just slot in
+ * requireAuth + requireScope("trips:write") between optionalAuth and
+ * the handler body).
+ */
+
+/**
  * POST /api/trips
  *
- * Two flavors based on Content-Type:
+ * Two body shapes:
  *  - multipart/form-data with field `file` (.html upload from a dropzone)
  *  - application/json: { html, title?, filename? }
  *
- * Title precedence: explicit body field > <title> tag > first <h1> > "Untitled".
+ * Title precedence: explicit body title > <title> > first <h1> > cleaned
+ * filename > null.
+ *
+ * If the request is authed (browser session or PAT), the upload is
+ * attributed to the user via owner_id. Anonymous uploads have owner_id
+ * = null and display as "Anonymous" on the index.
  */
-tripsRoutes.post("/", requireAuth, requireScope("trips:write"), async (c) => {
-  const userId = c.get("userId") as string;
+tripsRoutes.post("/", optionalAuth, async (c) => {
+  const userId = c.get("userId") as string | null;
   const contentType = c.req.header("Content-Type") ?? "";
 
   let html: string;
@@ -52,7 +72,7 @@ tripsRoutes.post("/", requireAuth, requireScope("trips:write"), async (c) => {
     }
   } else {
     const raw = await c.req.json().catch(() => null);
-    const parsed = jsonBody.safeParse(raw);
+    const parsed = jsonCreateBody.safeParse(raw);
     if (!parsed.success) {
       return c.json({ error: "Invalid JSON body", details: parsed.error.flatten() }, 400);
     }
@@ -84,20 +104,20 @@ tripsRoutes.post("/", requireAuth, requireScope("trips:write"), async (c) => {
 });
 
 /** GET /api/trips — list metadata only (no html, keeps payload small) */
-tripsRoutes.get("/", optionalAuth, async (c) => {
+tripsRoutes.get("/", async (c) => {
   const trips = await listTrips();
   return c.json({ trips });
 });
 
 /** GET /api/trips/:slug — full row, including HTML */
-tripsRoutes.get("/:slug", optionalAuth, zValidator("param", slugParam), async (c) => {
+tripsRoutes.get("/:slug", zValidator("param", slugParam), async (c) => {
   const trip = await getTripBySlug(c.req.valid("param").slug);
   if (!trip) return c.json({ error: "Not found" }, 404);
   return c.json({ trip });
 });
 
 /**
- * PATCH /api/trips/:slug — owner-gated update. Same body shape as POST:
+ * PATCH /api/trips/:slug — open update. Same body shape as POST:
  *   - multipart with field `file` (replaces html + sourceFilename) and
  *     optional `title` (overrides extraction)
  *   - application/json: { html?, title?, filename? }
@@ -108,8 +128,7 @@ tripsRoutes.get("/:slug", optionalAuth, zValidator("param", slugParam), async (c
  * Slug is never changed by PATCH — that's the whole point of having an
  * update endpoint vs. delete-then-recreate.
  */
-tripsRoutes.patch("/:slug", requireAuth, requireScope("trips:write"), zValidator("param", slugParam), async (c) => {
-  const userId = c.get("userId") as string;
+tripsRoutes.patch("/:slug", zValidator("param", slugParam), async (c) => {
   const slug = c.req.valid("param").slug;
   const contentType = c.req.header("Content-Type") ?? "";
 
@@ -131,13 +150,7 @@ tripsRoutes.patch("/:slug", requireAuth, requireScope("trips:write"), zValidator
     }
   } else {
     const raw = await c.req.json().catch(() => null);
-    const parsed = z
-      .object({
-        html: z.string().min(1).max(10 * 1024 * 1024).optional(),
-        title: z.string().min(1).max(200).optional(),
-        filename: z.string().min(1).max(255).optional(),
-      })
-      .safeParse(raw);
+    const parsed = jsonPatchBody.safeParse(raw);
     if (!parsed.success) {
       return c.json({ error: "Invalid JSON body", details: parsed.error.flatten() }, 400);
     }
@@ -160,12 +173,12 @@ tripsRoutes.patch("/:slug", requireAuth, requireScope("trips:write"), zValidator
     if (extracted) titleToWrite = extracted;
   }
 
-  const updated = await updateTripBySlug(slug, userId, {
+  const updated = await updateTripBySlug(slug, {
     html,
     title: titleToWrite,
     sourceFilename,
   });
-  if (!updated) return c.json({ error: "Not found or not owner" }, 404);
+  if (!updated) return c.json({ error: "Not found" }, 404);
 
   return c.json({
     trip: {
@@ -178,9 +191,8 @@ tripsRoutes.patch("/:slug", requireAuth, requireScope("trips:write"), zValidator
   });
 });
 
-/** DELETE /api/trips/:slug — owner only */
-tripsRoutes.delete("/:slug", requireAuth, requireScope("trips:write"), zValidator("param", slugParam), async (c) => {
-  const userId = c.get("userId") as string;
-  const ok = await deleteTripBySlug(c.req.valid("param").slug, userId);
-  return ok ? c.body(null, 204) : c.json({ error: "Not found or not owner" }, 404);
+/** DELETE /api/trips/:slug — open. Anyone can delete any trip. */
+tripsRoutes.delete("/:slug", zValidator("param", slugParam), async (c) => {
+  const ok = await deleteTripBySlug(c.req.valid("param").slug);
+  return ok ? c.body(null, 204) : c.json({ error: "Not found" }, 404);
 });

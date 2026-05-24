@@ -559,9 +559,11 @@ export const trips = pgTable(
   {
     id: uuid("id").primaryKey().defaultRandom(),
     slug: varchar("slug", { length: 80 }).notNull().unique(),
-    ownerId: uuid("owner_id")
-      .notNull()
-      .references(() => users.id, { onDelete: "restrict" }),
+    // Nullable: trips are a free-for-all. Authed uploads (PAT or JWT)
+    // attribute to the user; anon uploads have ownerId = null. Anyone
+    // can edit/delete any trip via the API; if abuse becomes a problem,
+    // re-add the auth gates in routes.ts.
+    ownerId: uuid("owner_id").references(() => users.id, { onDelete: "set null" }),
     title: text("title"),
     html: text("html").notNull(),
     sourceFilename: varchar("source_filename", { length: 255 }),

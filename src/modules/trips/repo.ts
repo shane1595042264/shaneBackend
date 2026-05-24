@@ -7,7 +7,7 @@ export interface TripListItem {
   id: string;
   slug: string;
   title: string | null;
-  ownerId: string;
+  ownerId: string | null;
   ownerName: string | null;
   createdAt: Date;
   updatedAt: Date;
@@ -24,7 +24,7 @@ async function slugIsTaken(slug: string): Promise<boolean> {
 }
 
 export async function createTrip(input: {
-  ownerId: string;
+  ownerId: string | null;
   title: string | null;
   html: string;
   sourceFilename: string | null;
@@ -81,14 +81,12 @@ export async function getTripBySlug(slug: string): Promise<TripFull | null> {
 }
 
 /**
- * Owner-gated update. Only the fields present in `patch` are written —
- * a missing field is left untouched. Returns null when the slug doesn't
- * exist or the caller isn't the owner (so the route can 404 in both
- * cases without leaking which one it was).
+ * Update by slug — no ownership check (trips are a free-for-all). Only
+ * fields present in `patch` are written; missing fields are left alone.
+ * Returns null when the slug doesn't exist.
  */
 export async function updateTripBySlug(
   slug: string,
-  ownerId: string,
   patch: { html?: string; title?: string | null; sourceFilename?: string | null },
 ): Promise<TripFull | null> {
   const set: Record<string, unknown> = { updatedAt: new Date() };
@@ -99,16 +97,17 @@ export async function updateTripBySlug(
   const [row] = await db
     .update(trips)
     .set(set)
-    .where(and(eq(trips.slug, slug), eq(trips.ownerId, ownerId)))
+    .where(eq(trips.slug, slug))
     .returning();
   if (!row) return null;
   return { ...row, ownerName: null };
 }
 
-export async function deleteTripBySlug(slug: string, ownerId: string): Promise<boolean> {
+/** Delete by slug — no ownership check. Anyone can nuke any trip. */
+export async function deleteTripBySlug(slug: string): Promise<boolean> {
   const result = await db
     .delete(trips)
-    .where(and(eq(trips.slug, slug), eq(trips.ownerId, ownerId)))
+    .where(eq(trips.slug, slug))
     .returning({ id: trips.id });
   return result.length > 0;
 }

@@ -40,16 +40,25 @@ beforeEach(() => vi.clearAllMocks());
 const app = new Hono().route("/api/trips", tripsRoutes);
 
 describe("POST /api/trips (JSON)", () => {
-  it("rejects unauthenticated requests", async () => {
+  it("accepts anonymous uploads (no auth) — owner stored as null", async () => {
+    mockCreate.mockResolvedValue({
+      id: "t1", slug: "anon", title: "Anon", sourceFilename: null, createdAt: new Date(),
+    });
     const res = await app.request("/api/trips", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ html: "<p>hi</p>" }),
+      body: JSON.stringify({ html: "<title>Anon</title><body></body>" }),
     });
-    expect(res.status).toBe(401);
+    expect(res.status).toBe(201);
+    expect(mockCreate).toHaveBeenCalledWith({
+      ownerId: null,
+      title: "Anon",
+      html: "<title>Anon</title><body></body>",
+      sourceFilename: null,
+    });
   });
 
-  it("creates a trip from JSON body, extracts title from <title>", async () => {
+  it("attributes to user when authed", async () => {
     mockCreate.mockResolvedValue({
       id: "t1", slug: "tokyo-trip", title: "Tokyo Trip",
       sourceFilename: null, createdAt: new Date("2026-01-01"),
@@ -180,13 +189,16 @@ describe("GET /api/trips/:slug", () => {
 });
 
 describe("PATCH /api/trips/:slug", () => {
-  it("rejects unauthenticated requests", async () => {
+  it("accepts unauthenticated patches (free-for-all)", async () => {
+    mockUpdate.mockResolvedValue({
+      id: "t1", slug: "tokyo", title: "Updated", sourceFilename: null, updatedAt: new Date(),
+    });
     const res = await app.request("/api/trips/tokyo", {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ html: "<p>updated</p>" }),
+      body: JSON.stringify({ title: "Updated" }),
     });
-    expect(res.status).toBe(401);
+    expect(res.status).toBe(200);
   });
 
   it("updates html + re-extracts title when no explicit title given", async () => {
@@ -199,7 +211,7 @@ describe("PATCH /api/trips/:slug", () => {
       body: JSON.stringify({ html: "<title>New Title</title><body>new</body>" }),
     });
     expect(res.status).toBe(200);
-    expect(mockUpdate).toHaveBeenCalledWith("tokyo", "u1", {
+    expect(mockUpdate).toHaveBeenCalledWith("tokyo", {
       html: "<title>New Title</title><body>new</body>",
       title: "New Title",
       sourceFilename: undefined,
@@ -215,7 +227,7 @@ describe("PATCH /api/trips/:slug", () => {
       headers: { "Content-Type": "application/json", "X-Test-User": "u1" },
       body: JSON.stringify({ html: "<title>From HTML</title>", title: "Override" }),
     });
-    expect(mockUpdate.mock.calls[0][2].title).toBe("Override");
+    expect(mockUpdate.mock.calls[0][1].title).toBe("Override");
   });
 
   it("title-only update (no html) leaves title-passthrough explicit", async () => {
@@ -227,7 +239,7 @@ describe("PATCH /api/trips/:slug", () => {
       headers: { "Content-Type": "application/json", "X-Test-User": "u1" },
       body: JSON.stringify({ title: "Just A Rename" }),
     });
-    expect(mockUpdate.mock.calls[0][2]).toEqual({
+    expect(mockUpdate.mock.calls[0][1]).toEqual({
       html: undefined,
       title: "Just A Rename",
       sourceFilename: undefined,
@@ -244,7 +256,7 @@ describe("PATCH /api/trips/:slug", () => {
     expect(mockUpdate).not.toHaveBeenCalled();
   });
 
-  it("404 when caller isn't owner / slug missing", async () => {
+  it("404 when slug missing", async () => {
     mockUpdate.mockResolvedValue(null);
     const res = await app.request("/api/trips/tokyo", {
       method: "PATCH",
@@ -265,7 +277,7 @@ describe("PATCH /api/trips/:slug", () => {
       headers: { "X-Test-User": "u1" },
       body: form,
     });
-    expect(mockUpdate.mock.calls[0][2]).toMatchObject({
+    expect(mockUpdate.mock.calls[0][1]).toMatchObject({
       title: "Tokyo v2",
       sourceFilename: "tokyo_v2.html",
     });
@@ -273,22 +285,16 @@ describe("PATCH /api/trips/:slug", () => {
 });
 
 describe("DELETE /api/trips/:slug", () => {
-  it("204 on successful delete", async () => {
+  it("204 on successful delete (no auth required)", async () => {
     mockDelete.mockResolvedValue(true);
-    const res = await app.request("/api/trips/tokyo", {
-      method: "DELETE",
-      headers: { "X-Test-User": "u1" },
-    });
+    const res = await app.request("/api/trips/tokyo", { method: "DELETE" });
     expect(res.status).toBe(204);
-    expect(mockDelete).toHaveBeenCalledWith("tokyo", "u1");
+    expect(mockDelete).toHaveBeenCalledWith("tokyo");
   });
 
-  it("404 when caller isn't owner or slug missing", async () => {
+  it("404 when slug missing", async () => {
     mockDelete.mockResolvedValue(false);
-    const res = await app.request("/api/trips/tokyo", {
-      method: "DELETE",
-      headers: { "X-Test-User": "u1" },
-    });
+    const res = await app.request("/api/trips/tokyo", { method: "DELETE" });
     expect(res.status).toBe(404);
   });
 });

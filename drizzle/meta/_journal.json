@@ -57,6 +57,13 @@
       "when": 1779598462221,
       "tag": "0007_cheerful_reavers",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1779601740681,
+      "tag": "0008_careful_cerise",
+      "breakpoints": true
     }
   ]
 }
