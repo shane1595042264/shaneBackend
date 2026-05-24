@@ -88,6 +88,7 @@ authRoutes.post(
         email: user.email,
         name: user.name,
         avatarUrl: user.avatarUrl,
+        timezone: user.timezone,
       },
     });
   }
@@ -114,9 +115,50 @@ authRoutes.get("/me", optionalAuth, async (c) => {
       email: user.email,
       name: user.name,
       avatarUrl: user.avatarUrl,
+      timezone: user.timezone,
     },
   });
 });
+
+// IANA timezone names: at least one slash, alphanumeric + a few separators.
+// We validate against the runtime's known zones below before persisting.
+const timezoneSchema = z.object({
+  timezone: z
+    .string()
+    .min(1)
+    .max(64)
+    .regex(/^[A-Za-z][A-Za-z0-9_+\-/]*$/),
+});
+
+authRoutes.patch(
+  "/me/timezone",
+  requireAuth,
+  zValidator("json", timezoneSchema),
+  async (c) => {
+    if (c.get("tokenScopes") !== null) {
+      return c.json({ error: "Profile updates require a browser session, not a PAT" }, 403);
+    }
+    const userId = c.get("userId") as string;
+    const { timezone } = c.req.valid("json");
+
+    // Reject anything Intl doesn't recognize — protects DB from typos and
+    // also guards downstream Intl.DateTimeFormat calls from RangeError.
+    try {
+      new Intl.DateTimeFormat("en-US", { timeZone: timezone });
+    } catch {
+      return c.json({ error: "Unknown timezone" }, 400);
+    }
+
+    const [updated] = await db
+      .update(users)
+      .set({ timezone, updatedAt: new Date() })
+      .where(eq(users.id, userId))
+      .returning({ timezone: users.timezone });
+
+    if (!updated) return c.json({ error: "User not found" }, 404);
+    return c.json({ timezone: updated.timezone });
+  },
+);
 
 const ALLOWED_SCOPES = [
   "entries:write",

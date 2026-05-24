@@ -7,6 +7,11 @@ const { mockGetByDate, mockCreateAppend, mockListAppends } = vi.hoisted(() => ({
   mockListAppends: vi.fn(),
 }));
 
+vi.mock("@/modules/auth/user-prefs", () => ({
+  getUserTimezone: vi.fn().mockResolvedValue("America/Chicago"),
+  DEFAULT_TIMEZONE: "America/Chicago",
+}));
+
 vi.mock("@/modules/journal/entries-repo", () => ({
   getEntryByDate: mockGetByDate,
   listEntries: vi.fn(),
@@ -54,7 +59,12 @@ describe("POST /api/journal/entries/:date/appends", () => {
     expect(res.status).toBe(201);
     const body = await res.json();
     expect(body.append.id).toBe("a1");
-    expect(mockCreateAppend).toHaveBeenCalledWith({ entryId: "e1", authorId: "u1", content: "more" });
+    expect(mockCreateAppend).toHaveBeenCalledWith({
+      entryId: "e1",
+      authorId: "u1",
+      authorTimezone: "America/Chicago",
+      content: "more",
+    });
   });
 
   it("rejects non-author with 403", async () => {

@@ -26,6 +26,11 @@ const {
   mockSelect: vi.fn(),
 }));
 
+vi.mock("@/modules/auth/user-prefs", () => ({
+  getUserTimezone: vi.fn().mockResolvedValue("America/Chicago"),
+  DEFAULT_TIMEZONE: "America/Chicago",
+}));
+
 vi.mock("@/modules/journal/entries-repo", () => ({
   getEntryByDate: mockGetByDate,
   listEntries: vi.fn(),

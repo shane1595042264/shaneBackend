@@ -17,6 +17,7 @@ function attachProposer<T extends { proposerId: string }>(
 export async function createSuggestion(input: {
   entryId: string;
   proposerId: string;
+  authorTimezone?: string;
   baseVersionId: string;
   proposedContent: string;
 }) {
@@ -26,6 +27,7 @@ export async function createSuggestion(input: {
       .values({
         entryId: input.entryId,
         proposerId: input.proposerId,
+        authorTimezone: input.authorTimezone ?? "America/Chicago",
         baseVersionId: input.baseVersionId,
         proposedContent: input.proposedContent,
       })

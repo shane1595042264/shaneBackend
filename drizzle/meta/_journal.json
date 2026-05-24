@@ -43,6 +43,13 @@
       "when": 1779680400000,
       "tag": "0005_knowledge_comments",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1779596166265,
+      "tag": "0006_abnormal_nebula",
+      "breakpoints": true
     }
   ]
 }

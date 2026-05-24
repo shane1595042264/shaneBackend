@@ -3,6 +3,7 @@ import { Hono } from "hono";
 import { z } from "zod";
 import { zValidator } from "@hono/zod-validator";
 import { requireAuth, optionalAuth, requireScope } from "@/modules/auth/middleware";
+import { getUserTimezone } from "@/modules/auth/user-prefs";
 import { listEntries, getEntryByDate, createEntry, softDeleteEntry } from "./entries-repo";
 import { createAppend, listAppendsForEntry } from "./appends-repo";
 import { eq, and, desc, asc, lt, gt } from "drizzle-orm";
@@ -88,7 +89,8 @@ journalRoutes.post(
     const userId = c.get("userId") as string;
     const { date, content } = c.req.valid("json");
     try {
-      const result = await createEntry({ date, authorId: userId, content });
+      const authorTimezone = await getUserTimezone(userId);
+      const result = await createEntry({ date, authorId: userId, authorTimezone, content });
       return c.json({ entry: result.entry, currentVersionNum: 1 }, 201);
     } catch (err: any) {
       if (err?.code === "23505" || err?.cause?.code === "23505") {
@@ -143,9 +145,11 @@ journalRoutes.post(
       return c.json({ error: "Only the author can append" }, 403);
     }
 
+    const authorTimezone = await getUserTimezone(userId);
     const append = await createAppend({
       entryId: row.entry.id,
       authorId: userId,
+      authorTimezone,
       content,
     });
     return c.json({ append }, 201);
@@ -265,9 +269,11 @@ journalRoutes.post(
     const baseVersion = await getVersion(row.entry.id, base_version_num);
     if (!baseVersion) return c.json({ error: "Base version not found" }, 404);
 
+    const authorTimezone = await getUserTimezone(userId);
     const suggestion = await createSuggestion({
       entryId: row.entry.id,
       proposerId: userId,
+      authorTimezone,
       baseVersionId: baseVersion.id,
       proposedContent: proposed_content,
     });
@@ -404,9 +410,11 @@ journalRoutes.post(
     const row = await getEntryByDate(c.req.valid("param").date);
     if (!row) return c.json({ error: "Not found" }, 404);
     const { content, parent_comment_id } = c.req.valid("json");
+    const authorTimezone = await getUserTimezone(userId);
     const comment = await createComment({
       entryId: row.entry.id,
       authorId: userId,
+      authorTimezone,
       content,
       parentCommentId: parent_comment_id,
     });

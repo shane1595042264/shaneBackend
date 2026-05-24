@@ -6,6 +6,7 @@ import { commentReactions, journalComments, journalEntries, users } from "@/db/s
 export async function createComment(input: {
   entryId: string;
   authorId: string;
+  authorTimezone?: string;
   content: string;
   parentCommentId?: string | null;
 }) {
@@ -14,6 +15,7 @@ export async function createComment(input: {
     .values({
       entryId: input.entryId,
       authorId: input.authorId,
+      authorTimezone: input.authorTimezone ?? "America/Chicago",
       content: input.content,
       parentCommentId: input.parentCommentId ?? null,
     })

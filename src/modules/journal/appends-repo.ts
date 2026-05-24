@@ -5,6 +5,7 @@ import { journalAppends, users } from "@/db/schema";
 export async function createAppend(input: {
   entryId: string;
   authorId: string;
+  authorTimezone?: string;
   content: string;
 }) {
   const [row] = await db
@@ -12,6 +13,7 @@ export async function createAppend(input: {
     .values({
       entryId: input.entryId,
       authorId: input.authorId,
+      authorTimezone: input.authorTimezone ?? "America/Chicago",
       content: input.content,
     })
     .returning();
@@ -24,6 +26,7 @@ export async function listAppendsForEntry(entryId: string) {
       id: journalAppends.id,
       entryId: journalAppends.entryId,
       authorId: journalAppends.authorId,
+      authorTimezone: journalAppends.authorTimezone,
       content: journalAppends.content,
       createdAt: journalAppends.createdAt,
       authorName: users.name,

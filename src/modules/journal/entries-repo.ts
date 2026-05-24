@@ -12,12 +12,18 @@ export function hashContent(content: string): string {
 export async function createEntry(input: {
   date: string;
   authorId: string;
+  /** IANA timezone snapshot. Falls back to America/Chicago if omitted (test convenience). */
+  authorTimezone?: string;
   content: string;
 }): Promise<{ entry: typeof journalEntries.$inferSelect; version: typeof journalVersions.$inferSelect }> {
   return db.transaction(async (tx) => {
     const [entry] = await tx
       .insert(journalEntries)
-      .values({ date: input.date, authorId: input.authorId })
+      .values({
+        date: input.date,
+        authorId: input.authorId,
+        authorTimezone: input.authorTimezone ?? "America/Chicago",
+      })
       .returning();
 
     const [version] = await tx
@@ -77,6 +83,7 @@ export async function listEntries(opts: {
       id: journalEntries.id,
       date: journalEntries.date,
       authorId: journalEntries.authorId,
+      authorTimezone: journalEntries.authorTimezone,
       currentVersionId: journalEntries.currentVersionId,
       status: journalEntries.status,
       editCount: journalEntries.editCount,

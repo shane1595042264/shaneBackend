@@ -43,6 +43,9 @@ export const users = pgTable(
     email: varchar("email", { length: 255 }).notNull(),
     name: varchar("name", { length: 255 }),
     avatarUrl: text("avatar_url"),
+    // IANA TZ identifier the user posts in. Drives "today" calculation and
+    // the [tz] tag shown to viewers in a different TZ.
+    timezone: varchar("timezone", { length: 64 }).notNull().default("America/Chicago"),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -404,6 +407,10 @@ export const journalEntries = pgTable("journal_entries", {
   authorId: uuid("author_id")
     .notNull()
     .references(() => users.id, { onDelete: "restrict" }),
+  // Snapshot of the author's TZ at create-time. Used by viewers in a
+  // different TZ to render a [tz] tag so the date isn't confusing.
+  // Nullable: pre-migration rows have no snapshot — render with no tag.
+  authorTimezone: varchar("author_timezone", { length: 64 }),
   currentVersionId: uuid("current_version_id"),
   status: journalEntryStatusEnum("status").notNull().default("published"),
   editCount: integer("edit_count").notNull().default(1),
@@ -446,6 +453,7 @@ export const journalSuggestions = pgTable(
     proposerId: uuid("proposer_id")
       .notNull()
       .references(() => users.id, { onDelete: "restrict" }),
+    authorTimezone: varchar("author_timezone", { length: 64 }),
     baseVersionId: uuid("base_version_id")
       .notNull()
       .references(() => journalVersions.id),
@@ -474,6 +482,7 @@ export const journalComments = pgTable(
     authorId: uuid("author_id")
       .notNull()
       .references(() => users.id, { onDelete: "restrict" }),
+    authorTimezone: varchar("author_timezone", { length: 64 }),
     content: text("content").notNull(),
     editedAt: timestamp("edited_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
@@ -530,6 +539,7 @@ export const journalAppends = pgTable(
     authorId: uuid("author_id")
       .notNull()
       .references(() => users.id, { onDelete: "restrict" }),
+    authorTimezone: varchar("author_timezone", { length: 64 }),
     content: text("content").notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },

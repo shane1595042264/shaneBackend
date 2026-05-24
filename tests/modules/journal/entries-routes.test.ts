@@ -24,6 +24,11 @@ vi.mock("@/modules/journal/appends-repo", () => ({
   createAppend: mockCreateAppend,
 }));
 
+vi.mock("@/modules/auth/user-prefs", () => ({
+  getUserTimezone: vi.fn().mockResolvedValue("America/Chicago"),
+  DEFAULT_TIMEZONE: "America/Chicago",
+}));
+
 vi.mock("@/modules/auth/middleware", () => ({
   optionalAuth: async (c: any, next: any) => { c.set("userId", c.req.header("X-Test-User") ?? null); c.set("tokenScopes", null); await next(); },
   requireAuth: async (c: any, next: any) => {
@@ -131,7 +136,12 @@ describe("POST /api/journal/entries", () => {
       body: JSON.stringify({ date: "2026-04-29", content: "hi" }),
     });
     expect(res.status).toBe(201);
-    expect(mockCreateEntry).toHaveBeenCalledWith({ date: "2026-04-29", authorId: "u1", content: "hi" });
+    expect(mockCreateEntry).toHaveBeenCalledWith({
+      date: "2026-04-29",
+      authorId: "u1",
+      authorTimezone: "America/Chicago",
+      content: "hi",
+    });
   });
 
   it("returns 409 on unique violation (date already claimed)", async () => {
