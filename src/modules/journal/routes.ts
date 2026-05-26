@@ -31,6 +31,7 @@ import {
   deleteComment as deleteCommentRepo,
   getComment,
 } from "./comments-repo";
+import { insertImage, getImageById } from "./images-repo";
 import {
   toggleEntryReaction,
   toggleCommentReaction,
@@ -504,4 +505,57 @@ journalRoutes.get("/comments/:id/reactions", optionalAuth, async (c) => {
   const summary = await summarizeCommentReactions(commentId);
   const mine = userId ? (await listMyReactionsForComment(commentId, userId)).map((r) => r.emoji) : [];
   return c.json({ summary, mine });
+});
+
+// ---------------------------------------------------------------------------
+// Inline images for the markdown editor (paste-to-upload).
+//
+// POST /api/journal/images — multipart/form-data, field `file`, image/* only,
+//   5MB cap. requireAuth (no scope gate): images are a primitive used by every
+//   write surface — entries, suggestions, comments. The scope check happens
+//   where the resulting markdown is submitted.
+// GET /api/journal/images/:id — streams the raw bytes with the stored mime
+//   type. Immutable cache because the URL is content-addressed by uuid.
+// ---------------------------------------------------------------------------
+const IMAGE_MAX_BYTES = 5 * 1024 * 1024;
+const imageIdParam = z.object({ id: z.string().uuid() });
+
+journalRoutes.post("/images", requireAuth, async (c) => {
+  const userId = c.get("userId") as string;
+  const contentType = c.req.header("Content-Type") ?? "";
+  if (!contentType.includes("multipart/form-data")) {
+    return c.json({ error: "Expected multipart/form-data with a 'file' field" }, 400);
+  }
+  const form = await c.req.formData();
+  const file = form.get("file");
+  if (!(file instanceof File)) {
+    return c.json({ error: "Missing 'file' in multipart upload" }, 400);
+  }
+  if (file.size === 0) {
+    return c.json({ error: "Empty file" }, 400);
+  }
+  if (file.size > IMAGE_MAX_BYTES) {
+    return c.json({ error: "Image too large (max 5MB)" }, 413);
+  }
+  const mimeType = (file.type || "").toLowerCase();
+  if (!mimeType.startsWith("image/")) {
+    return c.json({ error: "Only image/* uploads are allowed" }, 415);
+  }
+  const buffer = Buffer.from(await file.arrayBuffer());
+  const { id } = await insertImage({ uploadedBy: userId, mimeType, data: buffer });
+  return c.json({ id, url: `/api/journal/images/${id}` }, 201);
+});
+
+journalRoutes.get("/images/:id", zValidator("param", imageIdParam), async (c) => {
+  const { id } = c.req.valid("param");
+  const row = await getImageById(id);
+  if (!row) return c.json({ error: "Not found" }, 404);
+  return new Response(new Uint8Array(row.data), {
+    status: 200,
+    headers: {
+      "Content-Type": row.mimeType,
+      "Content-Length": String(row.byteSize),
+      "Cache-Control": "public, max-age=31536000, immutable",
+    },
+  });
 });

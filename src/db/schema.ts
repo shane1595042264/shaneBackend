@@ -585,3 +585,28 @@ export const apiTokens = pgTable("api_tokens", {
   revokedAt: timestamp("revoked_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
+
+// Binary blob column for storing image bytes inline.
+const bytea = customType<{ data: Buffer; driverData: Buffer }>({
+  dataType() {
+    return "bytea";
+  },
+});
+
+// Inline image storage for the markdown editor. Bytes live in the row; routes
+// stream them out at GET /api/journal/images/:id. Cap on insert (5MB), no
+// separate object store — keeps the dep surface small.
+export const journalImages = pgTable(
+  "journal_images",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    uploadedBy: uuid("uploaded_by")
+      .notNull()
+      .references(() => users.id, { onDelete: "restrict" }),
+    mimeType: varchar("mime_type", { length: 100 }).notNull(),
+    byteSize: integer("byte_size").notNull(),
+    data: bytea("data").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("journal_images_uploaded_by_idx").on(t.uploadedBy)],
+);
