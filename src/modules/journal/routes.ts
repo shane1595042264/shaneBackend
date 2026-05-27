@@ -32,6 +32,7 @@ import {
   getComment,
 } from "./comments-repo";
 import { insertImage, getImageById } from "./images-repo";
+import { sniffImageMime } from "./image-validate";
 import {
   toggleEntryReaction,
   toggleCommentReaction,
@@ -510,12 +511,16 @@ journalRoutes.get("/comments/:id/reactions", optionalAuth, async (c) => {
 // ---------------------------------------------------------------------------
 // Inline images for the markdown editor (paste-to-upload).
 //
-// POST /api/journal/images — multipart/form-data, field `file`, image/* only,
-//   5MB cap. requireAuth (no scope gate): images are a primitive used by every
-//   write surface — entries, suggestions, comments. The scope check happens
-//   where the resulting markdown is submitted.
+// POST /api/journal/images — multipart/form-data, field `file`, 5MB cap.
+//   The canonical MIME is derived from server-side magic-byte sniffing, not
+//   from the client-supplied Content-Type, because (a) startsWith("image/")
+//   accepted image/svg+xml which is an XSS vector when the URL is opened
+//   directly, and (b) any client can spoof file.type. Allowlist:
+//   png/jpeg/gif/webp.
 // GET /api/journal/images/:id — streams the raw bytes with the stored mime
 //   type. Immutable cache because the URL is content-addressed by uuid.
+//   X-Content-Type-Options: nosniff prevents browsers from disagreeing with
+//   the stored type if it ever drifts.
 // ---------------------------------------------------------------------------
 const IMAGE_MAX_BYTES = 5 * 1024 * 1024;
 const imageIdParam = z.object({ id: z.string().uuid() });
@@ -537,12 +542,12 @@ journalRoutes.post("/images", requireAuth, async (c) => {
   if (file.size > IMAGE_MAX_BYTES) {
     return c.json({ error: "Image too large (max 5MB)" }, 413);
   }
-  const mimeType = (file.type || "").toLowerCase();
-  if (!mimeType.startsWith("image/")) {
-    return c.json({ error: "Only image/* uploads are allowed" }, 415);
-  }
   const buffer = Buffer.from(await file.arrayBuffer());
-  const { id } = await insertImage({ uploadedBy: userId, mimeType, data: buffer });
+  const sniffedMime = sniffImageMime(buffer);
+  if (!sniffedMime) {
+    return c.json({ error: "Unsupported image type — png/jpeg/gif/webp only" }, 415);
+  }
+  const { id } = await insertImage({ uploadedBy: userId, mimeType: sniffedMime, data: buffer });
   return c.json({ id, url: `/api/journal/images/${id}` }, 201);
 });
 
@@ -556,6 +561,8 @@ journalRoutes.get("/images/:id", zValidator("param", imageIdParam), async (c) =>
       "Content-Type": row.mimeType,
       "Content-Length": String(row.byteSize),
       "Cache-Control": "public, max-age=31536000, immutable",
+      "X-Content-Type-Options": "nosniff",
+      "Content-Disposition": "inline",
     },
   });
 });
