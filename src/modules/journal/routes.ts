@@ -31,7 +31,7 @@ import {
   deleteComment as deleteCommentRepo,
   getComment,
 } from "./comments-repo";
-import { insertImage, getImageById } from "./images-repo";
+import { insertImage, getImageById, countUploadsInWindow } from "./images-repo";
 import { sniffImageMime } from "./image-validate";
 import {
   toggleEntryReaction,
@@ -523,6 +523,8 @@ journalRoutes.get("/comments/:id/reactions", optionalAuth, async (c) => {
 //   the stored type if it ever drifts.
 // ---------------------------------------------------------------------------
 const IMAGE_MAX_BYTES = 5 * 1024 * 1024;
+const IMAGE_DAILY_LIMIT = 100;
+const IMAGE_WINDOW_MS = 24 * 60 * 60 * 1000;
 const imageIdParam = z.object({ id: z.string().uuid() });
 
 journalRoutes.post("/images", requireAuth, async (c) => {
@@ -541,6 +543,23 @@ journalRoutes.post("/images", requireAuth, async (c) => {
   }
   if (file.size > IMAGE_MAX_BYTES) {
     return c.json({ error: "Image too large (max 5MB)" }, 413);
+  }
+  const now = new Date();
+  const windowStart = new Date(now.getTime() - IMAGE_WINDOW_MS);
+  const { count, oldestCreatedAt } = await countUploadsInWindow(userId, windowStart);
+  if (count >= IMAGE_DAILY_LIMIT) {
+    // Honest Retry-After: when the oldest row exits the trailing window, the
+    // count drops by one and the next upload succeeds. Min 1s so we never
+    // emit Retry-After: 0 (which some clients treat as "retry immediately").
+    const expiresAtMs = oldestCreatedAt
+      ? new Date(oldestCreatedAt).getTime() + IMAGE_WINDOW_MS
+      : now.getTime() + IMAGE_WINDOW_MS;
+    const retryAfter = Math.max(1, Math.ceil((expiresAtMs - now.getTime()) / 1000));
+    return c.json(
+      { error: `Upload quota exceeded (${IMAGE_DAILY_LIMIT}/24h). Try again later.` },
+      429,
+      { "Retry-After": String(retryAfter) },
+    );
   }
   const buffer = Buffer.from(await file.arrayBuffer());
   const sniffedMime = sniffImageMime(buffer);

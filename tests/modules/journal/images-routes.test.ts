@@ -3,13 +3,16 @@
 // Route-level tests for POST/GET /api/journal/images. Verifies the SHAN-219
 // hardening: client-supplied Content-Type is ignored in favor of magic-byte
 // sniffing (SVG and HTML-as-PNG both rejected), and the GET response carries
-// X-Content-Type-Options: nosniff + Content-Disposition: inline.
+// X-Content-Type-Options: nosniff + Content-Disposition: inline. Also pins
+// the SHAN-220 per-user daily upload quota: 100 uploads / trailing 24h,
+// 429 + Retry-After when exceeded, count resets as old rows fall out.
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { Hono } from "hono";
 
-const { mockInsertImage, mockGetImageById, mockSelect } = vi.hoisted(() => ({
+const { mockInsertImage, mockGetImageById, mockCountUploadsInWindow, mockSelect } = vi.hoisted(() => ({
   mockInsertImage: vi.fn(),
   mockGetImageById: vi.fn(),
+  mockCountUploadsInWindow: vi.fn(),
   mockSelect: vi.fn(),
 }));
 
@@ -64,6 +67,7 @@ vi.mock("@/modules/journal/reactions-repo", () => ({
 vi.mock("@/modules/journal/images-repo", () => ({
   insertImage: mockInsertImage,
   getImageById: mockGetImageById,
+  countUploadsInWindow: mockCountUploadsInWindow,
 }));
 vi.mock("@/db/client", () => ({ db: { select: mockSelect } }));
 vi.mock("@/db/schema", () => ({
@@ -93,7 +97,11 @@ vi.mock("@/modules/auth/middleware", () => ({
 
 import { journalRoutes } from "@/modules/journal/routes";
 
-beforeEach(() => vi.clearAllMocks());
+beforeEach(() => {
+  vi.clearAllMocks();
+  // Default: the caller is well under quota. Quota-specific tests override.
+  mockCountUploadsInWindow.mockResolvedValue({ count: 0, oldestCreatedAt: null });
+});
 const app = new Hono().route("/api/journal", journalRoutes);
 
 // Smallest legal PNG: 8-byte signature + IHDR/IDAT/IEND stubs are not
@@ -176,6 +184,65 @@ describe("POST /api/journal/images", () => {
     });
     expect(res.status).toBe(413);
     expect(mockInsertImage).not.toHaveBeenCalled();
+  });
+
+  it("accepts when user is under the 100/24h quota", async () => {
+    mockCountUploadsInWindow.mockResolvedValue({
+      count: 99,
+      oldestCreatedAt: new Date(Date.now() - 60 * 60 * 1000),
+    });
+    mockInsertImage.mockResolvedValue({ id: "img-ok" });
+    const form = new FormData();
+    form.append("file", new File([PNG_SIG], "x.png", { type: "image/png" }));
+    const res = await app.request("/api/journal/images", {
+      method: "POST",
+      headers: { "X-Test-User": "u1" },
+      body: form,
+    });
+    expect(res.status).toBe(201);
+    expect(mockInsertImage).toHaveBeenCalledTimes(1);
+    // Confirm we passed a Date in the trailing 24h to the repo helper.
+    const since = mockCountUploadsInWindow.mock.calls[0][1] as Date;
+    const ageMs = Date.now() - since.getTime();
+    expect(ageMs).toBeGreaterThan(23 * 60 * 60 * 1000);
+    expect(ageMs).toBeLessThan(25 * 60 * 60 * 1000);
+  });
+
+  it("429 with Retry-After when at the 100/24h quota", async () => {
+    // Oldest of 100 uploaded 23h ago → window-exit is in ~1h, so Retry-After
+    // should be close to 3600s.
+    const oldestCreatedAt = new Date(Date.now() - 23 * 60 * 60 * 1000);
+    mockCountUploadsInWindow.mockResolvedValue({ count: 100, oldestCreatedAt });
+    const form = new FormData();
+    form.append("file", new File([PNG_SIG], "x.png", { type: "image/png" }));
+    const res = await app.request("/api/journal/images", {
+      method: "POST",
+      headers: { "X-Test-User": "u1" },
+      body: form,
+    });
+    expect(res.status).toBe(429);
+    expect(mockInsertImage).not.toHaveBeenCalled();
+    const retryAfter = Number(res.headers.get("Retry-After"));
+    expect(retryAfter).toBeGreaterThan(3500);
+    expect(retryAfter).toBeLessThanOrEqual(3600);
+    expect((await res.json()).error).toMatch(/quota/i);
+  });
+
+  it("accepts again when old uploads have rolled out of the 24h window", async () => {
+    // Simulates the calm-after-the-storm: yesterday's burst is gone, the
+    // trailing window holds zero rows even though the user has uploaded
+    // historically. Quota logic must not look further back than `since`.
+    mockCountUploadsInWindow.mockResolvedValue({ count: 0, oldestCreatedAt: null });
+    mockInsertImage.mockResolvedValue({ id: "img-rolled" });
+    const form = new FormData();
+    form.append("file", new File([PNG_SIG], "x.png", { type: "image/png" }));
+    const res = await app.request("/api/journal/images", {
+      method: "POST",
+      headers: { "X-Test-User": "u1" },
+      body: form,
+    });
+    expect(res.status).toBe(201);
+    expect(mockInsertImage).toHaveBeenCalledTimes(1);
   });
 });
 
