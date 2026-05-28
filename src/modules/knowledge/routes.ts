@@ -429,19 +429,39 @@ const updateWordSchema = z.object({
   labels: z.array(z.string()).optional(),
 });
 
-knowledgeRoutes.put("/entries/:id", zValidator("param", uuidParamSchema), zValidator("json", updateWordSchema), async (c) => {
-  const { id } = c.req.valid("param");
-  const body = c.req.valid("json");
+// Manual edit of an entry. Ownership rule mirrors DELETE: caller must be the
+// creator, but legacy rows (createdBy IS NULL, predate the column) are editable
+// by any signed-in user. Lets the new MarkdownEditor edit-mode in the UI
+// safely write back without exposing the row to drive-by vandalism.
+knowledgeRoutes.put(
+  "/entries/:id",
+  requireAuth,
+  zValidator("param", uuidParamSchema),
+  zValidator("json", updateWordSchema),
+  async (c) => {
+    const { id } = c.req.valid("param");
+    const userId = c.get("userId") as string;
+    const body = c.req.valid("json");
 
-  const [updated] = await db
-    .update(vocabWords)
-    .set({ ...body, updatedAt: new Date() })
-    .where(eq(vocabWords.id, id))
-    .returning();
+    const [existing] = await db
+      .select({ createdBy: vocabWords.createdBy })
+      .from(vocabWords)
+      .where(eq(vocabWords.id, id));
+    if (!existing) return c.json({ error: "Entry not found" }, 404);
+    if (existing.createdBy !== null && existing.createdBy !== userId) {
+      return c.json({ error: "You can only edit entries you created" }, 403);
+    }
 
-  if (!updated) return c.json({ error: "Entry not found" }, 404);
-  return c.json({ entry: updated });
-});
+    const [updated] = await db
+      .update(vocabWords)
+      .set({ ...body, updatedAt: new Date() })
+      .where(eq(vocabWords.id, id))
+      .returning();
+
+    if (!updated) return c.json({ error: "Entry not found" }, 404);
+    return c.json({ entry: updated });
+  }
+);
 
 // Delete an entry. Ownership rule: caller must be the creator. Legacy entries
 // (createdBy IS NULL, predate this column) are deletable by any authed user —

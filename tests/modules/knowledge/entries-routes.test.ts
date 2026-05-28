@@ -1,9 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { Hono } from "hono";
 
-const { mockSelect, mockDelete, mockSql } = vi.hoisted(() => ({
+const { mockSelect, mockDelete, mockUpdate, mockSql } = vi.hoisted(() => ({
   mockSelect: vi.fn(),
   mockDelete: vi.fn(),
+  mockUpdate: vi.fn(),
   // Records the raw template fragments so tests can assert what SQL the
   // route attempted to emit (e.g. "->>'app'" for the source.app filter).
   mockSql: vi.fn((strings: unknown, ..._values: unknown[]) => {
@@ -27,6 +28,7 @@ vi.mock("@/db/client", () => ({
     insert: vi.fn(),
     select: mockSelect,
     delete: mockDelete,
+    update: mockUpdate,
   },
 }));
 
@@ -90,6 +92,16 @@ function deleteReturning(rows: unknown[]) {
   mockDelete.mockImplementation(() => ({
     where: () => ({
       returning: () => Promise.resolve(rows),
+    }),
+  }));
+}
+
+function updateReturning(rows: unknown[]) {
+  mockUpdate.mockImplementation(() => ({
+    set: () => ({
+      where: () => ({
+        returning: () => Promise.resolve(rows),
+      }),
     }),
   }));
 }
@@ -200,6 +212,64 @@ describe("POST /api/knowledge/entries/bulk-delete", () => {
     expect(body.deleted).toEqual([]);
     expect(body.denied).toEqual([otherId]);
     expect(mockDelete).not.toHaveBeenCalled();
+  });
+});
+
+describe("PUT /api/knowledge/entries/:id — ownership (SHAN-222)", () => {
+  const validId = "11111111-1111-1111-1111-111111111111";
+  const body = JSON.stringify({ definition: "edited" });
+  const jsonHeaders = { "Content-Type": "application/json" };
+
+  it("returns 401 when unauthenticated", async () => {
+    const res = await app.request(`/api/knowledge/entries/${validId}`, {
+      method: "PUT",
+      headers: jsonHeaders,
+      body,
+    });
+    expect(res.status).toBe(401);
+  });
+
+  it("returns 404 when entry does not exist", async () => {
+    selectReturning([]);
+    const res = await app.request(`/api/knowledge/entries/${validId}`, {
+      method: "PUT",
+      headers: { ...jsonHeaders, "X-Test-User": "user-1" },
+      body,
+    });
+    expect(res.status).toBe(404);
+  });
+
+  it("returns 403 when caller is not the creator", async () => {
+    selectReturning([{ createdBy: "user-other" }]);
+    const res = await app.request(`/api/knowledge/entries/${validId}`, {
+      method: "PUT",
+      headers: { ...jsonHeaders, "X-Test-User": "user-1" },
+      body,
+    });
+    expect(res.status).toBe(403);
+    expect(mockUpdate).not.toHaveBeenCalled();
+  });
+
+  it("allows edit when caller is the creator", async () => {
+    selectReturning([{ createdBy: "user-1" }]);
+    updateReturning([{ id: validId, definition: "edited" }]);
+    const res = await app.request(`/api/knowledge/entries/${validId}`, {
+      method: "PUT",
+      headers: { ...jsonHeaders, "X-Test-User": "user-1" },
+      body,
+    });
+    expect(res.status).toBe(200);
+  });
+
+  it("allows edit on legacy entries (createdBy IS NULL)", async () => {
+    selectReturning([{ createdBy: null }]);
+    updateReturning([{ id: validId, definition: "edited" }]);
+    const res = await app.request(`/api/knowledge/entries/${validId}`, {
+      method: "PUT",
+      headers: { ...jsonHeaders, "X-Test-User": "user-1" },
+      body,
+    });
+    expect(res.status).toBe(200);
   });
 });
 
