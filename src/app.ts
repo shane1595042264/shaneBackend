@@ -14,6 +14,7 @@ import { slotRoutes } from "@/modules/slot-assignments/routes";
 import { wechatRoutes } from "@/modules/integrations/wechat-routes";
 import { activitiesRoutes } from "@/modules/activities/routes";
 import { tripsRoutes } from "@/modules/trips/routes";
+import { loansRoutes } from "@/modules/loans/routes";
 import { isoDate } from "@/modules/shared/validators";
 
 const app = new Hono();
@@ -60,6 +61,7 @@ app.route("/api/vocabulary", vocabularyRoutes);
 app.route("/api/knowledge", knowledgeRoutes);
 app.route("/api/slot-assignments", slotRoutes);
 app.route("/api/trips", tripsRoutes);
+app.route("/api/loans", loansRoutes);
 app.route("/api/integrations/wechat", wechatRoutes);
 
 // ---------------------------------------------------------------------------

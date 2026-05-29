@@ -71,6 +71,13 @@
       "when": 1779826081635,
       "tag": "0009_nasty_phalanx",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1780085282080,
+      "tag": "0010_flashy_lester",
+      "breakpoints": true
     }
   ]
 }

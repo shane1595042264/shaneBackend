@@ -610,3 +610,30 @@ export const journalImages = pgTable(
   },
   (t) => [index("journal_images_uploaded_by_idx").on(t.uploadedBy)],
 );
+
+// ------------------------------------------------------------------
+// loan_entries — "Who Owes Me" element
+// Per-user ledger of money the signed-in user has lent out. Amount is text
+// to preserve decimal precision (same pattern as rngDecisions.price).
+// ------------------------------------------------------------------
+export const loanEntries = pgTable(
+  "loan_entries",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    borrowerName: varchar("borrower_name", { length: 255 }).notNull(),
+    amount: text("amount").notNull(),
+    currency: varchar("currency", { length: 3 }).notNull().default("USD"),
+    description: text("description"),
+    status: varchar("status", { length: 20 }).notNull().default("outstanding"),
+    repaidAt: timestamp("repaid_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("loan_entries_user_id_idx").on(t.userId),
+    index("loan_entries_created_at_idx").on(t.createdAt),
+  ],
+);
