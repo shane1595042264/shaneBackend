@@ -637,3 +637,92 @@ export const loanEntries = pgTable(
     index("loan_entries_created_at_idx").on(t.createdAt),
   ],
 );
+
+// ------------------------------------------------------------------
+// practice — per-item prescription, per-user history, sessions, timer
+// state, admin-editable thresholds. See docs/superpowers/specs/
+// 2026-05-24-practice-element-design.md.
+// ------------------------------------------------------------------
+export const practicePrescriptions = pgTable(
+  "practice_prescriptions",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    itemId: uuid("item_id")
+      .notNull()
+      .unique()
+      .references(() => vocabWords.id, { onDelete: "cascade" }),
+    setMode: varchar("set_mode", { length: 10 }).notNull(),
+    setSize: integer("set_size").notNull(),
+    restSeconds: integer("rest_seconds").notNull().default(30),
+    createdBy: uuid("created_by").references(() => users.id, { onDelete: "set null" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+);
+
+export const practiceLocations = pgTable(
+  "practice_locations",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    name: varchar("name", { length: 120 }).notNull(),
+    normalized: varchar("normalized", { length: 120 }).notNull(),
+    lastUsedAt: timestamp("last_used_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    unique("practice_locations_user_normalized_unique").on(t.userId, t.normalized),
+    index("practice_locations_user_recent_idx").on(t.userId, t.lastUsedAt),
+  ],
+);
+
+export const practiceSessions = pgTable(
+  "practice_sessions",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    startedAt: timestamp("started_at", { withTimezone: true }).notNull().defaultNow(),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+    categoryFilter: varchar("category_filter", { length: 100 }),
+    nItemsRequested: integer("n_items_requested").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("practice_sessions_user_started_idx").on(t.userId, t.startedAt)],
+);
+
+export const practiceSessionItems = pgTable(
+  "practice_session_items",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    sessionId: uuid("session_id")
+      .notNull()
+      .references(() => practiceSessions.id, { onDelete: "cascade" }),
+    itemId: uuid("item_id")
+      .notNull()
+      .references(() => vocabWords.id, { onDelete: "cascade" }),
+    position: integer("position").notNull(),
+    locationId: uuid("location_id").references(() => practiceLocations.id, { onDelete: "set null" }),
+    locationName: varchar("location_name", { length: 120 }),
+    setsCompleted: integer("sets_completed").notNull().default(0),
+    timerState: jsonb("timer_state"),
+    startedAt: timestamp("started_at", { withTimezone: true }),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+  },
+  (t) => [
+    index("practice_session_items_item_loc_idx").on(t.itemId, t.locationId),
+    index("practice_session_items_session_pos_idx").on(t.sessionId, t.position),
+  ],
+);
+
+export const practiceSettings = pgTable("practice_settings", {
+  id: integer("id").primaryKey(),
+  setsPerStrike: integer("sets_per_strike").notNull().default(5),
+  strikesPerLoadedLocation: integer("strikes_per_loaded_location").notNull().default(5),
+  locationsToSolidify: integer("locations_to_solidify").notNull().default(7),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedBy: uuid("updated_by").references(() => users.id, { onDelete: "set null" }),
+});
