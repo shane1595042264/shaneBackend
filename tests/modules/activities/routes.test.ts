@@ -80,8 +80,8 @@ describe("GET /api/activities/:date", () => {
 
   it("does not dedup rows whose data lacks an id", async () => {
     mockSelect.mockReturnValue(chain([
-      { id: "r1", date: "2026-05-06", source: "owntracks", type: "place_enter", data: { timestamp: "2026-05-06T12:00:00Z" } },
-      { id: "r2", date: "2026-05-06", source: "owntracks", type: "place_enter", data: { timestamp: "2026-05-06T13:00:00Z" } },
+      { id: "r1", date: "2026-05-06", source: "google_maps", type: "place_enter", data: { timestamp: "2026-05-06T12:00:00Z" } },
+      { id: "r2", date: "2026-05-06", source: "google_maps", type: "place_enter", data: { timestamp: "2026-05-06T13:00:00Z" } },
     ]));
     const res = await app.request("/api/activities/2026-05-06");
     expect(res.status).toBe(200);
