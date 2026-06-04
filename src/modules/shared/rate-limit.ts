@@ -11,9 +11,10 @@ interface Options {
 }
 
 export function createPATRateLimit(opts: Options) {
-  return createMiddleware<{ Variables: { tokenId: string | null } }>(
+  // Untyped Variables so inline dispatch from richer Envs (AuthVars) type-checks; tokenId runtime contract lives in auth middleware.
+  return createMiddleware(
     async (c, next) => {
-      const tokenId = c.get("tokenId");
+      const tokenId = c.get("tokenId" as never) as string | null;
       if (!tokenId) {
         // JWT or anonymous — no PAT, no per-token limit.
         await next();

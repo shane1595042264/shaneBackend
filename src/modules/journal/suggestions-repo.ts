@@ -9,7 +9,7 @@ function attachProposer<T extends { proposerId: string }>(
 ) {
   const { proposerName, proposerAvatarUrl, ...suggestion } = row;
   return {
-    ...(suggestion as T),
+    ...(suggestion as unknown as T),
     proposer: { id: row.proposerId, name: proposerName, avatarUrl: proposerAvatarUrl },
   };
 }
