@@ -85,6 +85,13 @@
       "when": 1780100000000,
       "tag": "0011_practice",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1780200000000,
+      "tag": "0012_drop_element_config",
+      "breakpoints": true
     }
   ]
 }

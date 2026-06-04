@@ -4,7 +4,6 @@ import { logger } from "hono/logger";
 import { zValidator } from "@hono/zod-validator";
 import { z } from "zod";
 import { journalRoutes } from "@/modules/journal/routes";
-import { elementRoutes } from "@/modules/elements/routes";
 import { rngRoutes } from "@/modules/rng-capitalist/routes";
 import { authRoutes } from "@/modules/auth/routes";
 import { vocabularyRoutes } from "@/modules/vocabulary/routes";
@@ -54,7 +53,6 @@ app.get("/health", async (c) => {
 app.route("/api/auth", authRoutes);
 app.route("/api/journal", journalRoutes);
 app.route("/api/activities", activitiesRoutes);
-app.route("/api/elements", elementRoutes);
 app.route("/api/rng", rngRoutes);
 app.route("/api/vocabulary", vocabularyRoutes);
 app.route("/api/knowledge", knowledgeRoutes);
