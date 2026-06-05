@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { and, desc, eq, isNotNull } from "drizzle-orm";
 import { db } from "@/db/client";
 import { vocabWords, practicePrescriptions, practiceSessionItems, practiceSessions } from "@/db/schema";
 import { computeProgress, type Thresholds } from "./strikes";
@@ -80,6 +80,7 @@ export interface ItemProgressDetail {
   totalStrikes: number;
   isSolidified: boolean;
   loadedLocationCount: number;
+  lastPracticedAt: string | null;
   strikesByLocation: Array<{
     locationId: string | null;
     locationName: string | null;
@@ -136,6 +137,21 @@ export async function getItemProgressDetail(
     isLoaded: count >= t.strikesPerLoadedLocation,
   }));
 
+  const [latest] = await db
+    .select({ completedAt: practiceSessionItems.completedAt })
+    .from(practiceSessionItems)
+    .innerJoin(practiceSessions, eq(practiceSessions.id, practiceSessionItems.sessionId))
+    .where(and(
+      eq(practiceSessions.userId, userId),
+      eq(practiceSessionItems.itemId, itemId),
+      isNotNull(practiceSessionItems.completedAt),
+    ))
+    .orderBy(desc(practiceSessionItems.completedAt))
+    .limit(1);
+  const lastPracticedAt = latest?.completedAt
+    ? (latest.completedAt instanceof Date ? latest.completedAt.toISOString() : String(latest.completedAt))
+    : null;
+
   return {
     itemId: item.itemId,
     word: item.word,
@@ -147,6 +163,7 @@ export async function getItemProgressDetail(
     totalStrikes: p.totalStrikes,
     isSolidified: p.isSolidified,
     loadedLocationCount: p.loadedLocations.length,
+    lastPracticedAt,
     strikesByLocation,
   };
 }
