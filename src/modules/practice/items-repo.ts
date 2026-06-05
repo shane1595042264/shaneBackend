@@ -1,4 +1,4 @@
-import { and, desc, eq, isNotNull } from "drizzle-orm";
+import { and, desc, eq, isNotNull, sql } from "drizzle-orm";
 import { db } from "@/db/client";
 import { vocabWords, practicePrescriptions, practiceSessionItems, practiceSessions } from "@/db/schema";
 import { computeProgress, type Thresholds } from "./strikes";
@@ -14,6 +14,7 @@ export interface PracticeableItemSummary {
   totalStrikes: number;
   loadedLocations: number;
   isSolidified: boolean;
+  lastPracticedAt: string | null;
 }
 
 /**
@@ -50,6 +51,29 @@ export async function listPracticeableItems(opts: {
     ? await baseQuery.where(eq(vocabWords.category, opts.categoryFilter))
     : await baseQuery;
 
+  const lastPracticedRows = await db
+    .select({
+      itemId: practiceSessionItems.itemId,
+      lastCompletedAt: sql<Date | string | null>`max(${practiceSessionItems.completedAt})`,
+    })
+    .from(practiceSessionItems)
+    .innerJoin(practiceSessions, eq(practiceSessions.id, practiceSessionItems.sessionId))
+    .where(and(
+      eq(practiceSessions.userId, opts.userId),
+      isNotNull(practiceSessionItems.completedAt),
+    ))
+    .groupBy(practiceSessionItems.itemId);
+
+  const lastPracticedMap = new Map<string, string>();
+  for (const r of lastPracticedRows) {
+    if (r.lastCompletedAt) {
+      lastPracticedMap.set(
+        r.itemId,
+        r.lastCompletedAt instanceof Date ? r.lastCompletedAt.toISOString() : String(r.lastCompletedAt),
+      );
+    }
+  }
+
   const summaries: PracticeableItemSummary[] = [];
   for (const it of items) {
     const rows = await listItemRowsForProgress(opts.userId, it.itemId);
@@ -67,6 +91,7 @@ export async function listPracticeableItems(opts: {
       totalStrikes: p.totalStrikes,
       loadedLocations: p.loadedLocations.length,
       isSolidified: p.isSolidified,
+      lastPracticedAt: lastPracticedMap.get(it.itemId) ?? null,
     };
     if (opts.includeSolidified || !summary.isSolidified) summaries.push(summary);
   }

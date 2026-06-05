@@ -14,6 +14,10 @@ vi.mock("drizzle-orm", () => ({
   desc: vi.fn((c: unknown) => ({ c, dir: "desc" })),
   eq: vi.fn((c: unknown, v: unknown) => ({ c, v })),
   isNotNull: vi.fn((c: unknown) => ({ c, op: "isNotNull" })),
+  sql: Object.assign(
+    (strings: TemplateStringsArray, ...values: unknown[]) => ({ strings, values }),
+    { raw: (s: string) => ({ raw: s }) },
+  ),
 }));
 vi.mock("@/modules/practice/settings-repo", () => ({
   getSettings: vi.fn(async () => ({
@@ -39,12 +43,12 @@ vi.mock("@/modules/practice/strikes", () => ({
 function chain(rows: unknown[]) {
   const c: Record<string, unknown> = {};
   const p = Promise.resolve(rows);
-  for (const m of ["from", "where", "orderBy", "limit", "innerJoin", "leftJoin"]) c[m] = vi.fn(() => c);
+  for (const m of ["from", "where", "orderBy", "limit", "innerJoin", "leftJoin", "groupBy"]) c[m] = vi.fn(() => c);
   Object.assign(c, { then: (r: any, j: any) => p.then(r, j) });
   return c;
 }
 
-import { getItemProgressDetail } from "@/modules/practice/items-repo";
+import { getItemProgressDetail, listPracticeableItems } from "@/modules/practice/items-repo";
 
 const ITEM = {
   itemId: "item-1",
@@ -92,5 +96,73 @@ describe("getItemProgressDetail lastPracticedAt", () => {
 
     const detail = await getItemProgressDetail("user-1", "item-1");
     expect(detail?.lastPracticedAt).toBe("2026-05-21T10:00:00.000Z");
+  });
+});
+
+const LIST_ITEM_A = {
+  itemId: "item-a",
+  word: "squat",
+  category: "exercise",
+  source: null,
+  setMode: "reps",
+  setSize: 5,
+  restSeconds: 90,
+};
+const LIST_ITEM_B = {
+  itemId: "item-b",
+  word: "deadlift",
+  category: "exercise",
+  source: null,
+  setMode: "reps",
+  setSize: 3,
+  restSeconds: 120,
+};
+
+describe("listPracticeableItems lastPracticedAt", () => {
+  it("populates lastPracticedAt per item from the GROUP BY map", async () => {
+    const latestDate = new Date("2026-05-20T14:30:00Z");
+    mockSelect
+      .mockReturnValueOnce(chain([LIST_ITEM_A, LIST_ITEM_B])) // items list
+      .mockReturnValueOnce(chain([{ itemId: "item-a", lastCompletedAt: latestDate }])); // GROUP BY
+
+    const items = await listPracticeableItems({
+      userId: "user-1",
+      categoryFilter: null,
+      includeSolidified: true,
+    });
+
+    expect(items).toHaveLength(2);
+    expect(items[0].itemId).toBe("item-a");
+    expect(items[0].lastPracticedAt).toBe("2026-05-20T14:30:00.000Z");
+    expect(items[1].itemId).toBe("item-b");
+    expect(items[1].lastPracticedAt).toBeNull();
+  });
+
+  it("returns lastPracticedAt null for every item when nobody has practiced anything", async () => {
+    mockSelect
+      .mockReturnValueOnce(chain([LIST_ITEM_A]))
+      .mockReturnValueOnce(chain([])); // empty GROUP BY
+
+    const items = await listPracticeableItems({
+      userId: "user-1",
+      categoryFilter: null,
+      includeSolidified: true,
+    });
+
+    expect(items[0].lastPracticedAt).toBeNull();
+  });
+
+  it("coerces string-shaped lastCompletedAt from DB into ISO passthrough", async () => {
+    mockSelect
+      .mockReturnValueOnce(chain([LIST_ITEM_A]))
+      .mockReturnValueOnce(chain([{ itemId: "item-a", lastCompletedAt: "2026-05-21T10:00:00.000Z" }]));
+
+    const items = await listPracticeableItems({
+      userId: "user-1",
+      categoryFilter: null,
+      includeSolidified: true,
+    });
+
+    expect(items[0].lastPracticedAt).toBe("2026-05-21T10:00:00.000Z");
   });
 });
