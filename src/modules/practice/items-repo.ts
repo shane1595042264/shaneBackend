@@ -95,6 +95,19 @@ export async function listPracticeableItems(opts: {
     };
     if (opts.includeSolidified || !summary.isSolidified) summaries.push(summary);
   }
+  // Sort coldest-first so the index doubles as a triage list: never-practiced
+  // items (strongest "pick me next" signal) go to the top, then longest-cold,
+  // then most-recently-practiced. Word ASC tiebreaker keeps the order stable.
+  summaries.sort((a, b) => {
+    if (a.lastPracticedAt === null && b.lastPracticedAt === null) {
+      return a.word.localeCompare(b.word);
+    }
+    if (a.lastPracticedAt === null) return -1;
+    if (b.lastPracticedAt === null) return 1;
+    if (a.lastPracticedAt < b.lastPracticedAt) return -1;
+    if (a.lastPracticedAt > b.lastPracticedAt) return 1;
+    return a.word.localeCompare(b.word);
+  });
   return summaries;
 }
 

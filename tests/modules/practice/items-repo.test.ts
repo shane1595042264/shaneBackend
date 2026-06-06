@@ -119,7 +119,7 @@ const LIST_ITEM_B = {
 };
 
 describe("listPracticeableItems lastPracticedAt", () => {
-  it("populates lastPracticedAt per item from the GROUP BY map", async () => {
+  it("populates lastPracticedAt per item from the GROUP BY map (null sorts first)", async () => {
     const latestDate = new Date("2026-05-20T14:30:00Z");
     mockSelect
       .mockReturnValueOnce(chain([LIST_ITEM_A, LIST_ITEM_B])) // items list
@@ -132,10 +132,11 @@ describe("listPracticeableItems lastPracticedAt", () => {
     });
 
     expect(items).toHaveLength(2);
-    expect(items[0].itemId).toBe("item-a");
-    expect(items[0].lastPracticedAt).toBe("2026-05-20T14:30:00.000Z");
-    expect(items[1].itemId).toBe("item-b");
-    expect(items[1].lastPracticedAt).toBeNull();
+    // item-b (null lastPracticedAt) sorts ahead of item-a (has a date)
+    expect(items[0].itemId).toBe("item-b");
+    expect(items[0].lastPracticedAt).toBeNull();
+    expect(items[1].itemId).toBe("item-a");
+    expect(items[1].lastPracticedAt).toBe("2026-05-20T14:30:00.000Z");
   });
 
   it("returns lastPracticedAt null for every item when nobody has practiced anything", async () => {
@@ -164,5 +165,68 @@ describe("listPracticeableItems lastPracticedAt", () => {
     });
 
     expect(items[0].lastPracticedAt).toBe("2026-05-21T10:00:00.000Z");
+  });
+});
+
+describe("listPracticeableItems triage sort order", () => {
+  const NEVER = {
+    itemId: "item-never",
+    word: "alpha",
+    category: "exercise",
+    source: null,
+    setMode: "reps",
+    setSize: 5,
+    restSeconds: 90,
+  };
+  const COLD = {
+    itemId: "item-cold",
+    word: "bravo",
+    category: "exercise",
+    source: null,
+    setMode: "reps",
+    setSize: 5,
+    restSeconds: 90,
+  };
+  const WARM = {
+    itemId: "item-warm",
+    word: "charlie",
+    category: "exercise",
+    source: null,
+    setMode: "reps",
+    setSize: 5,
+    restSeconds: 90,
+  };
+
+  it("orders items null-first, then by lastPracticedAt asc (coldest before warmest)", async () => {
+    // DB returns them in arbitrary order — warm, never, cold — to prove the sort runs.
+    mockSelect
+      .mockReturnValueOnce(chain([WARM, NEVER, COLD]))
+      .mockReturnValueOnce(chain([
+        { itemId: "item-warm", lastCompletedAt: "2026-06-01T00:00:00.000Z" },
+        { itemId: "item-cold", lastCompletedAt: "2025-01-01T00:00:00.000Z" },
+      ]));
+
+    const items = await listPracticeableItems({
+      userId: "user-1",
+      categoryFilter: null,
+      includeSolidified: true,
+    });
+
+    expect(items.map((i) => i.itemId)).toEqual(["item-never", "item-cold", "item-warm"]);
+  });
+
+  it("breaks ties between two never-practiced items by word ascending", async () => {
+    const NEVER_Z = { ...NEVER, itemId: "item-zulu", word: "zulu" };
+    mockSelect
+      .mockReturnValueOnce(chain([NEVER_Z, NEVER])) // zulu fed first to prove sort flips it
+      .mockReturnValueOnce(chain([])); // no completions
+
+    const items = await listPracticeableItems({
+      userId: "user-1",
+      categoryFilter: null,
+      includeSolidified: true,
+    });
+
+    expect(items.map((i) => i.word)).toEqual(["alpha", "zulu"]);
   });
 });
