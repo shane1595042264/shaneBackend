@@ -553,6 +553,69 @@ export const trips = pgTable(
   (t) => [index("trips_owner_created_idx").on(t.ownerId, t.createdAt)],
 );
 
+// ------------------------------------------------------------------
+// trip_groups — collaborative trip-planning groups (SHAN-268, Phase 1
+// of SHAN-266). Members post raw idea fragments to trip_ideas; later
+// phases consolidate those into an AI-generated itinerary with PR-style
+// review. Auth-gated: JWT only, no PATs this phase.
+// ------------------------------------------------------------------
+export const tripGroups = pgTable(
+  "trip_groups",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    slug: varchar("slug", { length: 80 }).notNull().unique(),
+    // restrict: don't orphan a group if its creator's user row is wiped;
+    // membership is the source of truth, owner is also a member row.
+    ownerId: uuid("owner_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "restrict" }),
+    title: text("title").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("trip_groups_owner_idx").on(t.ownerId)],
+);
+
+export const tripGroupMembers = pgTable(
+  "trip_group_members",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    groupId: uuid("group_id")
+      .notNull()
+      .references(() => tripGroups.id, { onDelete: "cascade" }),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    // "owner" | "member". Owner can manage members + delete group in
+    // future phases; for Phase 1 only the column exists for forward
+    // compatibility.
+    role: varchar("role", { length: 20 }).notNull().default("member"),
+    joinedAt: timestamp("joined_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    unique("trip_group_members_group_user_unique").on(t.groupId, t.userId),
+    index("trip_group_members_user_idx").on(t.userId),
+  ],
+);
+
+export const tripIdeas = pgTable(
+  "trip_ideas",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    groupId: uuid("group_id")
+      .notNull()
+      .references(() => tripGroups.id, { onDelete: "cascade" }),
+    // restrict: ideas are first-class content; refuse a user-delete if
+    // they've contributed, same posture as journal_appends.authorId.
+    authorId: uuid("author_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "restrict" }),
+    body: text("body").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("trip_ideas_group_created_idx").on(t.groupId, t.createdAt)],
+);
+
 export const apiTokens = pgTable("api_tokens", {
   id: uuid("id").primaryKey().defaultRandom(),
   userId: uuid("user_id")
