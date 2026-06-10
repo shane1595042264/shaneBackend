@@ -24,6 +24,17 @@ import {
   itinerarySchema,
   computeChangedDays,
 } from "./consolidator";
+import {
+  insertUserPhoto,
+  insertUnsplashPhoto,
+  listPhotos,
+  getPhotoMeta,
+  getPhotoBytes,
+  deletePhotoById,
+  type TripGroupPhotoMeta,
+} from "./photos-repo";
+import { searchUnsplashPhoto } from "./unsplash";
+import { sniffImageMime } from "@/modules/shared/image-validate";
 
 type AuthEnv = { Variables: { userId: string } };
 
@@ -36,6 +47,35 @@ type AuthEnv = { Variables: { userId: string } };
  * Phase 2.
  */
 export const tripGroupsRoutes = new Hono<AuthEnv>();
+
+const photoIdOnlyParam = z.object({
+  slug: z.string().regex(/^[a-z0-9][a-z0-9-]{0,79}$/),
+  photoId: z.string().uuid(),
+});
+
+// Raw photo bytes — registered BEFORE the auth middleware on purpose:
+// <img> tags can't carry Authorization headers, so this is public and
+// uuid-addressed, exactly like GET /api/journal/images/:id (SHAN-275).
+tripGroupsRoutes.get(
+  "/:slug/itinerary/photos/:photoId/raw",
+  zValidator("param", photoIdOnlyParam),
+  async (c) => {
+    const { photoId } = c.req.valid("param");
+    const row = await getPhotoBytes(photoId);
+    if (!row?.data || !row.mimeType) return c.json({ error: "Not found" }, 404);
+    return new Response(new Uint8Array(row.data), {
+      status: 200,
+      headers: {
+        "Content-Type": row.mimeType,
+        "Content-Length": String(row.byteSize ?? row.data.byteLength),
+        "Cache-Control": "public, max-age=31536000, immutable",
+        "X-Content-Type-Options": "nosniff",
+        "Content-Disposition": "inline",
+      },
+    });
+  },
+);
+
 tripGroupsRoutes.use("*", requireAuth);
 
 const slugParam = z.object({
@@ -363,5 +403,166 @@ tripGroupsRoutes.delete(
     if (idea.authorId !== userId) return c.json({ error: "Only the author can delete" }, 403);
     const ok = await deleteIdeaById(ideaId, userId);
     return ok ? c.body(null, 204) : c.json({ error: "Not found" }, 404);
+  },
+);
+
+// ---------------------------------------------------------------------------
+// Itinerary photos (SHAN-275, Phase 5)
+// ---------------------------------------------------------------------------
+
+const PHOTO_MAX_BYTES = 5 * 1024 * 1024;
+
+function photoJson(p: TripGroupPhotoMeta, slug: string) {
+  return {
+    id: p.id,
+    day: p.day,
+    source: p.source,
+    uploaderId: p.uploaderId,
+    // user rows serve from our raw route; unsplash rows hotlink.
+    url:
+      p.source === "user"
+        ? `/api/trip-groups/${slug}/itinerary/photos/${p.id}/raw`
+        : p.externalUrl,
+    attribution: p.attribution,
+    createdAt: p.createdAt.toISOString(),
+  };
+}
+
+/** List photo metadata for the group (member-gated). */
+tripGroupsRoutes.get(
+  "/:slug/itinerary/photos",
+  zValidator("param", slugParam),
+  async (c) => {
+    const userId = c.get("userId");
+    const { slug } = c.req.valid("param");
+    const group = await getGroupBySlug(slug);
+    if (!group) return c.json({ error: "Not found" }, 404);
+    if (!(await isMember(group.id, userId))) {
+      return c.json({ error: "Not a member of this group" }, 403);
+    }
+    const photos = await listPhotos(group.id);
+    return c.json({ photos: photos.map((p) => photoJson(p, slug)) });
+  },
+);
+
+/** Upload a photo for a day (member-gated, multipart, magic-byte sniffed). */
+tripGroupsRoutes.post(
+  "/:slug/itinerary/photos",
+  zValidator("param", slugParam),
+  async (c) => {
+    const userId = c.get("userId");
+    const { slug } = c.req.valid("param");
+    const group = await getGroupBySlug(slug);
+    if (!group) return c.json({ error: "Not found" }, 404);
+    if (!(await isMember(group.id, userId))) {
+      return c.json({ error: "Not a member of this group" }, 403);
+    }
+    const contentType = c.req.header("Content-Type") ?? "";
+    if (!contentType.includes("multipart/form-data")) {
+      return c.json({ error: "Expected multipart/form-data with 'file' and 'day' fields" }, 400);
+    }
+    const form = await c.req.formData();
+    const file = form.get("file");
+    const dayRaw = form.get("day");
+    const day = Number(typeof dayRaw === "string" ? dayRaw : NaN);
+    if (!(file instanceof File)) {
+      return c.json({ error: "Missing 'file' in multipart upload" }, 400);
+    }
+    if (!Number.isInteger(day) || day < 1 || day > 365) {
+      return c.json({ error: "'day' must be an integer between 1 and 365" }, 400);
+    }
+    if (file.size === 0) return c.json({ error: "Empty file" }, 400);
+    if (file.size > PHOTO_MAX_BYTES) {
+      return c.json({ error: "Image too large (max 5MB)" }, 413);
+    }
+    const buffer = Buffer.from(await file.arrayBuffer());
+    const sniffedMime = sniffImageMime(buffer);
+    if (!sniffedMime) {
+      return c.json({ error: "Unsupported image type — png/jpeg/gif/webp only" }, 415);
+    }
+    const photo = await insertUserPhoto({
+      groupId: group.id,
+      day,
+      uploaderId: userId,
+      mimeType: sniffedMime,
+      data: buffer,
+    });
+    return c.json({ photo: photoJson(photo, slug) }, 201);
+  },
+);
+
+/** Delete a photo: its uploader or the group owner. Unsplash rows count
+ * as owner-managed (uploaderId is null). */
+tripGroupsRoutes.delete(
+  "/:slug/itinerary/photos/:photoId",
+  zValidator("param", photoIdOnlyParam),
+  async (c) => {
+    const userId = c.get("userId");
+    const { slug, photoId } = c.req.valid("param");
+    const group = await getGroupBySlug(slug);
+    if (!group) return c.json({ error: "Not found" }, 404);
+    const meta = await getPhotoMeta(photoId);
+    if (!meta || meta.groupId !== group.id) return c.json({ error: "Not found" }, 404);
+    const allowed = meta.uploaderId === userId || group.ownerId === userId;
+    if (!allowed) {
+      return c.json({ error: "Only the uploader or group owner can delete a photo" }, 403);
+    }
+    const ok = await deletePhotoById(photoId);
+    return ok ? c.body(null, 204) : c.json({ error: "Not found" }, 404);
+  },
+);
+
+/**
+ * Owner-triggered Unsplash fallback: every itinerary day that has a
+ * location and zero photos gets one hotlinked Unsplash hit. Partial
+ * success is fine — days whose search fails are reported, not fatal.
+ */
+tripGroupsRoutes.post(
+  "/:slug/itinerary/photos/unsplash-fill",
+  zValidator("param", slugParam),
+  async (c) => {
+    const userId = c.get("userId");
+    const { slug } = c.req.valid("param");
+    const group = await getGroupBySlug(slug);
+    if (!group) return c.json({ error: "Not found" }, 404);
+    if (group.ownerId !== userId) {
+      return c.json({ error: "Only the group owner can fill photos from Unsplash" }, 403);
+    }
+    const itin = itinerarySchema.safeParse(group.itinerary);
+    if (!itin.success) {
+      return c.json({ error: "No itinerary yet — consolidate first" }, 400);
+    }
+    const existing = await listPhotos(group.id);
+    const daysCovered = new Set(existing.map((p) => p.day));
+    const targets = itin.data.days.filter((d) => d.location && !daysCovered.has(d.day));
+    if (targets.length === 0) {
+      return c.json({ photos: [], skipped: [], message: "Every located day already has a photo" });
+    }
+
+    const created: ReturnType<typeof photoJson>[] = [];
+    const skipped: { day: number; reason: string }[] = [];
+    for (const d of targets) {
+      try {
+        const hit = await searchUnsplashPhoto(d.location as string);
+        if (!hit) {
+          skipped.push({ day: d.day, reason: "no Unsplash results" });
+          continue;
+        }
+        const photo = await insertUnsplashPhoto({
+          groupId: group.id,
+          day: d.day,
+          externalUrl: hit.url,
+          attribution: hit.attribution,
+        });
+        created.push(photoJson(photo, slug));
+      } catch (err) {
+        skipped.push({ day: d.day, reason: (err as Error).message });
+      }
+    }
+    // All-fail with a key problem reads as upstream trouble → 502.
+    if (created.length === 0 && skipped.length > 0) {
+      return c.json({ error: `Unsplash fill failed: ${skipped[0].reason}`, skipped }, 502);
+    }
+    return c.json({ photos: created, skipped });
   },
 );

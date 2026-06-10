@@ -32,7 +32,7 @@ import {
   getComment,
 } from "./comments-repo";
 import { insertImage, getImageById, countUploadsInWindow } from "./images-repo";
-import { sniffImageMime } from "./image-validate";
+import { sniffImageMime } from "@/modules/shared/image-validate";
 import {
   toggleEntryReaction,
   toggleCommentReaction,

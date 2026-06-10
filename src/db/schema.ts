@@ -672,6 +672,35 @@ const bytea = customType<{ data: Buffer; driverData: Buffer }>({
   },
 });
 
+// Photos attached to itinerary days (SHAN-275, Phase 5 of SHAN-266).
+// Two row flavors discriminated by `source`: "user" rows carry the bytes
+// (journal_images bytea pattern) and are served from
+// /:slug/itinerary/photos/:id/raw; "unsplash" rows carry only the
+// hotlink URL + attribution (Unsplash API terms require hotlinking and
+// credit, not copying bytes).
+export const tripGroupPhotos = pgTable(
+  "trip_group_photos",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    groupId: uuid("group_id")
+      .notNull()
+      .references(() => tripGroups.id, { onDelete: "cascade" }),
+    day: integer("day").notNull(),
+    // null for unsplash auto-fills; set null on user wipe so the photo
+    // survives its uploader.
+    uploaderId: uuid("uploader_id").references(() => users.id, { onDelete: "set null" }),
+    // "user" | "unsplash"
+    source: varchar("source", { length: 20 }).notNull().default("user"),
+    mimeType: varchar("mime_type", { length: 100 }),
+    byteSize: integer("byte_size"),
+    data: bytea("data"),
+    externalUrl: text("external_url"),
+    attribution: text("attribution"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("trip_group_photos_group_day_idx").on(t.groupId, t.day)],
+);
+
 // Inline image storage for the markdown editor. Bytes live in the row; routes
 // stream them out at GET /api/journal/images/:id. Cap on insert (5MB), no
 // separate object store — keeps the dep surface small.

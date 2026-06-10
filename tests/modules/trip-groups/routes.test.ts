@@ -21,6 +21,13 @@ const {
   mockListSuggestions,
   mockGetSuggestionById,
   mockResolveSuggestion,
+  mockInsertUserPhoto,
+  mockInsertUnsplashPhoto,
+  mockListPhotos,
+  mockGetPhotoMeta,
+  mockGetPhotoBytes,
+  mockDeletePhotoById,
+  mockSearchUnsplashPhoto,
 } = vi.hoisted(() => ({
   mockCreateTripGroup: vi.fn(),
   mockListGroupsForUser: vi.fn(),
@@ -37,6 +44,13 @@ const {
   mockListSuggestions: vi.fn(),
   mockGetSuggestionById: vi.fn(),
   mockResolveSuggestion: vi.fn(),
+  mockInsertUserPhoto: vi.fn(),
+  mockInsertUnsplashPhoto: vi.fn(),
+  mockListPhotos: vi.fn(),
+  mockGetPhotoMeta: vi.fn(),
+  mockGetPhotoBytes: vi.fn(),
+  mockDeletePhotoById: vi.fn(),
+  mockSearchUnsplashPhoto: vi.fn(),
 }));
 
 vi.mock("@/modules/trip-groups/repo", () => ({
@@ -54,6 +68,19 @@ vi.mock("@/modules/trip-groups/repo", () => ({
   listSuggestions: mockListSuggestions,
   getSuggestionById: mockGetSuggestionById,
   resolveSuggestion: mockResolveSuggestion,
+}));
+
+vi.mock("@/modules/trip-groups/photos-repo", () => ({
+  insertUserPhoto: mockInsertUserPhoto,
+  insertUnsplashPhoto: mockInsertUnsplashPhoto,
+  listPhotos: mockListPhotos,
+  getPhotoMeta: mockGetPhotoMeta,
+  getPhotoBytes: mockGetPhotoBytes,
+  deletePhotoById: mockDeletePhotoById,
+}));
+
+vi.mock("@/modules/trip-groups/unsplash", () => ({
+  searchUnsplashPhoto: mockSearchUnsplashPhoto,
 }));
 
 // Mock only the LLM call; keep the real itinerarySchema export so the
@@ -615,5 +642,187 @@ describe("itinerary suggestions (SHAN-273)", () => {
       { method: "POST", headers: { "X-Test-User": USER_A } },
     );
     expect(res.status).toBe(404);
+  });
+});
+
+describe("itinerary photos (SHAN-275)", () => {
+  const PHOTO_ID = "88888888-8888-8888-8888-888888888888";
+  const photoMeta = {
+    id: PHOTO_ID,
+    groupId: GROUP_ID,
+    day: 1,
+    uploaderId: USER_B,
+    source: "user",
+    mimeType: "image/png",
+    byteSize: 4,
+    externalUrl: null,
+    attribution: null,
+    createdAt: new Date("2026-06-10T10:00:00Z"),
+  };
+  const groupWithItin = {
+    ...groupRow,
+    itinerary: {
+      summary: "Trip",
+      days: [
+        { day: 1, title: "A", location: "Athens", activities: [] },
+        { day: 2, title: "B", location: "Rome", activities: [] },
+        { day: 3, title: "C", location: null, activities: [] },
+      ],
+    },
+    itineraryGeneratedAt: new Date(),
+  };
+
+  it("raw route is public: 404 (not 401) without auth for a missing photo", async () => {
+    mockGetPhotoBytes.mockResolvedValue(null);
+    const res = await app.request(`/api/trip-groups/${SLUG}/itinerary/photos/${PHOTO_ID}/raw`);
+    expect(res.status).toBe(404);
+  });
+
+  it("raw route streams stored bytes with the stored mime", async () => {
+    mockGetPhotoBytes.mockResolvedValue({
+      mimeType: "image/png",
+      byteSize: 4,
+      data: Buffer.from([0x89, 0x50, 0x4e, 0x47]),
+    });
+    const res = await app.request(`/api/trip-groups/${SLUG}/itinerary/photos/${PHOTO_ID}/raw`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("Content-Type")).toBe("image/png");
+    expect(res.headers.get("X-Content-Type-Options")).toBe("nosniff");
+  });
+
+  it("list is member-gated", async () => {
+    mockGetGroupBySlug.mockResolvedValue(groupRow);
+    mockIsMember.mockResolvedValue(false);
+    const res = await app.request(`/api/trip-groups/${SLUG}/itinerary/photos`, {
+      headers: { "X-Test-User": USER_B },
+    });
+    expect(res.status).toBe(403);
+  });
+
+  it("list maps user rows to the raw route and unsplash rows to the hotlink", async () => {
+    mockGetGroupBySlug.mockResolvedValue(groupRow);
+    mockIsMember.mockResolvedValue(true);
+    mockListPhotos.mockResolvedValue([
+      photoMeta,
+      { ...photoMeta, id: "99999999-9999-9999-9999-999999999999", source: "unsplash", uploaderId: null, externalUrl: "https://images.unsplash.com/x", attribution: "Photo by Y on Unsplash" },
+    ]);
+    const res = await app.request(`/api/trip-groups/${SLUG}/itinerary/photos`, {
+      headers: { "X-Test-User": USER_B },
+    });
+    const body = await res.json();
+    expect(body.photos[0].url).toBe(`/api/trip-groups/${SLUG}/itinerary/photos/${PHOTO_ID}/raw`);
+    expect(body.photos[1].url).toBe("https://images.unsplash.com/x");
+    expect(body.photos[1].attribution).toContain("Unsplash");
+  });
+
+  it("upload sniffs magic bytes and stores for a valid day", async () => {
+    mockGetGroupBySlug.mockResolvedValue(groupRow);
+    mockIsMember.mockResolvedValue(true);
+    mockInsertUserPhoto.mockResolvedValue(photoMeta);
+    // Real PNG magic bytes so sniffImageMime (unmocked, pure) accepts it.
+    const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3]);
+    const form = new FormData();
+    form.append("file", new File([png], "x.png", { type: "image/png" }));
+    form.append("day", "1");
+    const res = await app.request(`/api/trip-groups/${SLUG}/itinerary/photos`, {
+      method: "POST",
+      headers: { "X-Test-User": USER_B },
+      body: form,
+    });
+    expect(res.status).toBe(201);
+    expect(mockInsertUserPhoto).toHaveBeenCalledWith(
+      expect.objectContaining({ groupId: GROUP_ID, day: 1, uploaderId: USER_B, mimeType: "image/png" }),
+    );
+  });
+
+  it("upload rejects a non-image payload with 415", async () => {
+    mockGetGroupBySlug.mockResolvedValue(groupRow);
+    mockIsMember.mockResolvedValue(true);
+    const form = new FormData();
+    form.append("file", new File([new Uint8Array([1, 2, 3, 4])], "x.txt", { type: "text/plain" }));
+    form.append("day", "1");
+    const res = await app.request(`/api/trip-groups/${SLUG}/itinerary/photos`, {
+      method: "POST",
+      headers: { "X-Test-User": USER_B },
+      body: form,
+    });
+    expect(res.status).toBe(415);
+  });
+
+  it("upload rejects a bad day", async () => {
+    mockGetGroupBySlug.mockResolvedValue(groupRow);
+    mockIsMember.mockResolvedValue(true);
+    const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    const form = new FormData();
+    form.append("file", new File([png], "x.png", { type: "image/png" }));
+    form.append("day", "0");
+    const res = await app.request(`/api/trip-groups/${SLUG}/itinerary/photos`, {
+      method: "POST",
+      headers: { "X-Test-User": USER_B },
+      body: form,
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it("delete allowed for uploader, forbidden for an unrelated member", async () => {
+    mockGetGroupBySlug.mockResolvedValue({ ...groupRow, ownerId: USER_A });
+    mockGetPhotoMeta.mockResolvedValue(photoMeta); // uploaded by USER_B
+    mockDeletePhotoById.mockResolvedValue(true);
+    const asUploader = await app.request(
+      `/api/trip-groups/${SLUG}/itinerary/photos/${PHOTO_ID}`,
+      { method: "DELETE", headers: { "X-Test-User": USER_B } },
+    );
+    expect(asUploader.status).toBe(204);
+    const STRANGER = "cccccccc-cccc-cccc-cccc-cccccccccccc";
+    const asStranger = await app.request(
+      `/api/trip-groups/${SLUG}/itinerary/photos/${PHOTO_ID}`,
+      { method: "DELETE", headers: { "X-Test-User": STRANGER } },
+    );
+    expect(asStranger.status).toBe(403);
+  });
+
+  it("unsplash-fill is owner-only and 400 without an itinerary", async () => {
+    mockGetGroupBySlug.mockResolvedValue({ ...groupRow, itinerary: null });
+    const nonOwner = await app.request(
+      `/api/trip-groups/${SLUG}/itinerary/photos/unsplash-fill`,
+      { method: "POST", headers: { "X-Test-User": USER_B } },
+    );
+    expect(nonOwner.status).toBe(403);
+    const noItin = await app.request(
+      `/api/trip-groups/${SLUG}/itinerary/photos/unsplash-fill`,
+      { method: "POST", headers: { "X-Test-User": USER_A } },
+    );
+    expect(noItin.status).toBe(400);
+  });
+
+  it("unsplash-fill covers located days without photos and skips failures", async () => {
+    mockGetGroupBySlug.mockResolvedValue(groupWithItin);
+    // day 1 already covered; day 2 (Rome) needs a photo; day 3 has no location
+    mockListPhotos.mockResolvedValue([photoMeta]);
+    mockSearchUnsplashPhoto.mockResolvedValue({ url: "https://images.unsplash.com/rome", attribution: "Photo by Z on Unsplash" });
+    mockInsertUnsplashPhoto.mockResolvedValue({
+      ...photoMeta, id: "99999999-9999-9999-9999-999999999999", day: 2, source: "unsplash", uploaderId: null,
+      externalUrl: "https://images.unsplash.com/rome", attribution: "Photo by Z on Unsplash",
+    });
+    const res = await app.request(
+      `/api/trip-groups/${SLUG}/itinerary/photos/unsplash-fill`,
+      { method: "POST", headers: { "X-Test-User": USER_A } },
+    );
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.photos).toHaveLength(1);
+    expect(mockSearchUnsplashPhoto).toHaveBeenCalledTimes(1);
+    expect(mockSearchUnsplashPhoto).toHaveBeenCalledWith("Rome");
+  });
+
+  it("unsplash-fill surfaces total failure as 502", async () => {
+    mockGetGroupBySlug.mockResolvedValue(groupWithItin);
+    mockListPhotos.mockResolvedValue([]);
+    mockSearchUnsplashPhoto.mockRejectedValue(new Error("Unsplash API error 401: bad key"));
+    const res = await app.request(
+      `/api/trip-groups/${SLUG}/itinerary/photos/unsplash-fill`,
+      { method: "POST", headers: { "X-Test-User": USER_A } },
+    );
+    expect(res.status).toBe(502);
   });
 });
