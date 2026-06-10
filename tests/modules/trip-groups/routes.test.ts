@@ -1046,3 +1046,38 @@ describe("POST /api/trip-groups/:slug/itinerary/export-calendar (SHAN-278)", () 
     expect(res.status).toBe(502);
   });
 });
+
+describe("unsplash-fill dedupes by location (SHAN-279)", () => {
+  it("fetches one photo per distinct location, not per day", async () => {
+    mockGetGroupBySlug.mockResolvedValue({
+      ...groupRow,
+      itinerary: {
+        summary: "Trip",
+        days: [
+          { day: 1, title: "A", date: null, location: "Greece", country: "Greece", activities: [] },
+          { day: 2, title: "B", date: null, location: "Greece", country: "Greece", activities: [] },
+          { day: 3, title: "C", date: null, location: "Italy", country: "Italy", activities: [] },
+        ],
+      },
+      itineraryGeneratedAt: new Date(),
+    });
+    mockListPhotos.mockResolvedValue([]);
+    mockSearchUnsplashPhoto.mockResolvedValue({ url: "https://images.unsplash.com/x", attribution: "Photo by Z on Unsplash" });
+    mockInsertUnsplashPhoto.mockImplementation(async (i: any) => ({
+      id: "99999999-9999-9999-9999-999999999999", groupId: i.groupId, day: i.day, uploaderId: null,
+      source: "unsplash", mimeType: null, byteSize: null, externalUrl: i.externalUrl,
+      attribution: i.attribution, createdAt: new Date(),
+    }));
+    const res = await app.request(`/api/trip-groups/${SLUG}/itinerary/photos/unsplash-fill`, {
+      method: "POST",
+      headers: { "X-Test-User": USER_A },
+    });
+    expect(res.status).toBe(200);
+    // 3 days but only 2 distinct locations -> 2 searches, 2 inserts
+    expect(mockSearchUnsplashPhoto).toHaveBeenCalledTimes(2);
+    expect(mockSearchUnsplashPhoto).toHaveBeenNthCalledWith(1, "Greece");
+    expect(mockSearchUnsplashPhoto).toHaveBeenNthCalledWith(2, "Italy");
+    const body = await res.json();
+    expect(body.photos).toHaveLength(2);
+  });
+});

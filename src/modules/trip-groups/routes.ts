@@ -640,11 +640,24 @@ tripGroupsRoutes.post(
     if (!itin.success) {
       return c.json({ error: "No itinerary yet — consolidate first" }, 400);
     }
+    // One photo per distinct location, not per day (SHAN-279): photos are
+    // design backgrounds now — a location's photo covers every day that
+    // shares it, so repeated fetches just duplicated the same image.
     const existing = await listPhotos(group.id);
-    const daysCovered = new Set(existing.map((p) => p.day));
-    const targets = itin.data.days.filter((d) => d.location && !daysCovered.has(d.day));
+    const dayLocation = new Map(itin.data.days.map((d) => [d.day, d.location]));
+    const coveredLocations = new Set(
+      existing.map((p) => dayLocation.get(p.day)).filter((l): l is string => !!l),
+    );
+    const seenLocations = new Set<string>();
+    const targets = itin.data.days.filter((d) => {
+      if (!d.location || coveredLocations.has(d.location) || seenLocations.has(d.location)) {
+        return false;
+      }
+      seenLocations.add(d.location);
+      return true;
+    });
     if (targets.length === 0) {
-      return c.json({ photos: [], skipped: [], message: "Every located day already has a photo" });
+      return c.json({ photos: [], skipped: [], message: "Every location already has a photo" });
     }
 
     const created: ReturnType<typeof photoJson>[] = [];
