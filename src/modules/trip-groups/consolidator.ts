@@ -14,6 +14,18 @@ const activitySchema = z.object({
   notes: z.string().nullable(),
 });
 
+// Meals are timeline fixtures, not events (SHAN-282): every day has
+// breakfast/lunch/dinner slots; the value is the assigned place to eat
+// (or null when unassigned).
+const mealsSchema = z
+  .object({
+    breakfast: z.string().nullable().optional().default(null),
+    lunch: z.string().nullable().optional().default(null),
+    dinner: z.string().nullable().optional().default(null),
+  })
+  .optional()
+  .default({ breakfast: null, lunch: null, dinner: null });
+
 const daySchema = z.object({
   day: z.number().int().min(1),
   title: z.string().min(1),
@@ -28,6 +40,7 @@ const daySchema = z.object({
   location: z.string().nullable(),
   // Country grouping for the collapsible sections (SHAN-277).
   country: z.string().nullable().optional().default(null),
+  meals: mealsSchema,
   activities: z.array(activitySchema),
 });
 
@@ -47,7 +60,7 @@ export interface ConsolidateInput {
 const SYSTEM_PROMPT = `You are a travel-planning assistant. You receive a trip group's raw idea fragments (restaurants, neighborhoods, activities, logistics, vibes) and optionally a previously drafted itinerary. Produce a coherent day-by-day itinerary that incorporates as many ideas as sensibly fit.
 
 Return ONLY valid JSON matching this schema:
-{"summary":"...","days":[{"day":1,"title":"...","date":"2026-07-25"|null,"location":"..."|null,"country":"..."|null,"activities":[{"time":"09:00"|null,"title":"...","notes":"..."|null}]}]}
+{"summary":"...","days":[{"day":1,"title":"...","date":"2026-07-25"|null,"location":"..."|null,"country":"..."|null,"meals":{"breakfast":"..."|null,"lunch":"..."|null,"dinner":"..."|null},"activities":[{"time":"09:00"|null,"title":"...","notes":"..."|null}]}]}
 
 Rules:
 - "summary": 1-3 sentences describing the overall trip shape.
@@ -55,6 +68,7 @@ Rules:
 - "date": calendar date "YYYY-MM-DD" for the day. If the ideas mention real dates (e.g. "Jul 25", "7/25", "from the 25th to the 30th"), anchor day 1 to the earliest mentioned date and number the rest consecutively. If no dates are mentioned anywhere, use null for all days — do NOT invent dates.
 - "location": the city/area the day centers on, or null.
 - "country": the country that day belongs to (e.g. "Greece", "Italy"), or null if unknown. Consecutive days in the same country should use the exact same country string so they group together.
+- "meals": breakfast/lunch/dinner are fixed timeline slots, NOT activities. When the ideas mention restaurants, cafes, or food places, assign them as the place for the matching meal (e.g. "lunch":"Ta Karamanlidika tou Fani"). Use null when nothing fits. Never create an activity for a plain meal - reserve activities for sights, transit, and experiences.
 - "activities": ordered within the day. "time" is a 24h "HH:MM" hint or null. "notes" carries practical detail (reservations, transit, who suggested it), or null.
 - If a previous itinerary is provided, treat it as the base: preserve its structure where it still makes sense and weave new ideas in, rather than starting over.
 - Group geographically close activities into the same day. Don't invent attractions nobody mentioned unless needed to bridge a day (mark those notes with "(suggested)").

@@ -140,7 +140,15 @@ const app = new Hono().route("/api/trip-groups", tripGroupsRoutes);
 // itinerarySchema normalizes days by defaulting date/country to null
 // (SHAN-277) — equality assertions against parsed output use this.
 function enriched(itin: any) {
-  return { ...itin, days: itin.days.map((d: any) => ({ date: null, country: null, ...d })) };
+  return {
+    ...itin,
+    days: itin.days.map((d: any) => ({
+      date: null,
+      country: null,
+      meals: { breakfast: null, lunch: null, dinner: null },
+      ...d,
+    })),
+  };
 }
 
 
@@ -1125,5 +1133,35 @@ describe("auto photo fill on itinerary writes (SHAN-280)", () => {
       }),
     });
     expect(res.status).toBe(200);
+  });
+});
+
+describe("day meals (SHAN-282)", () => {
+  it("PUT accepts meal places and legacy days default them to null", async () => {
+    mockGetGroupBySlug.mockResolvedValue(groupRow);
+    mockSaveItinerary.mockResolvedValue({ itineraryGeneratedAt: new Date() });
+    mockListPhotos.mockResolvedValue([]);
+    const res = await app.request(`/api/trip-groups/${SLUG}/itinerary`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", "X-Test-User": USER_A },
+      body: JSON.stringify({
+        itinerary: {
+          summary: "Meals trip.",
+          days: [
+            { day: 1, title: "Athens", date: null, location: "Athens", country: "Greece",
+              meals: { lunch: "Ta Karamanlidika tou Fani" }, activities: [] },
+            { day: 2, title: "Legacy day", date: null, location: null, country: null, activities: [] },
+          ],
+        },
+      }),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.itinerary.days[0].meals).toEqual({
+      breakfast: null,
+      lunch: "Ta Karamanlidika tou Fani",
+      dinner: null,
+    });
+    expect(body.itinerary.days[1].meals).toEqual({ breakfast: null, lunch: null, dinner: null });
   });
 });
