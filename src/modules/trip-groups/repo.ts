@@ -37,6 +37,8 @@ export interface TripGroupDetail {
   ownerId: string;
   createdAt: Date;
   updatedAt: Date;
+  itinerary: unknown | null;
+  itineraryGeneratedAt: Date | null;
   members: TripGroupMember[];
   ideas: TripIdea[];
 }
@@ -140,6 +142,8 @@ export async function getGroupBySlug(
   ownerId: string;
   createdAt: Date;
   updatedAt: Date;
+  itinerary: unknown | null;
+  itineraryGeneratedAt: Date | null;
 } | null> {
   const [row] = await db
     .select({
@@ -149,6 +153,8 @@ export async function getGroupBySlug(
       ownerId: tripGroups.ownerId,
       createdAt: tripGroups.createdAt,
       updatedAt: tripGroups.updatedAt,
+      itinerary: tripGroups.itinerary,
+      itineraryGeneratedAt: tripGroups.itineraryGeneratedAt,
     })
     .from(tripGroups)
     .where(eq(tripGroups.slug, slug))
@@ -188,6 +194,23 @@ export async function getGroupDetail(slug: string): Promise<TripGroupDetail | nu
     .orderBy(desc(tripIdeas.createdAt));
 
   return { ...group, members, ideas };
+}
+
+/**
+ * Persist a consolidated itinerary on the group (SHAN-272). Caller is
+ * responsible for shape validation (consolidator zod schema) and the
+ * owner-only authorization check.
+ */
+export async function saveItinerary(
+  groupId: string,
+  itinerary: unknown,
+): Promise<{ itineraryGeneratedAt: Date }> {
+  const now = new Date();
+  await db
+    .update(tripGroups)
+    .set({ itinerary, itineraryGeneratedAt: now, updatedAt: now })
+    .where(eq(tripGroups.id, groupId));
+  return { itineraryGeneratedAt: now };
 }
 
 /** True iff (groupId, userId) row exists in trip_group_members. */

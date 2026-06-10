@@ -570,6 +570,13 @@ export const tripGroups = pgTable(
       .notNull()
       .references(() => users.id, { onDelete: "restrict" }),
     title: text("title").notNull(),
+    // AI-consolidated itinerary (SHAN-272, Phase 3 of SHAN-266). Shape:
+    // { summary, days: [{ day, title, location, activities: [{ time,
+    // title, notes }] }] } — validated by the zod schema in
+    // modules/trip-groups/consolidator.ts before write. Direct write,
+    // no version history; PR-style edits land in Phase 4.
+    itinerary: jsonb("itinerary"),
+    itineraryGeneratedAt: timestamp("itinerary_generated_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },

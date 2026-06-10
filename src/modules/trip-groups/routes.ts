@@ -12,7 +12,9 @@ import {
   createIdea,
   getIdeaById,
   deleteIdeaById,
+  saveItinerary,
 } from "./repo";
+import { consolidateItinerary, itinerarySchema } from "./consolidator";
 
 type AuthEnv = { Variables: { userId: string } };
 
@@ -97,6 +99,8 @@ tripGroupsRoutes.get("/:slug", zValidator("param", slugParam), async (c) => {
       isOwner: detail.ownerId === userId,
       createdAt: detail.createdAt.toISOString(),
       updatedAt: detail.updatedAt.toISOString(),
+      itinerary: detail.itinerary ?? null,
+      itineraryGeneratedAt: detail.itineraryGeneratedAt?.toISOString() ?? null,
       members: detail.members.map((m) => ({
         userId: m.userId,
         name: m.name,
@@ -157,6 +161,57 @@ tripGroupsRoutes.post(
       },
       201,
     );
+  },
+);
+
+/**
+ * Consolidate the group's idea inbox into a structured itinerary via the
+ * LLM (SHAN-272, Phase 3 of SHAN-266). Owner-only; direct write — every
+ * member sees the result on next detail fetch. PR-style review is Phase 4.
+ */
+tripGroupsRoutes.post(
+  "/:slug/itinerary/consolidate",
+  zValidator("param", slugParam),
+  async (c) => {
+    const userId = c.get("userId");
+    const { slug } = c.req.valid("param");
+    const detail = await getGroupDetail(slug);
+    if (!detail) return c.json({ error: "Not found" }, 404);
+    if (detail.ownerId !== userId) {
+      return c.json({ error: "Only the group owner can consolidate the itinerary" }, 403);
+    }
+    if (detail.ideas.length === 0) {
+      return c.json({ error: "Post at least one idea before consolidating" }, 400);
+    }
+
+    // A previously stored itinerary is passed back to the LLM as the base
+    // so re-consolidation refines instead of starting over. Stored JSON is
+    // re-validated here — if a future phase changes the shape, the old blob
+    // silently degrades to "no base" instead of corrupting the prompt.
+    const existing = itinerarySchema.safeParse(detail.itinerary);
+
+    try {
+      const { itinerary, modelUsed } = await consolidateItinerary({
+        groupTitle: detail.title,
+        ideas: detail.ideas.map((i) => ({ authorName: i.authorName, body: i.body })),
+        existingItinerary: existing.success ? existing.data : null,
+      });
+      const { itineraryGeneratedAt } = await saveItinerary(detail.id, itinerary);
+      return c.json({
+        itinerary,
+        itineraryGeneratedAt: itineraryGeneratedAt.toISOString(),
+        modelUsed,
+      });
+    } catch (err) {
+      const message = (err as Error).message;
+      // Same contract as knowledge/routes.ts: 502 = upstream LLM trouble
+      // (chain exhausted or bad output), retryable; 500 = our bug.
+      const status =
+        message.includes("All LLM providers failed") || message.startsWith("AI ")
+          ? 502
+          : 500;
+      return c.json({ error: message }, status);
+    }
   },
 );
 

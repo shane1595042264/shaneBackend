@@ -15,6 +15,8 @@ const {
   mockCreateIdea,
   mockGetIdeaById,
   mockDeleteIdeaById,
+  mockSaveItinerary,
+  mockConsolidateItinerary,
 } = vi.hoisted(() => ({
   mockCreateTripGroup: vi.fn(),
   mockListGroupsForUser: vi.fn(),
@@ -25,6 +27,8 @@ const {
   mockCreateIdea: vi.fn(),
   mockGetIdeaById: vi.fn(),
   mockDeleteIdeaById: vi.fn(),
+  mockSaveItinerary: vi.fn(),
+  mockConsolidateItinerary: vi.fn(),
 }));
 
 vi.mock("@/modules/trip-groups/repo", () => ({
@@ -37,7 +41,16 @@ vi.mock("@/modules/trip-groups/repo", () => ({
   createIdea: mockCreateIdea,
   getIdeaById: mockGetIdeaById,
   deleteIdeaById: mockDeleteIdeaById,
+  saveItinerary: mockSaveItinerary,
 }));
+
+// Mock only the LLM call; keep the real itinerarySchema export so the
+// route's re-validation of stored blobs behaves exactly as in prod.
+vi.mock("@/modules/trip-groups/consolidator", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("@/modules/trip-groups/consolidator")>();
+  return { ...actual, consolidateItinerary: mockConsolidateItinerary };
+});
 
 vi.mock("@/modules/auth/middleware", () => ({
   requireAuth: async (c: any, next: any) => {
@@ -292,5 +305,158 @@ describe("DELETE /api/trip-groups/:slug/ideas/:ideaId", () => {
       headers: { "X-Test-User": USER_A },
     });
     expect(res.status).toBe(204);
+  });
+});
+
+describe("POST /api/trip-groups/:slug/itinerary/consolidate", () => {
+  const ITINERARY = {
+    summary: "Three days across central Tokyo.",
+    days: [
+      {
+        day: 1,
+        title: "Shibuya + Shinjuku",
+        location: "Tokyo",
+        activities: [{ time: "09:00", title: "Meiji Shrine", notes: null }],
+      },
+    ],
+  };
+
+  const detailWithIdeas = {
+    ...groupRow,
+    itinerary: null,
+    itineraryGeneratedAt: null,
+    members: [
+      { userId: USER_A, name: "Shane", role: "owner", joinedAt: new Date("2026-06-01T00:00:00Z") },
+      { userId: USER_B, name: "Ben", role: "member", joinedAt: new Date("2026-06-02T00:00:00Z") },
+    ],
+    ideas: [
+      {
+        id: IDEA_ID,
+        groupId: GROUP_ID,
+        authorId: USER_B,
+        authorName: "Ben",
+        body: "Meiji Shrine early morning",
+        createdAt: new Date("2026-06-03T00:00:00Z"),
+      },
+    ],
+  };
+
+  it("returns 401 without auth", async () => {
+    const res = await app.request(`/api/trip-groups/${SLUG}/itinerary/consolidate`, {
+      method: "POST",
+    });
+    expect(res.status).toBe(401);
+  });
+
+  it("returns 404 when group missing", async () => {
+    mockGetGroupDetail.mockResolvedValue(null);
+    const res = await app.request(`/api/trip-groups/${SLUG}/itinerary/consolidate`, {
+      method: "POST",
+      headers: { "X-Test-User": USER_A },
+    });
+    expect(res.status).toBe(404);
+  });
+
+  it("returns 403 for non-owner members", async () => {
+    mockGetGroupDetail.mockResolvedValue(detailWithIdeas);
+    const res = await app.request(`/api/trip-groups/${SLUG}/itinerary/consolidate`, {
+      method: "POST",
+      headers: { "X-Test-User": USER_B },
+    });
+    expect(res.status).toBe(403);
+    expect(mockConsolidateItinerary).not.toHaveBeenCalled();
+  });
+
+  it("returns 400 when the idea inbox is empty", async () => {
+    mockGetGroupDetail.mockResolvedValue({ ...detailWithIdeas, ideas: [] });
+    const res = await app.request(`/api/trip-groups/${SLUG}/itinerary/consolidate`, {
+      method: "POST",
+      headers: { "X-Test-User": USER_A },
+    });
+    expect(res.status).toBe(400);
+    expect(mockConsolidateItinerary).not.toHaveBeenCalled();
+  });
+
+  it("consolidates, persists, and returns the itinerary for the owner", async () => {
+    mockGetGroupDetail.mockResolvedValue(detailWithIdeas);
+    mockConsolidateItinerary.mockResolvedValue({
+      itinerary: ITINERARY,
+      modelUsed: "claude-sonnet-4-20250514",
+    });
+    mockSaveItinerary.mockResolvedValue({
+      itineraryGeneratedAt: new Date("2026-06-10T12:00:00Z"),
+    });
+    const res = await app.request(`/api/trip-groups/${SLUG}/itinerary/consolidate`, {
+      method: "POST",
+      headers: { "X-Test-User": USER_A },
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.itinerary.summary).toBe(ITINERARY.summary);
+    expect(body.itineraryGeneratedAt).toBe("2026-06-10T12:00:00.000Z");
+    expect(mockSaveItinerary).toHaveBeenCalledWith(GROUP_ID, ITINERARY);
+    // No stored itinerary → LLM gets no base to refine.
+    expect(mockConsolidateItinerary).toHaveBeenCalledWith(
+      expect.objectContaining({ existingItinerary: null }),
+    );
+  });
+
+  it("passes a previously stored itinerary to the LLM as the base", async () => {
+    mockGetGroupDetail.mockResolvedValue({ ...detailWithIdeas, itinerary: ITINERARY });
+    mockConsolidateItinerary.mockResolvedValue({
+      itinerary: ITINERARY,
+      modelUsed: "claude-sonnet-4-20250514",
+    });
+    mockSaveItinerary.mockResolvedValue({
+      itineraryGeneratedAt: new Date("2026-06-10T12:00:00Z"),
+    });
+    const res = await app.request(`/api/trip-groups/${SLUG}/itinerary/consolidate`, {
+      method: "POST",
+      headers: { "X-Test-User": USER_A },
+    });
+    expect(res.status).toBe(200);
+    expect(mockConsolidateItinerary).toHaveBeenCalledWith(
+      expect.objectContaining({ existingItinerary: ITINERARY }),
+    );
+  });
+
+  it("maps LLM-chain exhaustion to 502 and does not persist", async () => {
+    mockGetGroupDetail.mockResolvedValue(detailWithIdeas);
+    mockConsolidateItinerary.mockRejectedValue(
+      new Error("All LLM providers failed. Anthropic: boom; Groq: bust"),
+    );
+    const res = await app.request(`/api/trip-groups/${SLUG}/itinerary/consolidate`, {
+      method: "POST",
+      headers: { "X-Test-User": USER_A },
+    });
+    expect(res.status).toBe(502);
+    expect(mockSaveItinerary).not.toHaveBeenCalled();
+  });
+
+  it("maps invalid AI output to 502", async () => {
+    mockGetGroupDetail.mockResolvedValue(detailWithIdeas);
+    mockConsolidateItinerary.mockRejectedValue(
+      new Error("AI itinerary failed schema validation (model: x): days: Required"),
+    );
+    const res = await app.request(`/api/trip-groups/${SLUG}/itinerary/consolidate`, {
+      method: "POST",
+      headers: { "X-Test-User": USER_A },
+    });
+    expect(res.status).toBe(502);
+  });
+
+  it("GET detail carries itinerary + itineraryGeneratedAt", async () => {
+    mockGetGroupDetail.mockResolvedValue({
+      ...detailWithIdeas,
+      itinerary: ITINERARY,
+      itineraryGeneratedAt: new Date("2026-06-10T12:00:00Z"),
+    });
+    const res = await app.request(`/api/trip-groups/${SLUG}`, {
+      headers: { "X-Test-User": USER_A },
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.group.itinerary.days).toHaveLength(1);
+    expect(body.group.itineraryGeneratedAt).toBe("2026-06-10T12:00:00.000Z");
   });
 });
