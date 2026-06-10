@@ -672,6 +672,54 @@ const bytea = customType<{ data: Buffer; driverData: Buffer }>({
   },
 });
 
+// Margin notes (SHAN-283): quick member comments anchored to the whole
+// group, a day, or a specific activity. Activities have no stable ids,
+// so activity anchors store (day, activity title) — a note follows its
+// content through time-slot swaps and falls back to the day when the
+// activity is renamed or removed.
+export const tripGroupNotes = pgTable(
+  "trip_group_notes",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    groupId: uuid("group_id")
+      .notNull()
+      .references(() => tripGroups.id, { onDelete: "cascade" }),
+    authorId: uuid("author_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "restrict" }),
+    // "group" | "day" | "activity"
+    anchorType: varchar("anchor_type", { length: 20 }).notNull(),
+    anchorDay: integer("anchor_day"),
+    anchorActivity: text("anchor_activity"),
+    body: text("body").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("trip_group_notes_group_idx").on(t.groupId)],
+);
+
+// Collaborative sections on the group page (SHAN-283). First kind is
+// "todo" — shared checklists like "Remember to bring". Items live in
+// jsonb: [{ id, text, done, addedBy }]; whole-array updates are fine at
+// trip-group cardinality.
+export const tripGroupSections = pgTable(
+  "trip_group_sections",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    groupId: uuid("group_id")
+      .notNull()
+      .references(() => tripGroups.id, { onDelete: "cascade" }),
+    createdBy: uuid("created_by")
+      .notNull()
+      .references(() => users.id, { onDelete: "restrict" }),
+    title: text("title").notNull(),
+    kind: varchar("kind", { length: 20 }).notNull().default("todo"),
+    items: jsonb("items").notNull().default([]),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("trip_group_sections_group_idx").on(t.groupId)],
+);
+
 // Per-user Google Calendar connections (SHAN-278). Stores the OAuth
 // refresh token obtained from the GIS auth-code popup (calendar.events
 // scope, WordByWord client). One row per user; reconnecting replaces it.

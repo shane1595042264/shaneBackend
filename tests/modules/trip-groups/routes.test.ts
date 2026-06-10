@@ -83,6 +83,27 @@ vi.mock("@/modules/trip-groups/unsplash", () => ({
   searchUnsplashPhoto: mockSearchUnsplashPhoto,
 }));
 
+const {
+  mockCreateNote, mockListNotes, mockGetNoteById, mockDeleteNoteById,
+  mockCreateSection, mockListSections, mockGetSectionById, mockUpdateSection, mockDeleteSectionById,
+} = vi.hoisted(() => ({
+  mockCreateNote: vi.fn(), mockListNotes: vi.fn(), mockGetNoteById: vi.fn(), mockDeleteNoteById: vi.fn(),
+  mockCreateSection: vi.fn(), mockListSections: vi.fn(), mockGetSectionById: vi.fn(),
+  mockUpdateSection: vi.fn(), mockDeleteSectionById: vi.fn(),
+}));
+
+vi.mock("@/modules/trip-groups/notes-sections-repo", () => ({
+  createNote: mockCreateNote,
+  listNotes: mockListNotes,
+  getNoteById: mockGetNoteById,
+  deleteNoteById: mockDeleteNoteById,
+  createSection: mockCreateSection,
+  listSections: mockListSections,
+  getSectionById: mockGetSectionById,
+  updateSection: mockUpdateSection,
+  deleteSectionById: mockDeleteSectionById,
+}));
+
 const { mockGetAccessTokenForUser, mockDeletePreviousExport, mockInsertEvents } = vi.hoisted(() => ({
   mockGetAccessTokenForUser: vi.fn(),
   mockDeletePreviousExport: vi.fn(),
@@ -1163,5 +1184,112 @@ describe("day meals (SHAN-282)", () => {
       dinner: null,
     });
     expect(body.itinerary.days[1].meals).toEqual({ breakfast: null, lunch: null, dinner: null });
+  });
+});
+
+describe("notes + sections (SHAN-283)", () => {
+  const NOTE_ID = "aaaa1111-1111-1111-1111-111111111111";
+  const SECTION_ID = "bbbb2222-2222-2222-2222-222222222222";
+  const noteRow = {
+    id: NOTE_ID, groupId: GROUP_ID, authorId: USER_B, authorName: "Ben",
+    anchorType: "activity", anchorDay: 1, anchorActivity: "Acropolis Museum",
+    body: "this restaurant costs 40$ per person", createdAt: new Date("2026-06-10T15:00:00Z"),
+  };
+  const sectionRow = {
+    id: SECTION_ID, groupId: GROUP_ID, createdBy: USER_B, title: "Remember to bring",
+    kind: "todo", items: [{ id: "i1", text: "sunscreen", done: false, addedBy: "Ben" }],
+    createdAt: new Date("2026-06-10T15:00:00Z"), updatedAt: new Date("2026-06-10T15:00:00Z"),
+  };
+
+  it("member creates an activity-anchored note", async () => {
+    mockGetGroupBySlug.mockResolvedValue(groupRow);
+    mockIsMember.mockResolvedValue(true);
+    mockCreateNote.mockResolvedValue(noteRow);
+    const res = await app.request(`/api/trip-groups/${SLUG}/notes`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Test-User": USER_B },
+      body: JSON.stringify({ anchorType: "activity", anchorDay: 1, anchorActivity: "Acropolis Museum", body: "this restaurant costs 40$ per person" }),
+    });
+    expect(res.status).toBe(201);
+    expect(mockCreateNote).toHaveBeenCalledWith(
+      expect.objectContaining({ anchorType: "activity", anchorDay: 1, anchorActivity: "Acropolis Museum" }),
+    );
+  });
+
+  it("activity note without anchorActivity is 400; day note without anchorDay is 400", async () => {
+    mockGetGroupBySlug.mockResolvedValue(groupRow);
+    mockIsMember.mockResolvedValue(true);
+    const r1 = await app.request(`/api/trip-groups/${SLUG}/notes`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Test-User": USER_B },
+      body: JSON.stringify({ anchorType: "activity", anchorDay: 1, body: "x" }),
+    });
+    expect(r1.status).toBe(400);
+    const r2 = await app.request(`/api/trip-groups/${SLUG}/notes`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Test-User": USER_B },
+      body: JSON.stringify({ anchorType: "day", body: "x" }),
+    });
+    expect(r2.status).toBe(400);
+  });
+
+  it("note delete allowed for author and owner, not others", async () => {
+    mockGetGroupBySlug.mockResolvedValue({ ...groupRow, ownerId: USER_A });
+    mockGetNoteById.mockResolvedValue(noteRow); // authored by USER_B
+    mockDeleteNoteById.mockResolvedValue(true);
+    const asAuthor = await app.request(`/api/trip-groups/${SLUG}/notes/${NOTE_ID}`, {
+      method: "DELETE", headers: { "X-Test-User": USER_B },
+    });
+    expect(asAuthor.status).toBe(204);
+    const asOwner = await app.request(`/api/trip-groups/${SLUG}/notes/${NOTE_ID}`, {
+      method: "DELETE", headers: { "X-Test-User": USER_A },
+    });
+    expect(asOwner.status).toBe(204);
+    const STRANGER = "cccccccc-cccc-cccc-cccc-cccccccccccc";
+    const asStranger = await app.request(`/api/trip-groups/${SLUG}/notes/${NOTE_ID}`, {
+      method: "DELETE", headers: { "X-Test-User": STRANGER },
+    });
+    expect(asStranger.status).toBe(403);
+  });
+
+  it("any member can create a section and update its items", async () => {
+    mockGetGroupBySlug.mockResolvedValue(groupRow);
+    mockIsMember.mockResolvedValue(true);
+    mockCreateSection.mockResolvedValue(sectionRow);
+    const create = await app.request(`/api/trip-groups/${SLUG}/sections`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Test-User": USER_B },
+      body: JSON.stringify({ title: "Remember to bring" }),
+    });
+    expect(create.status).toBe(201);
+
+    mockGetSectionById.mockResolvedValue(sectionRow);
+    mockUpdateSection.mockResolvedValue({
+      ...sectionRow,
+      items: [...sectionRow.items, { id: "i2", text: "adapter", done: false, addedBy: "Shane" }],
+    });
+    const update = await app.request(`/api/trip-groups/${SLUG}/sections/${SECTION_ID}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", "X-Test-User": USER_A },
+      body: JSON.stringify({ items: [...sectionRow.items, { id: "i2", text: "adapter", done: false, addedBy: "Shane" }] }),
+    });
+    expect(update.status).toBe(200);
+    const body = await update.json();
+    expect(body.section.items).toHaveLength(2);
+  });
+
+  it("section delete is creator-or-owner only", async () => {
+    mockGetGroupBySlug.mockResolvedValue({ ...groupRow, ownerId: USER_A });
+    mockGetSectionById.mockResolvedValue(sectionRow); // created by USER_B
+    mockDeleteSectionById.mockResolvedValue(true);
+    const STRANGER = "cccccccc-cccc-cccc-cccc-cccccccccccc";
+    const asStranger = await app.request(`/api/trip-groups/${SLUG}/sections/${SECTION_ID}`, {
+      method: "DELETE", headers: { "X-Test-User": STRANGER },
+    });
+    expect(asStranger.status).toBe(403);
+    const asCreator = await app.request(`/api/trip-groups/${SLUG}/sections/${SECTION_ID}`, {
+      method: "DELETE", headers: { "X-Test-User": USER_B },
+    });
+    expect(asCreator.status).toBe(204);
   });
 });

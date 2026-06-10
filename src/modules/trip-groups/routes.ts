@@ -45,6 +45,19 @@ import { users } from "@/db/schema";
 import { db } from "@/db/client";
 import { eq } from "drizzle-orm";
 import { sniffImageMime } from "@/modules/shared/image-validate";
+import {
+  createNote,
+  listNotes,
+  getNoteById,
+  deleteNoteById,
+  createSection,
+  listSections,
+  getSectionById,
+  updateSection,
+  deleteSectionById,
+  type TripGroupNote,
+  type TripGroupSection,
+} from "./notes-sections-repo";
 
 type AuthEnv = { Variables: { userId: string } };
 
@@ -658,5 +671,205 @@ tripGroupsRoutes.post(
       return c.json({ error: `Unsplash fill failed: ${skipped[0].reason}`, skipped }, 502);
     }
     return c.json({ photos: created.map((p) => photoJson(p, slug)), skipped });
+  },
+);
+
+// ---------------------------------------------------------------------------
+// Margin notes + sections (SHAN-283)
+// ---------------------------------------------------------------------------
+
+const noteBody = z.object({
+  anchorType: z.enum(["group", "day", "activity"]),
+  anchorDay: z.number().int().min(1).nullable().optional().default(null),
+  anchorActivity: z.string().max(300).nullable().optional().default(null),
+  body: z.string().min(1).max(1000),
+});
+
+function noteJson(n: TripGroupNote) {
+  return {
+    id: n.id,
+    authorId: n.authorId,
+    authorName: n.authorName,
+    anchorType: n.anchorType,
+    anchorDay: n.anchorDay,
+    anchorActivity: n.anchorActivity,
+    body: n.body,
+    createdAt: n.createdAt.toISOString(),
+  };
+}
+
+tripGroupsRoutes.get("/:slug/notes", zValidator("param", slugParam), async (c) => {
+  const userId = c.get("userId");
+  const { slug } = c.req.valid("param");
+  const group = await getGroupBySlug(slug);
+  if (!group) return c.json({ error: "Not found" }, 404);
+  if (!(await isMember(group.id, userId))) {
+    return c.json({ error: "Not a member of this group" }, 403);
+  }
+  const notes = await listNotes(group.id);
+  return c.json({ notes: notes.map(noteJson) });
+});
+
+tripGroupsRoutes.post(
+  "/:slug/notes",
+  zValidator("param", slugParam),
+  zValidator("json", noteBody),
+  async (c) => {
+    const userId = c.get("userId");
+    const { slug } = c.req.valid("param");
+    const input = c.req.valid("json");
+    const group = await getGroupBySlug(slug);
+    if (!group) return c.json({ error: "Not found" }, 404);
+    if (!(await isMember(group.id, userId))) {
+      return c.json({ error: "Not a member of this group" }, 403);
+    }
+    if (input.anchorType !== "group" && input.anchorDay === null) {
+      return c.json({ error: "anchorDay is required for day/activity notes" }, 400);
+    }
+    if (input.anchorType === "activity" && !input.anchorActivity) {
+      return c.json({ error: "anchorActivity is required for activity notes" }, 400);
+    }
+    const note = await createNote({
+      groupId: group.id,
+      authorId: userId,
+      anchorType: input.anchorType,
+      anchorDay: input.anchorType === "group" ? null : input.anchorDay,
+      anchorActivity: input.anchorType === "activity" ? input.anchorActivity : null,
+      body: input.body.trim(),
+    });
+    return c.json({ note: noteJson(note) }, 201);
+  },
+);
+
+const noteIdParam = z.object({
+  slug: z.string().regex(/^[a-z0-9][a-z0-9-]{0,79}$/),
+  noteId: z.string().uuid(),
+});
+
+tripGroupsRoutes.delete(
+  "/:slug/notes/:noteId",
+  zValidator("param", noteIdParam),
+  async (c) => {
+    const userId = c.get("userId");
+    const { slug, noteId } = c.req.valid("param");
+    const group = await getGroupBySlug(slug);
+    if (!group) return c.json({ error: "Not found" }, 404);
+    const note = await getNoteById(noteId);
+    if (!note || note.groupId !== group.id) return c.json({ error: "Not found" }, 404);
+    if (note.authorId !== userId && group.ownerId !== userId) {
+      return c.json({ error: "Only the note author or group owner can delete a note" }, 403);
+    }
+    const ok = await deleteNoteById(noteId);
+    return ok ? c.body(null, 204) : c.json({ error: "Not found" }, 404);
+  },
+);
+
+const sectionItemSchema = z.object({
+  id: z.string().min(1).max(64),
+  text: z.string().min(1).max(500),
+  done: z.boolean(),
+  addedBy: z.string().max(120).nullable().optional().default(null),
+});
+
+const createSectionBody = z.object({
+  title: z.string().min(1).max(200),
+  kind: z.enum(["todo"]).optional().default("todo"),
+});
+
+const updateSectionBody = z.object({
+  title: z.string().min(1).max(200).optional(),
+  items: z.array(sectionItemSchema).max(200).optional(),
+});
+
+function sectionJson(s: TripGroupSection) {
+  return {
+    id: s.id,
+    createdBy: s.createdBy,
+    title: s.title,
+    kind: s.kind,
+    items: s.items,
+    createdAt: s.createdAt.toISOString(),
+    updatedAt: s.updatedAt.toISOString(),
+  };
+}
+
+tripGroupsRoutes.get("/:slug/sections", zValidator("param", slugParam), async (c) => {
+  const userId = c.get("userId");
+  const { slug } = c.req.valid("param");
+  const group = await getGroupBySlug(slug);
+  if (!group) return c.json({ error: "Not found" }, 404);
+  if (!(await isMember(group.id, userId))) {
+    return c.json({ error: "Not a member of this group" }, 403);
+  }
+  const sections = await listSections(group.id);
+  return c.json({ sections: sections.map(sectionJson) });
+});
+
+tripGroupsRoutes.post(
+  "/:slug/sections",
+  zValidator("param", slugParam),
+  zValidator("json", createSectionBody),
+  async (c) => {
+    const userId = c.get("userId");
+    const { slug } = c.req.valid("param");
+    const { title, kind } = c.req.valid("json");
+    const group = await getGroupBySlug(slug);
+    if (!group) return c.json({ error: "Not found" }, 404);
+    if (!(await isMember(group.id, userId))) {
+      return c.json({ error: "Not a member of this group" }, 403);
+    }
+    const section = await createSection({
+      groupId: group.id,
+      createdBy: userId,
+      title: title.trim(),
+      kind,
+    });
+    return c.json({ section: sectionJson(section) }, 201);
+  },
+);
+
+const sectionIdParam = z.object({
+  slug: z.string().regex(/^[a-z0-9][a-z0-9-]{0,79}$/),
+  sectionId: z.string().uuid(),
+});
+
+/** Everyone in the group can contribute — any member may update items. */
+tripGroupsRoutes.put(
+  "/:slug/sections/:sectionId",
+  zValidator("param", sectionIdParam),
+  zValidator("json", updateSectionBody),
+  async (c) => {
+    const userId = c.get("userId");
+    const { slug, sectionId } = c.req.valid("param");
+    const patch = c.req.valid("json");
+    const group = await getGroupBySlug(slug);
+    if (!group) return c.json({ error: "Not found" }, 404);
+    if (!(await isMember(group.id, userId))) {
+      return c.json({ error: "Not a member of this group" }, 403);
+    }
+    const existing = await getSectionById(sectionId);
+    if (!existing || existing.groupId !== group.id) return c.json({ error: "Not found" }, 404);
+    const section = await updateSection(sectionId, patch);
+    return section
+      ? c.json({ section: sectionJson(section) })
+      : c.json({ error: "Not found" }, 404);
+  },
+);
+
+tripGroupsRoutes.delete(
+  "/:slug/sections/:sectionId",
+  zValidator("param", sectionIdParam),
+  async (c) => {
+    const userId = c.get("userId");
+    const { slug, sectionId } = c.req.valid("param");
+    const group = await getGroupBySlug(slug);
+    if (!group) return c.json({ error: "Not found" }, 404);
+    const section = await getSectionById(sectionId);
+    if (!section || section.groupId !== group.id) return c.json({ error: "Not found" }, 404);
+    if (section.createdBy !== userId && group.ownerId !== userId) {
+      return c.json({ error: "Only the section creator or group owner can delete a section" }, 403);
+    }
+    const ok = await deleteSectionById(sectionId);
+    return ok ? c.body(null, 204) : c.json({ error: "Not found" }, 404);
   },
 );
