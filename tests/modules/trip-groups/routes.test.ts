@@ -108,6 +108,13 @@ beforeEach(() => {
 
 const app = new Hono().route("/api/trip-groups", tripGroupsRoutes);
 
+// itinerarySchema normalizes days by defaulting date/country to null
+// (SHAN-277) — equality assertions against parsed output use this.
+function enriched(itin: any) {
+  return { ...itin, days: itin.days.map((d: any) => ({ date: null, country: null, ...d })) };
+}
+
+
 const USER_A = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
 const USER_B = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
 const GROUP_ID = "11111111-1111-1111-1111-111111111111";
@@ -448,7 +455,7 @@ describe("POST /api/trip-groups/:slug/itinerary/consolidate", () => {
     });
     expect(res.status).toBe(200);
     expect(mockConsolidateItinerary).toHaveBeenCalledWith(
-      expect.objectContaining({ existingItinerary: ITINERARY }),
+      expect.objectContaining({ existingItinerary: enriched(ITINERARY) }),
     );
   });
 
@@ -596,7 +603,7 @@ describe("itinerary suggestions (SHAN-273)", () => {
     );
     expect(res.status).toBe(200);
     expect(mockResolveSuggestion).toHaveBeenCalledWith(SUGG_ID, "approved", USER_A);
-    expect(mockSaveItinerary).toHaveBeenCalledWith(GROUP_ID, ITIN);
+    expect(mockSaveItinerary).toHaveBeenCalledWith(GROUP_ID, enriched(ITIN));
   });
 
   it("approve by non-owner is 403", async () => {
@@ -844,7 +851,7 @@ describe("PUT /api/trip-groups/:slug/itinerary (SHAN-276)", () => {
       body: JSON.stringify({ itinerary: ITIN }),
     });
     expect(res.status).toBe(200);
-    expect(mockSaveItinerary).toHaveBeenCalledWith(GROUP_ID, ITIN);
+    expect(mockSaveItinerary).toHaveBeenCalledWith(GROUP_ID, enriched(ITIN));
     expect(mockCreateSuggestion).not.toHaveBeenCalled();
   });
 
@@ -896,5 +903,55 @@ describe("PUT /api/trip-groups/:slug/itinerary (SHAN-276)", () => {
       body: JSON.stringify({ itinerary: ITIN }),
     });
     expect(res.status).toBe(403);
+  });
+});
+
+describe("itinerary day date + country (SHAN-277)", () => {
+  it("PUT accepts days with date and country and preserves them", async () => {
+    mockGetGroupBySlug.mockResolvedValue(groupRow);
+    mockSaveItinerary.mockResolvedValue({ itineraryGeneratedAt: new Date("2026-06-10T14:00:00Z") });
+    const itin = {
+      summary: "Dated trip.",
+      days: [
+        { day: 1, title: "Athens", date: "2026-07-25", location: "Athens", country: "Greece", activities: [] },
+      ],
+    };
+    const res = await app.request(`/api/trip-groups/${SLUG}/itinerary`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", "X-Test-User": USER_A },
+      body: JSON.stringify({ itinerary: itin }),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.itinerary.days[0].date).toBe("2026-07-25");
+    expect(body.itinerary.days[0].country).toBe("Greece");
+  });
+
+  it("PUT rejects a malformed date", async () => {
+    mockGetGroupBySlug.mockResolvedValue(groupRow);
+    const itin = {
+      summary: "Bad date.",
+      days: [{ day: 1, title: "X", date: "07/25/2026", location: null, country: null, activities: [] }],
+    };
+    const res = await app.request(`/api/trip-groups/${SLUG}/itinerary`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", "X-Test-User": USER_A },
+      body: JSON.stringify({ itinerary: itin }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it("legacy itineraries without date/country still validate (defaults null)", async () => {
+    mockGetGroupBySlug.mockResolvedValue(groupRow);
+    mockSaveItinerary.mockResolvedValue({ itineraryGeneratedAt: new Date() });
+    const res = await app.request(`/api/trip-groups/${SLUG}/itinerary`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", "X-Test-User": USER_A },
+      body: JSON.stringify({ itinerary: { summary: "Legacy.", days: [{ day: 1, title: "X", location: null, activities: [] }] } }),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.itinerary.days[0].date).toBeNull();
+    expect(body.itinerary.days[0].country).toBeNull();
   });
 });
