@@ -826,3 +826,75 @@ describe("itinerary photos (SHAN-275)", () => {
     expect(res.status).toBe(502);
   });
 });
+
+describe("PUT /api/trip-groups/:slug/itinerary (SHAN-276)", () => {
+  const ITIN = {
+    summary: "Edited trip.",
+    days: [
+      { day: 1, title: "Edited day", location: "Tokyo", activities: [{ time: "10:00", title: "New stop", notes: null }] },
+    ],
+  };
+
+  it("owner edit writes directly", async () => {
+    mockGetGroupBySlug.mockResolvedValue(groupRow);
+    mockSaveItinerary.mockResolvedValue({ itineraryGeneratedAt: new Date("2026-06-10T13:00:00Z") });
+    const res = await app.request(`/api/trip-groups/${SLUG}/itinerary`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", "X-Test-User": USER_A },
+      body: JSON.stringify({ itinerary: ITIN }),
+    });
+    expect(res.status).toBe(200);
+    expect(mockSaveItinerary).toHaveBeenCalledWith(GROUP_ID, ITIN);
+    expect(mockCreateSuggestion).not.toHaveBeenCalled();
+  });
+
+  it("member edit lands as a pending suggestion with computed changedDays", async () => {
+    mockGetGroupBySlug.mockResolvedValue({ ...groupRow, itinerary: null });
+    mockIsMember.mockResolvedValue(true);
+    mockCreateSuggestion.mockResolvedValue({
+      id: "44444444-4444-4444-4444-444444444444",
+      groupId: GROUP_ID,
+      authorId: USER_B,
+      authorName: "Ben",
+      itinerary: ITIN,
+      changedDays: [1],
+      note: "Manual edit",
+      status: "pending",
+      createdAt: new Date("2026-06-10T13:00:00Z"),
+      resolvedAt: null,
+      resolvedBy: null,
+    });
+    const res = await app.request(`/api/trip-groups/${SLUG}/itinerary`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", "X-Test-User": USER_B },
+      body: JSON.stringify({ itinerary: ITIN }),
+    });
+    expect(res.status).toBe(201);
+    expect(mockSaveItinerary).not.toHaveBeenCalled();
+    expect(mockCreateSuggestion).toHaveBeenCalledWith(
+      expect.objectContaining({ authorId: USER_B, changedDays: [1], note: "Manual edit" }),
+    );
+  });
+
+  it("rejects an itinerary that fails the schema", async () => {
+    mockGetGroupBySlug.mockResolvedValue(groupRow);
+    const res = await app.request(`/api/trip-groups/${SLUG}/itinerary`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", "X-Test-User": USER_A },
+      body: JSON.stringify({ itinerary: { summary: "", days: [] } }),
+    });
+    expect(res.status).toBe(400);
+    expect(mockSaveItinerary).not.toHaveBeenCalled();
+  });
+
+  it("403 for non-members", async () => {
+    mockGetGroupBySlug.mockResolvedValue({ ...groupRow, ownerId: USER_A });
+    mockIsMember.mockResolvedValue(false);
+    const res = await app.request(`/api/trip-groups/${SLUG}/itinerary`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", "X-Test-User": USER_B },
+      body: JSON.stringify({ itinerary: ITIN }),
+    });
+    expect(res.status).toBe(403);
+  });
+});

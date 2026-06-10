@@ -293,6 +293,47 @@ tripGroupsRoutes.post(
   },
 );
 
+const putItineraryBody = z.object({
+  itinerary: itinerarySchema,
+});
+
+/**
+ * Manual itinerary edit (SHAN-276, Phase 6). Same write semantics as
+ * consolidate: the owner writes directly; a non-owner member's edit lands
+ * as a pending suggestion with server-computed changedDays.
+ */
+tripGroupsRoutes.put(
+  "/:slug/itinerary",
+  zValidator("param", slugParam),
+  zValidator("json", putItineraryBody),
+  async (c) => {
+    const userId = c.get("userId");
+    const { slug } = c.req.valid("param");
+    const { itinerary } = c.req.valid("json");
+    const group = await getGroupBySlug(slug);
+    if (!group) return c.json({ error: "Not found" }, 404);
+    const isOwner = group.ownerId === userId;
+    if (!isOwner && !(await isMember(group.id, userId))) {
+      return c.json({ error: "Not a member of this group" }, 403);
+    }
+
+    if (isOwner) {
+      const { itineraryGeneratedAt } = await saveItinerary(group.id, itinerary);
+      return c.json({ itinerary, itineraryGeneratedAt: itineraryGeneratedAt.toISOString() });
+    }
+
+    const base = itinerarySchema.safeParse(group.itinerary);
+    const suggestion = await createSuggestion({
+      groupId: group.id,
+      authorId: userId,
+      itinerary,
+      changedDays: computeChangedDays(base.success ? base.data : null, itinerary),
+      note: "Manual edit",
+    });
+    return c.json({ suggestion: suggestionJson(suggestion) }, 201);
+  },
+);
+
 /**
  * List itinerary suggestions for the group (SHAN-273). Member-gated.
  * Each pending suggestion carries conflictsWith: ids of OTHER pending
