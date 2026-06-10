@@ -90,3 +90,40 @@ export async function consolidateItinerary(
 
   return { itinerary: validated.data, modelUsed: result.modelUsed };
 }
+
+/** JSON.stringify with recursively sorted keys. Postgres jsonb does not
+ * preserve key order, so comparing a stored itinerary against a freshly
+ * generated one needs order-independent serialization. */
+function stableStringify(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map(stableStringify).join(",")}]`;
+  }
+  if (value && typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>)
+      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+      .map(([k, v]) => `${JSON.stringify(k)}:${stableStringify(v)}`);
+    return `{${entries.join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+/**
+ * Day numbers whose content differs between the group's current itinerary
+ * and a proposed one (days added or removed count as changed). Used for
+ * pending-suggestion conflict detection (SHAN-273): two pending
+ * suggestions conflict when their changedDays intersect.
+ */
+export function computeChangedDays(
+  base: TripItinerary | null,
+  proposed: TripItinerary,
+): number[] {
+  if (!base) return proposed.days.map((d) => d.day).sort((a, b) => a - b);
+  const baseByDay = new Map(base.days.map((d) => [d.day, stableStringify(d)]));
+  const propByDay = new Map(proposed.days.map((d) => [d.day, stableStringify(d)]));
+  const all = new Set([...baseByDay.keys(), ...propByDay.keys()]);
+  const changed: number[] = [];
+  for (const day of all) {
+    if (baseByDay.get(day) !== propByDay.get(day)) changed.push(day);
+  }
+  return changed.sort((a, b) => a - b);
+}

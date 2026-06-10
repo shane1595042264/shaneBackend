@@ -1,6 +1,12 @@
 import { and, asc, desc, eq } from "drizzle-orm";
 import { db } from "@/db/client";
-import { tripGroups, tripGroupMembers, tripIdeas, users } from "@/db/schema";
+import {
+  tripGroups,
+  tripGroupMembers,
+  tripIdeas,
+  tripItinerarySuggestions,
+  users,
+} from "@/db/schema";
 import { generateUniqueSlug } from "../trips/slug";
 
 export interface TripGroupSummary {
@@ -297,4 +303,127 @@ export async function getIdeaById(
     .where(eq(tripIdeas.id, id))
     .limit(1);
   return row ?? null;
+}
+
+// ---------------------------------------------------------------------------
+// Itinerary suggestions (SHAN-273, Phase 4)
+// ---------------------------------------------------------------------------
+
+export interface ItinerarySuggestion {
+  id: string;
+  groupId: string;
+  authorId: string;
+  authorName: string | null;
+  itinerary: unknown;
+  changedDays: number[];
+  note: string | null;
+  status: string;
+  createdAt: Date;
+  resolvedAt: Date | null;
+  resolvedBy: string | null;
+}
+
+/** Insert a pending suggestion. Caller validates shape + membership. */
+export async function createSuggestion(input: {
+  groupId: string;
+  authorId: string;
+  itinerary: unknown;
+  changedDays: number[];
+  note: string | null;
+}): Promise<ItinerarySuggestion> {
+  const [row] = await db
+    .insert(tripItinerarySuggestions)
+    .values({
+      groupId: input.groupId,
+      authorId: input.authorId,
+      itinerary: input.itinerary,
+      changedDays: input.changedDays,
+      note: input.note,
+    })
+    .returning();
+  const [u] = await db
+    .select({ name: users.name })
+    .from(users)
+    .where(eq(users.id, input.authorId));
+  return {
+    id: row.id,
+    groupId: row.groupId,
+    authorId: row.authorId,
+    authorName: u?.name ?? null,
+    itinerary: row.itinerary,
+    changedDays: (row.changedDays as number[]) ?? [],
+    note: row.note,
+    status: row.status,
+    createdAt: row.createdAt,
+    resolvedAt: row.resolvedAt,
+    resolvedBy: row.resolvedBy,
+  };
+}
+
+/** All suggestions for a group, newest first. Tiny cardinality, no paging. */
+export async function listSuggestions(groupId: string): Promise<ItinerarySuggestion[]> {
+  const rows = await db
+    .select({
+      id: tripItinerarySuggestions.id,
+      groupId: tripItinerarySuggestions.groupId,
+      authorId: tripItinerarySuggestions.authorId,
+      authorName: users.name,
+      itinerary: tripItinerarySuggestions.itinerary,
+      changedDays: tripItinerarySuggestions.changedDays,
+      note: tripItinerarySuggestions.note,
+      status: tripItinerarySuggestions.status,
+      createdAt: tripItinerarySuggestions.createdAt,
+      resolvedAt: tripItinerarySuggestions.resolvedAt,
+      resolvedBy: tripItinerarySuggestions.resolvedBy,
+    })
+    .from(tripItinerarySuggestions)
+    .innerJoin(users, eq(users.id, tripItinerarySuggestions.authorId))
+    .where(eq(tripItinerarySuggestions.groupId, groupId))
+    .orderBy(desc(tripItinerarySuggestions.createdAt));
+  return rows.map((r) => ({ ...r, changedDays: (r.changedDays as number[]) ?? [] }));
+}
+
+/** Lookup one suggestion (authorization checks live in the route). */
+export async function getSuggestionById(id: string): Promise<ItinerarySuggestion | null> {
+  const rows = await db
+    .select({
+      id: tripItinerarySuggestions.id,
+      groupId: tripItinerarySuggestions.groupId,
+      authorId: tripItinerarySuggestions.authorId,
+      authorName: users.name,
+      itinerary: tripItinerarySuggestions.itinerary,
+      changedDays: tripItinerarySuggestions.changedDays,
+      note: tripItinerarySuggestions.note,
+      status: tripItinerarySuggestions.status,
+      createdAt: tripItinerarySuggestions.createdAt,
+      resolvedAt: tripItinerarySuggestions.resolvedAt,
+      resolvedBy: tripItinerarySuggestions.resolvedBy,
+    })
+    .from(tripItinerarySuggestions)
+    .innerJoin(users, eq(users.id, tripItinerarySuggestions.authorId))
+    .where(eq(tripItinerarySuggestions.id, id))
+    .limit(1);
+  const r = rows[0];
+  return r ? { ...r, changedDays: (r.changedDays as number[]) ?? [] } : null;
+}
+
+/**
+ * Resolve a pending suggestion. The status guard in the WHERE clause makes
+ * double-resolution a no-op race-safely: returns null if the row was not
+ * pending (already resolved or missing).
+ */
+export async function resolveSuggestion(
+  id: string,
+  status: "approved" | "rejected",
+  resolvedBy: string,
+): Promise<{ id: string; status: string; resolvedAt: Date } | null> {
+  const now = new Date();
+  const [row] = await db
+    .update(tripItinerarySuggestions)
+    .set({ status, resolvedAt: now, resolvedBy })
+    .where(
+      and(eq(tripItinerarySuggestions.id, id), eq(tripItinerarySuggestions.status, "pending")),
+    )
+    .returning({ id: tripItinerarySuggestions.id, status: tripItinerarySuggestions.status });
+  return row ? { ...row, resolvedAt: now } : null;
 }

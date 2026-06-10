@@ -605,6 +605,35 @@ export const tripGroupMembers = pgTable(
   ],
 );
 
+// PR-style itinerary suggestions (SHAN-273, Phase 4 of SHAN-266). A
+// non-owner consolidation (or any future member edit) lands here instead
+// of writing trip_groups.itinerary directly; the owner approves or
+// rejects. `itinerary` is the full proposed document (same shape as
+// trip_groups.itinerary); `changedDays` is an int[] of day numbers that
+// differed from the group's itinerary at creation time, used for
+// pending-vs-pending conflict detection.
+export const tripItinerarySuggestions = pgTable(
+  "trip_itinerary_suggestions",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    groupId: uuid("group_id")
+      .notNull()
+      .references(() => tripGroups.id, { onDelete: "cascade" }),
+    authorId: uuid("author_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "restrict" }),
+    itinerary: jsonb("itinerary").notNull(),
+    changedDays: jsonb("changed_days").notNull().default([]),
+    note: text("note"),
+    // "pending" | "approved" | "rejected"
+    status: varchar("status", { length: 20 }).notNull().default("pending"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    resolvedAt: timestamp("resolved_at", { withTimezone: true }),
+    resolvedBy: uuid("resolved_by").references(() => users.id, { onDelete: "set null" }),
+  },
+  (t) => [index("trip_itinerary_suggestions_group_status_idx").on(t.groupId, t.status)],
+);
+
 export const tripIdeas = pgTable(
   "trip_ideas",
   {

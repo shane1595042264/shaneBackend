@@ -17,6 +17,10 @@ const {
   mockDeleteIdeaById,
   mockSaveItinerary,
   mockConsolidateItinerary,
+  mockCreateSuggestion,
+  mockListSuggestions,
+  mockGetSuggestionById,
+  mockResolveSuggestion,
 } = vi.hoisted(() => ({
   mockCreateTripGroup: vi.fn(),
   mockListGroupsForUser: vi.fn(),
@@ -29,6 +33,10 @@ const {
   mockDeleteIdeaById: vi.fn(),
   mockSaveItinerary: vi.fn(),
   mockConsolidateItinerary: vi.fn(),
+  mockCreateSuggestion: vi.fn(),
+  mockListSuggestions: vi.fn(),
+  mockGetSuggestionById: vi.fn(),
+  mockResolveSuggestion: vi.fn(),
 }));
 
 vi.mock("@/modules/trip-groups/repo", () => ({
@@ -42,6 +50,10 @@ vi.mock("@/modules/trip-groups/repo", () => ({
   getIdeaById: mockGetIdeaById,
   deleteIdeaById: mockDeleteIdeaById,
   saveItinerary: mockSaveItinerary,
+  createSuggestion: mockCreateSuggestion,
+  listSuggestions: mockListSuggestions,
+  getSuggestionById: mockGetSuggestionById,
+  resolveSuggestion: mockResolveSuggestion,
 }));
 
 // Mock only the LLM call; keep the real itinerarySchema export so the
@@ -357,15 +369,8 @@ describe("POST /api/trip-groups/:slug/itinerary/consolidate", () => {
     expect(res.status).toBe(404);
   });
 
-  it("returns 403 for non-owner members", async () => {
-    mockGetGroupDetail.mockResolvedValue(detailWithIdeas);
-    const res = await app.request(`/api/trip-groups/${SLUG}/itinerary/consolidate`, {
-      method: "POST",
-      headers: { "X-Test-User": USER_B },
-    });
-    expect(res.status).toBe(403);
-    expect(mockConsolidateItinerary).not.toHaveBeenCalled();
-  });
+  // SHAN-273: non-owner members no longer get 403 — their consolidation
+  // lands as a pending suggestion. See "itinerary suggestions (SHAN-273)".
 
   it("returns 400 when the idea inbox is empty", async () => {
     mockGetGroupDetail.mockResolvedValue({ ...detailWithIdeas, ideas: [] });
@@ -458,5 +463,157 @@ describe("POST /api/trip-groups/:slug/itinerary/consolidate", () => {
     const body = await res.json();
     expect(body.group.itinerary.days).toHaveLength(1);
     expect(body.group.itineraryGeneratedAt).toBe("2026-06-10T12:00:00.000Z");
+  });
+});
+
+describe("itinerary suggestions (SHAN-273)", () => {
+  const SUGG_ID = "44444444-4444-4444-4444-444444444444";
+  const ITIN = {
+    summary: "Two days in Tokyo.",
+    days: [
+      { day: 1, title: "Shibuya", location: "Tokyo", activities: [{ time: null, title: "Crossing", notes: null }] },
+    ],
+  };
+  const memberDetail = {
+    ...groupRow,
+    itinerary: null,
+    itineraryGeneratedAt: null,
+    members: [
+      { userId: USER_A, name: "Shane", role: "owner", joinedAt: new Date("2026-06-01T00:00:00Z") },
+      { userId: USER_B, name: "Ben", role: "member", joinedAt: new Date("2026-06-02T00:00:00Z") },
+    ],
+    ideas: [
+      { id: IDEA_ID, groupId: GROUP_ID, authorId: USER_B, authorName: "Ben", body: "Shibuya crossing", createdAt: new Date("2026-06-03T00:00:00Z") },
+    ],
+  };
+  const suggestionRow = {
+    id: SUGG_ID,
+    groupId: GROUP_ID,
+    authorId: USER_B,
+    authorName: "Ben",
+    itinerary: ITIN,
+    changedDays: [1],
+    note: null,
+    status: "pending",
+    createdAt: new Date("2026-06-10T10:00:00Z"),
+    resolvedAt: null,
+    resolvedBy: null,
+  };
+
+  it("non-owner consolidate creates a pending suggestion instead of writing", async () => {
+    mockGetGroupDetail.mockResolvedValue(memberDetail);
+    mockConsolidateItinerary.mockResolvedValue({ itinerary: ITIN, modelUsed: "m" });
+    mockCreateSuggestion.mockResolvedValue(suggestionRow);
+    const res = await app.request(`/api/trip-groups/${SLUG}/itinerary/consolidate`, {
+      method: "POST",
+      headers: { "X-Test-User": USER_B },
+    });
+    expect(res.status).toBe(201);
+    const body = await res.json();
+    expect(body.suggestion.id).toBe(SUGG_ID);
+    expect(body.suggestion.status).toBe("pending");
+    expect(mockSaveItinerary).not.toHaveBeenCalled();
+    expect(mockCreateSuggestion).toHaveBeenCalledWith(
+      expect.objectContaining({ groupId: GROUP_ID, authorId: USER_B, changedDays: [1] }),
+    );
+  });
+
+  it("owner consolidate still writes directly", async () => {
+    mockGetGroupDetail.mockResolvedValue(memberDetail);
+    mockConsolidateItinerary.mockResolvedValue({ itinerary: ITIN, modelUsed: "m" });
+    mockSaveItinerary.mockResolvedValue({ itineraryGeneratedAt: new Date("2026-06-10T11:00:00Z") });
+    const res = await app.request(`/api/trip-groups/${SLUG}/itinerary/consolidate`, {
+      method: "POST",
+      headers: { "X-Test-User": USER_A },
+    });
+    expect(res.status).toBe(200);
+    expect(mockCreateSuggestion).not.toHaveBeenCalled();
+  });
+
+  it("non-member consolidate is 403", async () => {
+    mockGetGroupDetail.mockResolvedValue({ ...memberDetail, members: [memberDetail.members[0]] });
+    const res = await app.request(`/api/trip-groups/${SLUG}/itinerary/consolidate`, {
+      method: "POST",
+      headers: { "X-Test-User": USER_B },
+    });
+    expect(res.status).toBe(403);
+  });
+
+  it("lists suggestions with pairwise conflicts on overlapping changedDays", async () => {
+    mockGetGroupBySlug.mockResolvedValue(groupRow);
+    mockIsMember.mockResolvedValue(true);
+    const other = { ...suggestionRow, id: "55555555-5555-5555-5555-555555555555", changedDays: [1, 2] };
+    const disjoint = { ...suggestionRow, id: "66666666-6666-6666-6666-666666666666", changedDays: [9] };
+    const resolved = { ...suggestionRow, id: "77777777-7777-7777-7777-777777777777", status: "rejected", changedDays: [1] };
+    mockListSuggestions.mockResolvedValue([suggestionRow, other, disjoint, resolved]);
+    const res = await app.request(`/api/trip-groups/${SLUG}/itinerary/suggestions`, {
+      headers: { "X-Test-User": USER_B },
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    const byId = Object.fromEntries(body.suggestions.map((s: any) => [s.id, s]));
+    expect(byId[SUGG_ID].conflictsWith).toEqual(["55555555-5555-5555-5555-555555555555"]);
+    expect(byId["66666666-6666-6666-6666-666666666666"].conflictsWith).toEqual([]);
+    // resolved suggestions never conflict
+    expect(byId["77777777-7777-7777-7777-777777777777"].conflictsWith).toEqual([]);
+  });
+
+  it("approve applies the suggestion itinerary and resolves it", async () => {
+    mockGetGroupBySlug.mockResolvedValue(groupRow);
+    mockGetSuggestionById.mockResolvedValue(suggestionRow);
+    mockResolveSuggestion.mockResolvedValue({ id: SUGG_ID, status: "approved", resolvedAt: new Date() });
+    mockSaveItinerary.mockResolvedValue({ itineraryGeneratedAt: new Date("2026-06-10T12:00:00Z") });
+    const res = await app.request(
+      `/api/trip-groups/${SLUG}/itinerary/suggestions/${SUGG_ID}/approve`,
+      { method: "POST", headers: { "X-Test-User": USER_A } },
+    );
+    expect(res.status).toBe(200);
+    expect(mockResolveSuggestion).toHaveBeenCalledWith(SUGG_ID, "approved", USER_A);
+    expect(mockSaveItinerary).toHaveBeenCalledWith(GROUP_ID, ITIN);
+  });
+
+  it("approve by non-owner is 403", async () => {
+    mockGetGroupBySlug.mockResolvedValue(groupRow);
+    const res = await app.request(
+      `/api/trip-groups/${SLUG}/itinerary/suggestions/${SUGG_ID}/approve`,
+      { method: "POST", headers: { "X-Test-User": USER_B } },
+    );
+    expect(res.status).toBe(403);
+    expect(mockResolveSuggestion).not.toHaveBeenCalled();
+  });
+
+  it("approve of an already-resolved suggestion is 409 and does not write", async () => {
+    mockGetGroupBySlug.mockResolvedValue(groupRow);
+    mockGetSuggestionById.mockResolvedValue(suggestionRow);
+    mockResolveSuggestion.mockResolvedValue(null);
+    const res = await app.request(
+      `/api/trip-groups/${SLUG}/itinerary/suggestions/${SUGG_ID}/approve`,
+      { method: "POST", headers: { "X-Test-User": USER_A } },
+    );
+    expect(res.status).toBe(409);
+    expect(mockSaveItinerary).not.toHaveBeenCalled();
+  });
+
+  it("reject resolves without applying", async () => {
+    mockGetGroupBySlug.mockResolvedValue(groupRow);
+    mockGetSuggestionById.mockResolvedValue(suggestionRow);
+    mockResolveSuggestion.mockResolvedValue({ id: SUGG_ID, status: "rejected", resolvedAt: new Date() });
+    const res = await app.request(
+      `/api/trip-groups/${SLUG}/itinerary/suggestions/${SUGG_ID}/reject`,
+      { method: "POST", headers: { "X-Test-User": USER_A } },
+    );
+    expect(res.status).toBe(200);
+    expect(mockSaveItinerary).not.toHaveBeenCalled();
+    expect(mockResolveSuggestion).toHaveBeenCalledWith(SUGG_ID, "rejected", USER_A);
+  });
+
+  it("suggestion from another group 404s on approve", async () => {
+    mockGetGroupBySlug.mockResolvedValue(groupRow);
+    mockGetSuggestionById.mockResolvedValue({ ...suggestionRow, groupId: "99999999-9999-9999-9999-999999999999" });
+    const res = await app.request(
+      `/api/trip-groups/${SLUG}/itinerary/suggestions/${SUGG_ID}/approve`,
+      { method: "POST", headers: { "X-Test-User": USER_A } },
+    );
+    expect(res.status).toBe(404);
   });
 });
