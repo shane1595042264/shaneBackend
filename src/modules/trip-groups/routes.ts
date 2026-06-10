@@ -34,6 +34,15 @@ import {
   type TripGroupPhotoMeta,
 } from "./photos-repo";
 import { searchUnsplashPhoto } from "./unsplash";
+import {
+  buildEventsFromItinerary,
+  deletePreviousExport,
+  insertEvents,
+} from "./calendar-export";
+import { getAccessTokenForUser } from "@/modules/integrations/calendar-connect";
+import { users } from "@/db/schema";
+import { db } from "@/db/client";
+import { eq } from "drizzle-orm";
 import { sniffImageMime } from "@/modules/shared/image-validate";
 
 type AuthEnv = { Variables: { userId: string } };
@@ -289,6 +298,64 @@ tripGroupsRoutes.post(
           ? 502
           : 500;
       return c.json({ error: message }, status);
+    }
+  },
+);
+
+/**
+ * Export the itinerary into the caller's connected Google Calendar
+ * (SHAN-278). Member-gated. 409 calendar_not_connected drives the
+ * frontend's connect-first popup. Re-export wipes the previous batch
+ * (events tagged shaneTripGroup=<groupId>) before inserting.
+ */
+tripGroupsRoutes.post(
+  "/:slug/itinerary/export-calendar",
+  zValidator("param", slugParam),
+  async (c) => {
+    const userId = c.get("userId");
+    const { slug } = c.req.valid("param");
+    const group = await getGroupBySlug(slug);
+    if (!group) return c.json({ error: "Not found" }, 404);
+    if (group.ownerId !== userId && !(await isMember(group.id, userId))) {
+      return c.json({ error: "Not a member of this group" }, 403);
+    }
+    const itin = itinerarySchema.safeParse(group.itinerary);
+    if (!itin.success) {
+      return c.json({ error: "No itinerary yet — consolidate first" }, 400);
+    }
+
+    const accessToken = await getAccessTokenForUser(userId).catch((err) => {
+      throw err;
+    });
+    if (!accessToken) {
+      return c.json({ error: "calendar_not_connected" }, 409);
+    }
+
+    const [u] = await db
+      .select({ timezone: users.timezone })
+      .from(users)
+      .where(eq(users.id, userId));
+    const timeZone = u?.timezone ?? "America/Chicago";
+
+    const { events, skippedDays } = buildEventsFromItinerary(
+      group.title,
+      group.id,
+      itin.data,
+      timeZone,
+    );
+    if (events.length === 0) {
+      return c.json(
+        { error: "No days carry dates yet — add dates to the itinerary first" },
+        400,
+      );
+    }
+
+    try {
+      const deleted = await deletePreviousExport(accessToken, group.id);
+      const created = await insertEvents(accessToken, events);
+      return c.json({ created, deletedPrevious: deleted, skippedDays });
+    } catch (err) {
+      return c.json({ error: (err as Error).message }, 502);
     }
   },
 );

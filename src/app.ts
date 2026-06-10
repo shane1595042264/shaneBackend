@@ -10,6 +10,7 @@ import { vocabularyRoutes } from "@/modules/vocabulary/routes";
 import { knowledgeRoutes } from "@/modules/knowledge/routes";
 import { slotRoutes } from "@/modules/slot-assignments/routes";
 import { wechatRoutes } from "@/modules/integrations/wechat-routes";
+import { calendarConnectRoutes } from "@/modules/integrations/calendar-connect";
 import { activitiesRoutes } from "@/modules/activities/routes";
 import { tripsRoutes } from "@/modules/trips/routes";
 import { tripGroupsRoutes } from "@/modules/trip-groups/routes";
@@ -63,6 +64,7 @@ app.route("/api/trip-groups", tripGroupsRoutes);
 app.route("/api/loans", loansRoutes);
 app.route("/api/practice", practiceRoutes);
 app.route("/api/integrations/wechat", wechatRoutes);
+app.route("/api/integrations/calendar", calendarConnectRoutes);
 
 // ---------------------------------------------------------------------------
 // Admin — migrate vocabulary tables

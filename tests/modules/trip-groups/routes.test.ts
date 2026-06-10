@@ -83,6 +83,35 @@ vi.mock("@/modules/trip-groups/unsplash", () => ({
   searchUnsplashPhoto: mockSearchUnsplashPhoto,
 }));
 
+const { mockGetAccessTokenForUser, mockDeletePreviousExport, mockInsertEvents } = vi.hoisted(() => ({
+  mockGetAccessTokenForUser: vi.fn(),
+  mockDeletePreviousExport: vi.fn(),
+  mockInsertEvents: vi.fn(),
+}));
+
+vi.mock("@/modules/integrations/calendar-connect", () => ({
+  getAccessTokenForUser: mockGetAccessTokenForUser,
+}));
+
+// Keep the real buildEventsFromItinerary (pure) — mock only the Google calls.
+vi.mock("@/modules/trip-groups/calendar-export", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/modules/trip-groups/calendar-export")>();
+  return { ...actual, deletePreviousExport: mockDeletePreviousExport, insertEvents: mockInsertEvents };
+});
+
+// users-table timezone lookup inside the export route hits drizzle; stub the
+// db client so no real pool is created.
+vi.mock("@/db/client", () => {
+  // The export route awaits select().from().where() directly; make where()
+  // a thenable that also supports .limit() for any future chain shape.
+  const rows = [{ timezone: "America/Chicago" }];
+  const whereResult = {
+    limit: async () => rows,
+    then: (resolve: (v: unknown) => void) => resolve(rows),
+  };
+  return { db: { select: () => ({ from: () => ({ where: () => whereResult }) }) } };
+});
+
 // Mock only the LLM call; keep the real itinerarySchema export so the
 // route's re-validation of stored blobs behaves exactly as in prod.
 vi.mock("@/modules/trip-groups/consolidator", async (importOriginal) => {
@@ -953,5 +982,67 @@ describe("itinerary day date + country (SHAN-277)", () => {
     const body = await res.json();
     expect(body.itinerary.days[0].date).toBeNull();
     expect(body.itinerary.days[0].country).toBeNull();
+  });
+});
+
+describe("POST /api/trip-groups/:slug/itinerary/export-calendar (SHAN-278)", () => {
+  const DATED_ITIN = {
+    summary: "Dated trip.",
+    days: [
+      { day: 1, title: "Athens", date: "2026-07-25", location: "Athens", country: "Greece",
+        activities: [{ time: "09:00", title: "Acropolis", notes: null }] },
+      { day: 2, title: "Floating day", date: null, location: null, country: null, activities: [] },
+    ],
+  };
+
+  it("409 calendar_not_connected when the user has no connection", async () => {
+    mockGetGroupBySlug.mockResolvedValue({ ...groupRow, itinerary: DATED_ITIN });
+    mockGetAccessTokenForUser.mockResolvedValue(null);
+    const res = await app.request(`/api/trip-groups/${SLUG}/itinerary/export-calendar`, {
+      method: "POST",
+      headers: { "X-Test-User": USER_A },
+    });
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.error).toBe("calendar_not_connected");
+  });
+
+  it("400 when there is no itinerary", async () => {
+    mockGetGroupBySlug.mockResolvedValue({ ...groupRow, itinerary: null });
+    const res = await app.request(`/api/trip-groups/${SLUG}/itinerary/export-calendar`, {
+      method: "POST",
+      headers: { "X-Test-User": USER_A },
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it("wipes the previous export then inserts; reports skipped undated days", async () => {
+    mockGetGroupBySlug.mockResolvedValue({ ...groupRow, itinerary: DATED_ITIN });
+    mockGetAccessTokenForUser.mockResolvedValue("at-123");
+    mockDeletePreviousExport.mockResolvedValue(3);
+    mockInsertEvents.mockImplementation(async (_t: string, evs: unknown[]) => evs.length);
+    const res = await app.request(`/api/trip-groups/${SLUG}/itinerary/export-calendar`, {
+      method: "POST",
+      headers: { "X-Test-User": USER_A },
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    // day 1: one timed event + one all-day anchor = 2 events; day 2 skipped
+    expect(body.created).toBe(2);
+    expect(body.deletedPrevious).toBe(3);
+    expect(body.skippedDays).toEqual([2]);
+    expect(mockDeletePreviousExport).toHaveBeenCalledWith("at-123", GROUP_ID);
+  });
+
+  it("502 when Google rejects the insert", async () => {
+    mockGetGroupBySlug.mockResolvedValue({ ...groupRow, itinerary: DATED_ITIN });
+    mockGetAccessTokenForUser.mockResolvedValue("at-123");
+    mockDeletePreviousExport.mockResolvedValue(0);
+    mockInsertEvents.mockRejectedValue(new Error("Calendar insert failed after 1 events: 403"));
+    const res = await app.request(`/api/trip-groups/${SLUG}/itinerary/export-calendar`, {
+      method: "POST",
+      headers: { "X-Test-User": USER_A },
+    });
+    expect(res.status).toBe(502);
   });
 });

@@ -672,6 +672,19 @@ const bytea = customType<{ data: Buffer; driverData: Buffer }>({
   },
 });
 
+// Per-user Google Calendar connections (SHAN-278). Stores the OAuth
+// refresh token obtained from the GIS auth-code popup (calendar.events
+// scope, WordByWord client). One row per user; reconnecting replaces it.
+export const userCalendarConnections = pgTable("user_calendar_connections", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  userId: uuid("user_id")
+    .notNull()
+    .unique()
+    .references(() => users.id, { onDelete: "cascade" }),
+  refreshToken: text("refresh_token").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
 // Photos attached to itinerary days (SHAN-275, Phase 5 of SHAN-266).
 // Two row flavors discriminated by `source`: "user" rows carry the bytes
 // (journal_images bytea pattern) and are served from
