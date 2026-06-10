@@ -427,3 +427,15 @@ export async function resolveSuggestion(
     .returning({ id: tripItinerarySuggestions.id, status: tripItinerarySuggestions.status });
   return row ? { ...row, resolvedAt: now } : null;
 }
+
+/**
+ * Wipe the itinerary (SHAN-285). Owner-only reset for when the idea inbox
+ * was cleaned up and the next consolidation should start fresh instead of
+ * upserting onto the old draft.
+ */
+export async function clearItinerary(groupId: string): Promise<void> {
+  await db
+    .update(tripGroups)
+    .set({ itinerary: null, itineraryGeneratedAt: null, updatedAt: new Date() })
+    .where(eq(tripGroups.id, groupId));
+}

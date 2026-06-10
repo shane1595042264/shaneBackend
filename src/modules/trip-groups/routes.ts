@@ -13,6 +13,7 @@ import {
   getIdeaById,
   deleteIdeaById,
   saveItinerary,
+  clearItinerary,
   createSuggestion,
   listSuggestions,
   getSuggestionById,
@@ -376,6 +377,27 @@ tripGroupsRoutes.post(
     } catch (err) {
       return c.json({ error: (err as Error).message }, 502);
     }
+  },
+);
+
+/**
+ * Reset the itinerary (SHAN-286). Owner-only. Re-consolidation upserts on
+ * purpose (the stored draft is the LLM base); reset is the escape hatch
+ * when the inbox was cleaned and the next draft should start from zero.
+ */
+tripGroupsRoutes.delete(
+  "/:slug/itinerary",
+  zValidator("param", slugParam),
+  async (c) => {
+    const userId = c.get("userId");
+    const { slug } = c.req.valid("param");
+    const group = await getGroupBySlug(slug);
+    if (!group) return c.json({ error: "Not found" }, 404);
+    if (group.ownerId !== userId) {
+      return c.json({ error: "Only the group owner can reset the itinerary" }, 403);
+    }
+    await clearItinerary(group.id);
+    return c.json({ itinerary: null, itineraryGeneratedAt: null });
   },
 );
 

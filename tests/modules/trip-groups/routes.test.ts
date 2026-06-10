@@ -16,6 +16,7 @@ const {
   mockGetIdeaById,
   mockDeleteIdeaById,
   mockSaveItinerary,
+  mockClearItinerary,
   mockConsolidateItinerary,
   mockCreateSuggestion,
   mockListSuggestions,
@@ -39,6 +40,7 @@ const {
   mockGetIdeaById: vi.fn(),
   mockDeleteIdeaById: vi.fn(),
   mockSaveItinerary: vi.fn(),
+  mockClearItinerary: vi.fn(),
   mockConsolidateItinerary: vi.fn(),
   mockCreateSuggestion: vi.fn(),
   mockListSuggestions: vi.fn(),
@@ -64,6 +66,7 @@ vi.mock("@/modules/trip-groups/repo", () => ({
   getIdeaById: mockGetIdeaById,
   deleteIdeaById: mockDeleteIdeaById,
   saveItinerary: mockSaveItinerary,
+  clearItinerary: mockClearItinerary,
   createSuggestion: mockCreateSuggestion,
   listSuggestions: mockListSuggestions,
   getSuggestionById: mockGetSuggestionById,
@@ -1291,5 +1294,30 @@ describe("notes + sections (SHAN-283)", () => {
       method: "DELETE", headers: { "X-Test-User": USER_B },
     });
     expect(asCreator.status).toBe(204);
+  });
+});
+
+describe("DELETE /api/trip-groups/:slug/itinerary (SHAN-286 reset)", () => {
+  it("owner resets the itinerary", async () => {
+    mockGetGroupBySlug.mockResolvedValue(groupRow);
+    mockClearItinerary.mockResolvedValue(undefined);
+    const res = await app.request(`/api/trip-groups/${SLUG}/itinerary`, {
+      method: "DELETE",
+      headers: { "X-Test-User": USER_A },
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.itinerary).toBeNull();
+    expect(mockClearItinerary).toHaveBeenCalledWith(GROUP_ID);
+  });
+
+  it("403 for non-owners", async () => {
+    mockGetGroupBySlug.mockResolvedValue({ ...groupRow, ownerId: USER_A });
+    const res = await app.request(`/api/trip-groups/${SLUG}/itinerary`, {
+      method: "DELETE",
+      headers: { "X-Test-User": USER_B },
+    });
+    expect(res.status).toBe(403);
+    expect(mockClearItinerary).not.toHaveBeenCalled();
   });
 });
