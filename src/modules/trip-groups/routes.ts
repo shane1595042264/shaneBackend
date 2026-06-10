@@ -34,6 +34,7 @@ import {
   type TripGroupPhotoMeta,
 } from "./photos-repo";
 import { searchUnsplashPhoto } from "./unsplash";
+import { autoFillLocationPhotos } from "./photos-fill";
 import {
   buildEventsFromItinerary,
   deletePreviousExport,
@@ -274,6 +275,11 @@ tripGroupsRoutes.post(
 
       if (isOwner) {
         const { itineraryGeneratedAt } = await saveItinerary(detail.id, itinerary);
+        // Best-effort auto photo fill (SHAN-280) — never fails the write.
+        const parsed = itinerarySchema.safeParse(itinerary);
+        if (parsed.success) {
+          await autoFillLocationPhotos(detail.id, parsed.data).catch(() => {});
+        }
         return c.json({
           itinerary,
           itineraryGeneratedAt: itineraryGeneratedAt.toISOString(),
@@ -386,6 +392,7 @@ tripGroupsRoutes.put(
 
     if (isOwner) {
       const { itineraryGeneratedAt } = await saveItinerary(group.id, itinerary);
+      await autoFillLocationPhotos(group.id, itinerary).catch(() => {});
       return c.json({ itinerary, itineraryGeneratedAt: itineraryGeneratedAt.toISOString() });
     }
 
@@ -468,6 +475,7 @@ tripGroupsRoutes.post(
     const resolved = await resolveSuggestion(suggestionId, "approved", userId);
     if (!resolved) return c.json({ error: "Suggestion already resolved" }, 409);
     const { itineraryGeneratedAt } = await saveItinerary(group.id, proposed.data);
+    await autoFillLocationPhotos(group.id, proposed.data).catch(() => {});
     return c.json({
       suggestion: { id: suggestionId, status: "approved" },
       itinerary: proposed.data,
@@ -640,50 +648,15 @@ tripGroupsRoutes.post(
     if (!itin.success) {
       return c.json({ error: "No itinerary yet — consolidate first" }, 400);
     }
-    // One photo per distinct location, not per day (SHAN-279): photos are
-    // design backgrounds now — a location's photo covers every day that
-    // shares it, so repeated fetches just duplicated the same image.
-    const existing = await listPhotos(group.id);
-    const dayLocation = new Map(itin.data.days.map((d) => [d.day, d.location]));
-    const coveredLocations = new Set(
-      existing.map((p) => dayLocation.get(p.day)).filter((l): l is string => !!l),
-    );
-    const seenLocations = new Set<string>();
-    const targets = itin.data.days.filter((d) => {
-      if (!d.location || coveredLocations.has(d.location) || seenLocations.has(d.location)) {
-        return false;
-      }
-      seenLocations.add(d.location);
-      return true;
-    });
-    if (targets.length === 0) {
+    // Delegates to the shared one-photo-per-location fill (SHAN-280).
+    const { created, skipped } = await autoFillLocationPhotos(group.id, itin.data);
+    if (created.length === 0 && skipped.length === 0) {
       return c.json({ photos: [], skipped: [], message: "Every location already has a photo" });
-    }
-
-    const created: ReturnType<typeof photoJson>[] = [];
-    const skipped: { day: number; reason: string }[] = [];
-    for (const d of targets) {
-      try {
-        const hit = await searchUnsplashPhoto(d.location as string);
-        if (!hit) {
-          skipped.push({ day: d.day, reason: "no Unsplash results" });
-          continue;
-        }
-        const photo = await insertUnsplashPhoto({
-          groupId: group.id,
-          day: d.day,
-          externalUrl: hit.url,
-          attribution: hit.attribution,
-        });
-        created.push(photoJson(photo, slug));
-      } catch (err) {
-        skipped.push({ day: d.day, reason: (err as Error).message });
-      }
     }
     // All-fail with a key problem reads as upstream trouble → 502.
     if (created.length === 0 && skipped.length > 0) {
       return c.json({ error: `Unsplash fill failed: ${skipped[0].reason}`, skipped }, 502);
     }
-    return c.json({ photos: created, skipped });
+    return c.json({ photos: created.map((p) => photoJson(p, slug)), skipped });
   },
 );

@@ -1081,3 +1081,49 @@ describe("unsplash-fill dedupes by location (SHAN-279)", () => {
     expect(body.photos).toHaveLength(2);
   });
 });
+
+describe("auto photo fill on itinerary writes (SHAN-280)", () => {
+  it("owner PUT triggers a best-effort location fill", async () => {
+    mockGetGroupBySlug.mockResolvedValue(groupRow);
+    mockSaveItinerary.mockResolvedValue({ itineraryGeneratedAt: new Date() });
+    mockListPhotos.mockResolvedValue([]);
+    mockSearchUnsplashPhoto.mockResolvedValue({ url: "https://images.unsplash.com/athens", attribution: "Photo by A on Unsplash" });
+    mockInsertUnsplashPhoto.mockResolvedValue({
+      id: "99999999-9999-9999-9999-999999999999", groupId: GROUP_ID, day: 1, uploaderId: null,
+      source: "unsplash", mimeType: null, byteSize: null,
+      externalUrl: "https://images.unsplash.com/athens", attribution: "Photo by A on Unsplash", createdAt: new Date(),
+    });
+    const res = await app.request(`/api/trip-groups/${SLUG}/itinerary`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", "X-Test-User": USER_A },
+      body: JSON.stringify({
+        itinerary: {
+          summary: "T",
+          days: [{ day: 1, title: "Athens", date: null, location: "Athens", country: "Greece", activities: [] }],
+        },
+      }),
+    });
+    expect(res.status).toBe(200);
+    expect(mockSearchUnsplashPhoto).toHaveBeenCalledWith("Athens");
+    expect(mockInsertUnsplashPhoto).toHaveBeenCalledWith(
+      expect.objectContaining({ groupId: GROUP_ID, day: 1 }),
+    );
+  });
+
+  it("fill failure never breaks the write", async () => {
+    mockGetGroupBySlug.mockResolvedValue(groupRow);
+    mockSaveItinerary.mockResolvedValue({ itineraryGeneratedAt: new Date() });
+    mockListPhotos.mockRejectedValue(new Error("db hiccup"));
+    const res = await app.request(`/api/trip-groups/${SLUG}/itinerary`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", "X-Test-User": USER_A },
+      body: JSON.stringify({
+        itinerary: {
+          summary: "T",
+          days: [{ day: 1, title: "Athens", date: null, location: "Athens", country: null, activities: [] }],
+        },
+      }),
+    });
+    expect(res.status).toBe(200);
+  });
+});
