@@ -181,6 +181,19 @@ describe("POST /api/journal/entries", () => {
     });
     expect(res.status).toBe(400);
   });
+
+  it("returns 400 when content contains an in-flight upload placeholder (SHAN-287)", async () => {
+    const res = await app.request("/api/journal/entries", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Test-User": "u1" },
+      body: JSON.stringify({
+        date: "2026-04-29",
+        content: "finished visa appointment.\n![image.png](uploading-bt8rm24t-1780955450594)",
+      }),
+    });
+    expect(res.status).toBe(400);
+    expect(mockCreateEntry).not.toHaveBeenCalled();
+  });
 });
 
 describe("DELETE /api/journal/entries/:date", () => {

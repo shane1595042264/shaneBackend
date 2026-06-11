@@ -42,7 +42,13 @@ import {
   summarizeCommentReactions,
   listMyReactionsForComment,
 } from "./reactions-repo";
-import { isoDate } from "@/modules/shared/validators";
+import {
+  isoDate,
+  containsInFlightUpload,
+  IN_FLIGHT_UPLOAD_MESSAGE,
+} from "@/modules/shared/validators";
+
+const noInFlightUpload = (v: string) => !containsInFlightUpload(v);
 
 type Vars = { Variables: { userId: string | null; tokenScopes: string[] | null } };
 export const journalRoutes = new Hono<Vars>();
@@ -58,7 +64,10 @@ const listQuery = z.object({
 
 const createBody = z.object({
   date: isoDate,
-  content: z.string().min(1),
+  content: z
+    .string()
+    .min(1)
+    .refine(noInFlightUpload, { message: IN_FLIGHT_UPLOAD_MESSAGE }),
 });
 
 journalRoutes.get("/entries", optionalAuth, zValidator("query", listQuery), async (c) => {
@@ -128,7 +137,12 @@ journalRoutes.patch("/entries/:date", zValidator("param", dateParam), async (c) 
   )
 );
 
-const appendBody = z.object({ content: z.string().min(1) });
+const appendBody = z.object({
+  content: z
+    .string()
+    .min(1)
+    .refine(noInFlightUpload, { message: IN_FLIGHT_UPLOAD_MESSAGE }),
+});
 
 journalRoutes.post(
   "/entries/:date/appends",
@@ -246,7 +260,10 @@ journalRoutes.get(
 
 const suggestBody = z.object({
   base_version_num: z.number().int().positive(),
-  proposed_content: z.string().min(1),
+  proposed_content: z
+    .string()
+    .min(1)
+    .refine(noInFlightUpload, { message: IN_FLIGHT_UPLOAD_MESSAGE }),
 });
 const rejectBody = z.object({ reason: z.string().optional() });
 const suggestionListQuery = z.object({
@@ -384,10 +401,20 @@ journalRoutes.get("/inbox", requireAuth, async (c) => {
 });
 
 const commentBody = z.object({
-  content: z.string().min(1).max(10_000),
+  content: z
+    .string()
+    .min(1)
+    .max(10_000)
+    .refine(noInFlightUpload, { message: IN_FLIGHT_UPLOAD_MESSAGE }),
   parent_comment_id: z.string().uuid().optional(),
 });
-const commentEditBody = z.object({ content: z.string().min(1).max(10_000) });
+const commentEditBody = z.object({
+  content: z
+    .string()
+    .min(1)
+    .max(10_000)
+    .refine(noInFlightUpload, { message: IN_FLIGHT_UPLOAD_MESSAGE }),
+});
 
 journalRoutes.get(
   "/entries/:date/comments",

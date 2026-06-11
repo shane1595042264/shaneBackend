@@ -17,3 +17,19 @@ export const isoDate = z
       dt.getUTCDate() === d
     );
   }, "YYYY-MM-DD");
+
+// SHAN-287: the markdown editor inserts `![alt](uploading-<rnd>-<ts>)` while an
+// image upload is in flight, then swaps it for the real URL when the upload
+// resolves. SHAN-264 gates the submit button client-side, but a PAT-using
+// agent (or a future editor regression) can still POST content with the
+// placeholder intact — the 2026-06-08 entry shipped that way. Reject server-
+// side too. Pattern mirrors the token in markdown-editor.tsx (base36 + digits)
+// but keeps the inner charset loose so it stays correct if the token shape
+// changes.
+export const IN_FLIGHT_UPLOAD_REGEX = /!\[[^\]]*\]\(uploading-[\w-]+\)/;
+export const IN_FLIGHT_UPLOAD_MESSAGE =
+  "Image upload is still in flight — wait for the upload to finish and try again.";
+
+export function containsInFlightUpload(content: string): boolean {
+  return IN_FLIGHT_UPLOAD_REGEX.test(content);
+}
