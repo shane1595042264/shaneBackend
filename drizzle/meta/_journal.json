@@ -141,6 +141,13 @@
       "when": 1781120231263,
       "tag": "0019_colorful_marten_broadcloak",
       "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1781294911085,
+      "tag": "0020_shocking_punisher",
+      "breakpoints": true
     }
   ]
 }

@@ -16,6 +16,7 @@ import { tripsRoutes } from "@/modules/trips/routes";
 import { tripGroupsRoutes } from "@/modules/trip-groups/routes";
 import { loansRoutes } from "@/modules/loans/routes";
 import { practiceRoutes } from "@/modules/practice/routes";
+import { teaEntriesRoutes } from "@/modules/tea-entries/routes";
 import { isoDate } from "@/modules/shared/validators";
 
 const app = new Hono();
@@ -30,7 +31,7 @@ app.use(
   cors({
     origin: process.env.CORS_ORIGIN ?? "*",
     allowMethods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allowHeaders: ["Content-Type", "Authorization", "If-Match"],
+    allowHeaders: ["Content-Type", "Authorization", "If-Match", "X-Tea-Pin"],
     credentials: true,
   })
 );
@@ -63,6 +64,7 @@ app.route("/api/trips", tripsRoutes);
 app.route("/api/trip-groups", tripGroupsRoutes);
 app.route("/api/loans", loansRoutes);
 app.route("/api/practice", practiceRoutes);
+app.route("/api/tea-entries", teaEntriesRoutes);
 app.route("/api/integrations/wechat", wechatRoutes);
 app.route("/api/integrations/calendar", calendarConnectRoutes);
 

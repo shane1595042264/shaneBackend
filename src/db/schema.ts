@@ -781,6 +781,38 @@ export const journalImages = pgTable(
 );
 
 // ------------------------------------------------------------------
+// tea_entries — private, per-post PIN-gated journal posts (SHAN-291).
+// Separate from journal_entries on purpose: tea entries are NOT
+// date-unique (a user can post many per day) and live outside the
+// public timeline. Auth model: only the author can list their own tea
+// entries; anyone with the entry id can attempt to view by submitting
+// the correct 4-digit PIN via the X-Tea-Pin header.
+//
+// PIN is stored plaintext because the ticket requires the author to be
+// able to view (and toggle-reveal) their own PIN — a hash can't be
+// reversed. The DB row already holds the content the PIN is gating, so
+// PIN plaintext doesn't widen the attack surface materially; a DB dump
+// already exposes the secret content. Wire-level access is still gated
+// by the PIN.
+// ------------------------------------------------------------------
+export const teaEntries = pgTable(
+  "tea_entries",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    authorId: uuid("author_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "restrict" }),
+    authorTimezone: varchar("author_timezone", { length: 64 }),
+    title: text("title"),
+    content: text("content").notNull(),
+    pin: varchar("pin", { length: 8 }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("tea_entries_author_created_idx").on(t.authorId, t.createdAt)],
+);
+
+// ------------------------------------------------------------------
 // loan_entries — "Who Owes Me" element
 // Per-user ledger of money the signed-in user has lent out. Amount is text
 // to preserve decimal precision (same pattern as rngDecisions.price).
