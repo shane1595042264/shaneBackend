@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { Hono } from "hono";
+import { __resetPinAttempts } from "@/modules/tea-entries/pin-rate-limit";
 
 const { mockCreate, mockGetById, mockListForAuthor, mockDelete, mockUpdate } = vi.hoisted(() => ({
   mockCreate: vi.fn(),
@@ -44,7 +45,12 @@ vi.mock("@/modules/auth/middleware", () => ({
 
 import { teaEntriesRoutes } from "@/modules/tea-entries/routes";
 
-beforeEach(() => vi.clearAllMocks());
+beforeEach(() => {
+  vi.clearAllMocks();
+  // PIN limiter is module-level state; reset between cases so a failure cap
+  // hit in one test doesn't bleed into the next.
+  __resetPinAttempts();
+});
 
 const app = new Hono().route("/api/tea-entries", teaEntriesRoutes);
 const VALID_UUID = "11111111-1111-1111-1111-111111111111";
@@ -206,6 +212,85 @@ describe("GET /api/tea-entries/:id", () => {
   it("rejects non-uuid id", async () => {
     const res = await app.request("/api/tea-entries/not-a-uuid");
     expect(res.status).toBe(400);
+  });
+
+  it("returns 429 with Retry-After once 10 wrong PIN attempts have stacked on the same entry", async () => {
+    mockGetById.mockResolvedValue({
+      id: VALID_UUID,
+      authorId: "u-author",
+      title: null,
+      content: "secret",
+      pin: "1234",
+    });
+    // First 9 wrong attempts return 403 — bucket has 1..9 strikes.
+    for (let i = 0; i < 9; i++) {
+      const res = await app.request(`/api/tea-entries/${VALID_UUID}`, {
+        headers: { "X-Tea-Pin": "0000" },
+      });
+      expect(res.status).toBe(403);
+    }
+    // 10th wrong attempt trips the limiter — the route returns 429 instead
+    // of "Incorrect PIN" 403 once the strike count hits the cap.
+    const blocked = await app.request(`/api/tea-entries/${VALID_UUID}`, {
+      headers: { "X-Tea-Pin": "0000" },
+    });
+    expect(blocked.status).toBe(429);
+    expect(blocked.headers.get("Retry-After")).toBeTruthy();
+    // Subsequent attempts within the window remain blocked without even
+    // running verifyPin (isPinAttemptBlocked short-circuits).
+    const stillBlocked = await app.request(`/api/tea-entries/${VALID_UUID}`, {
+      headers: { "X-Tea-Pin": "0000" },
+    });
+    expect(stillBlocked.status).toBe(429);
+  });
+
+  it("a correct PIN clears the bucket so the next legitimate viewer is not blocked", async () => {
+    mockGetById.mockResolvedValue({
+      id: VALID_UUID,
+      authorId: "u-author",
+      title: null,
+      content: "secret",
+      pin: "1234",
+    });
+    // Burn 9 failed attempts (just below the cap).
+    for (let i = 0; i < 9; i++) {
+      const res = await app.request(`/api/tea-entries/${VALID_UUID}`, {
+        headers: { "X-Tea-Pin": "0000" },
+      });
+      expect(res.status).toBe(403);
+    }
+    // Correct PIN succeeds and clears the bucket.
+    const ok = await app.request(`/api/tea-entries/${VALID_UUID}`, {
+      headers: { "X-Tea-Pin": "1234" },
+    });
+    expect(ok.status).toBe(200);
+    // 10 more wrong attempts should be needed to re-arm the limiter — verify
+    // the 1st post-clear failure is back to 403 (not 429).
+    const stillOpen = await app.request(`/api/tea-entries/${VALID_UUID}`, {
+      headers: { "X-Tea-Pin": "0000" },
+    });
+    expect(stillOpen.status).toBe(403);
+  });
+
+  it("author requests bypass the limiter even after wrong-PIN attempts have piled up", async () => {
+    mockGetById.mockResolvedValue({
+      id: VALID_UUID,
+      authorId: "u-author",
+      title: null,
+      content: "secret",
+      pin: "1234",
+    });
+    // Trip the limiter from a non-author.
+    for (let i = 0; i < 10; i++) {
+      await app.request(`/api/tea-entries/${VALID_UUID}`, {
+        headers: { "X-Tea-Pin": "0000" },
+      });
+    }
+    // Author hit short-circuits before the limiter; should be 200 not 429.
+    const authorHit = await app.request(`/api/tea-entries/${VALID_UUID}`, {
+      headers: { "X-Test-User": "u-author" },
+    });
+    expect(authorHit.status).toBe(200);
   });
 });
 

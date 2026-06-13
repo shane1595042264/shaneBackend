@@ -15,6 +15,11 @@ import {
   updateTeaEntry,
   verifyPin,
 } from "./repo";
+import {
+  clearPinAttempts,
+  isPinAttemptBlocked,
+  recordFailedPinAttempt,
+} from "./pin-rate-limit";
 
 const noInFlightUpload = (v: string) => !containsInFlightUpload(v);
 
@@ -107,13 +112,38 @@ teaEntriesRoutes.get(
       });
     }
 
+    // Per-entry brute-force protection. 4-digit PINs only span 10K keys, so
+    // unthrottled attempts crack the gate quickly. Block BEFORE running
+    // verifyPin so we don't spend CPU on attackers and so the bucket can't
+    // be probed for timing. Author hits short-circuit above this branch and
+    // never touch the limiter.
+    const blockBefore = isPinAttemptBlocked(row.id);
+    if (blockBefore.blocked) {
+      return c.json(
+        { error: "Too many incorrect PIN attempts. Try again later." },
+        429,
+        { "Retry-After": String(blockBefore.retryAfterSec) },
+      );
+    }
+
     const submittedPin = c.req.header("X-Tea-Pin") ?? "";
     if (!/^\d{4}$/.test(submittedPin)) {
       return c.json({ error: "PIN required" }, 401);
     }
     if (!verifyPin(submittedPin, row.pin)) {
+      const after = recordFailedPinAttempt(row.id);
+      if (after.blocked) {
+        return c.json(
+          { error: "Too many incorrect PIN attempts. Try again later." },
+          429,
+          { "Retry-After": String(after.retryAfterSec) },
+        );
+      }
       return c.json({ error: "Incorrect PIN" }, 403);
     }
+    // Correct PIN clears the bucket so legitimate viewers aren't punished by
+    // an attacker who burned attempts on the same entry id.
+    clearPinAttempts(row.id);
     return c.json({
       entry: {
         id: row.id,
