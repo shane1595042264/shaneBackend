@@ -1,11 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { Hono } from "hono";
 
-const { mockCreate, mockGetById, mockListForAuthor, mockDelete } = vi.hoisted(() => ({
+const { mockCreate, mockGetById, mockListForAuthor, mockDelete, mockUpdate } = vi.hoisted(() => ({
   mockCreate: vi.fn(),
   mockGetById: vi.fn(),
   mockListForAuthor: vi.fn(),
   mockDelete: vi.fn(),
+  mockUpdate: vi.fn(),
 }));
 
 vi.mock("@/modules/tea-entries/repo", () => ({
@@ -13,6 +14,7 @@ vi.mock("@/modules/tea-entries/repo", () => ({
   getTeaEntryById: mockGetById,
   listTeaEntriesForAuthor: mockListForAuthor,
   deleteTeaEntry: mockDelete,
+  updateTeaEntry: mockUpdate,
   // Keep verifyPin real — it's a 4-line constant-time compare with no DB deps.
   verifyPin: (a: string, b: string) => a === b,
 }));
@@ -203,6 +205,101 @@ describe("GET /api/tea-entries/:id", () => {
 
   it("rejects non-uuid id", async () => {
     const res = await app.request("/api/tea-entries/not-a-uuid");
+    expect(res.status).toBe(400);
+  });
+});
+
+describe("PATCH /api/tea-entries/:id", () => {
+  it("requires auth", async () => {
+    const res = await app.request(`/api/tea-entries/${VALID_UUID}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content: "x" }),
+    });
+    expect(res.status).toBe(401);
+  });
+
+  it("rejects empty body (no fields)", async () => {
+    const res = await app.request(`/api/tea-entries/${VALID_UUID}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", "X-Test-User": "u1" },
+      body: JSON.stringify({}),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it("rejects empty string content", async () => {
+    const res = await app.request(`/api/tea-entries/${VALID_UUID}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", "X-Test-User": "u1" },
+      body: JSON.stringify({ content: "" }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it("rejects pin that isn't 4 digits", async () => {
+    const res = await app.request(`/api/tea-entries/${VALID_UUID}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", "X-Test-User": "u1" },
+      body: JSON.stringify({ pin: "abcd" }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it("rejects content with in-flight upload placeholder", async () => {
+    const res = await app.request(`/api/tea-entries/${VALID_UUID}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", "X-Test-User": "u1" },
+      body: JSON.stringify({ content: "![alt](uploading-abc-12345)" }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it("404 when not author / not found (repo returns null)", async () => {
+    mockUpdate.mockResolvedValue(null);
+    const res = await app.request(`/api/tea-entries/${VALID_UUID}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", "X-Test-User": "u-other" },
+      body: JSON.stringify({ content: "x" }),
+    });
+    expect(res.status).toBe(404);
+  });
+
+  it("200 returns merged entry with PIN (author response shape)", async () => {
+    mockUpdate.mockResolvedValue({
+      id: VALID_UUID,
+      authorId: "u1",
+      authorTimezone: "America/Chicago",
+      title: "edited",
+      content: "new",
+      pin: "5678",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
+    const res = await app.request(`/api/tea-entries/${VALID_UUID}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", "X-Test-User": "u1" },
+      body: JSON.stringify({ title: "edited", content: "new", pin: "5678" }),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.isAuthor).toBe(true);
+    expect(body.entry.title).toBe("edited");
+    expect(body.entry.content).toBe("new");
+    expect(body.entry.pin).toBe("5678");
+    expect(mockUpdate).toHaveBeenCalledWith(VALID_UUID, "u1", {
+      title: "edited",
+      content: "new",
+      pin: "5678",
+    });
+  });
+
+  it("rejects non-uuid id", async () => {
+    const res = await app.request(`/api/tea-entries/not-a-uuid`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", "X-Test-User": "u1" },
+      body: JSON.stringify({ content: "x" }),
+    });
     expect(res.status).toBe(400);
   });
 });

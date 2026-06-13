@@ -1,13 +1,14 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-const { mockSelect, mockInsert, mockDelete } = vi.hoisted(() => ({
+const { mockSelect, mockInsert, mockDelete, mockUpdate } = vi.hoisted(() => ({
   mockSelect: vi.fn(),
   mockInsert: vi.fn(),
   mockDelete: vi.fn(),
+  mockUpdate: vi.fn(),
 }));
 
 vi.mock("@/db/client", () => ({
-  db: { select: mockSelect, insert: mockInsert, delete: mockDelete },
+  db: { select: mockSelect, insert: mockInsert, delete: mockDelete, update: mockUpdate },
 }));
 vi.mock("@/db/schema", () => ({
   teaEntries: {
@@ -37,6 +38,7 @@ import {
   deleteTeaEntry,
   getTeaEntryById,
   listTeaEntriesForAuthor,
+  updateTeaEntry,
   verifyPin,
 } from "@/modules/tea-entries/repo";
 
@@ -120,6 +122,49 @@ describe("listTeaEntriesForAuthor", () => {
     expect(projection).toHaveProperty("title");
     expect(projection).not.toHaveProperty("content");
     expect(projection).not.toHaveProperty("pin");
+  });
+});
+
+describe("updateTeaEntry", () => {
+  function updateChain(returnRows: unknown[]) {
+    const where = vi.fn(() => ({ returning: vi.fn(() => Promise.resolve(returnRows)) }));
+    const set = vi.fn(() => ({ where }));
+    return { set, where };
+  }
+
+  it("only sets fields that were provided in the patch", async () => {
+    const chain = updateChain([{ id: "tea-1", authorId: "u1", title: "new", content: "old", pin: "1234" }]);
+    mockUpdate.mockReturnValue(chain);
+    await updateTeaEntry("tea-1", "u1", { title: "new" });
+    const setArg = chain.set.mock.calls[0][0] as Record<string, unknown>;
+    expect(setArg).toHaveProperty("title", "new");
+    expect(setArg).toHaveProperty("updatedAt");
+    expect(setArg).not.toHaveProperty("content");
+    expect(setArg).not.toHaveProperty("pin");
+  });
+
+  it("allows setting title to null explicitly", async () => {
+    const chain = updateChain([{ id: "tea-1", authorId: "u1", title: null, content: "x", pin: "1234" }]);
+    mockUpdate.mockReturnValue(chain);
+    await updateTeaEntry("tea-1", "u1", { title: null });
+    const setArg = chain.set.mock.calls[0][0] as Record<string, unknown>;
+    expect(setArg).toHaveProperty("title", null);
+  });
+
+  it("returns the row when update succeeds (author matched)", async () => {
+    const chain = updateChain([
+      { id: "tea-1", authorId: "u1", title: "T", content: "C", pin: "9999", createdAt: new Date(), updatedAt: new Date() },
+    ]);
+    mockUpdate.mockReturnValue(chain);
+    const row = await updateTeaEntry("tea-1", "u1", { content: "C", pin: "9999" });
+    expect(row?.id).toBe("tea-1");
+    expect(row?.pin).toBe("9999");
+  });
+
+  it("returns null when no row matched (missing or not author)", async () => {
+    const chain = updateChain([]);
+    mockUpdate.mockReturnValue(chain);
+    expect(await updateTeaEntry("tea-1", "u-other", { content: "x" })).toBeNull();
   });
 });
 

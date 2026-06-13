@@ -12,6 +12,7 @@ import {
   deleteTeaEntry,
   getTeaEntryById,
   listTeaEntriesForAuthor,
+  updateTeaEntry,
   verifyPin,
 } from "./repo";
 
@@ -124,6 +125,53 @@ teaEntriesRoutes.get(
         updatedAt: row.updatedAt,
       },
       isAuthor: false,
+    });
+  },
+);
+
+// Author-only partial update. Body must include at least one field; a no-op
+// PATCH is rejected so we never round-trip an empty UPDATE. 404 on author
+// mismatch — same response as a missing id, so we don't leak existence.
+const patchBody = z
+  .object({
+    title: z.string().max(255).optional().nullable(),
+    content: z
+      .string()
+      .min(1)
+      .refine(noInFlightUpload, { message: IN_FLIGHT_UPLOAD_MESSAGE })
+      .optional(),
+    pin: pinSchema.optional(),
+  })
+  .refine(
+    (b) => b.title !== undefined || b.content !== undefined || b.pin !== undefined,
+    { message: "At least one field is required" },
+  );
+
+teaEntriesRoutes.patch(
+  "/:id",
+  requireAuth,
+  requireScope("entries:write"),
+  zValidator("param", idParam),
+  zValidator("json", patchBody),
+  async (c) => {
+    const userId = c.get("userId") as string;
+    const { id } = c.req.valid("param");
+    const patch = c.req.valid("json");
+    const row = await updateTeaEntry(id, userId, patch);
+    if (!row) return c.json({ error: "Not found or not author" }, 404);
+    // Author is the one editing; mirror the GET-author response (PIN included).
+    return c.json({
+      entry: {
+        id: row.id,
+        authorId: row.authorId,
+        authorTimezone: row.authorTimezone,
+        title: row.title,
+        content: row.content,
+        pin: row.pin,
+        createdAt: row.createdAt,
+        updatedAt: row.updatedAt,
+      },
+      isAuthor: true,
     });
   },
 );

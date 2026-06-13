@@ -83,3 +83,24 @@ export async function deleteTeaEntry(id: string, authorId: string): Promise<bool
     .returning({ id: teaEntries.id });
   return result.length > 0;
 }
+
+// Author-scoped partial update. Returns the merged row, or null when no row
+// matched (entry missing OR caller is not the author — collapsed to the same
+// 404 in the route so we don't leak existence to non-authors).
+export async function updateTeaEntry(
+  id: string,
+  authorId: string,
+  patch: { title?: string | null; content?: string; pin?: string },
+): Promise<TeaEntryRow | null> {
+  const set: Record<string, unknown> = { updatedAt: new Date() };
+  if (patch.title !== undefined) set.title = patch.title;
+  if (patch.content !== undefined) set.content = patch.content;
+  if (patch.pin !== undefined) set.pin = patch.pin;
+
+  const [row] = await db
+    .update(teaEntries)
+    .set(set)
+    .where(and(eq(teaEntries.id, id), eq(teaEntries.authorId, authorId)))
+    .returning();
+  return (row as TeaEntryRow | undefined) ?? null;
+}
