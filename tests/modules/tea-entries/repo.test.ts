@@ -23,6 +23,10 @@ vi.mock("drizzle-orm", () => ({
   eq: vi.fn((c: unknown, v: unknown) => ({ c, v })),
   and: vi.fn((...args: unknown[]) => ({ and: args })),
   desc: vi.fn((c: unknown) => ({ c, dir: "desc" })),
+  sql: Object.assign(
+    (strings: TemplateStringsArray, ...values: unknown[]) => ({ kind: "sql", strings, values }),
+    { raw: (s: string) => ({ kind: "sql-raw", s }) },
+  ),
 }));
 
 function chain(rows: unknown[]) {
@@ -109,17 +113,29 @@ describe("getTeaEntryById", () => {
 });
 
 describe("listTeaEntriesForAuthor", () => {
-  it("returns summaries (no content / no pin in projection)", async () => {
+  it("returns summaries with a content excerpt (no full content, no pin)", async () => {
     mockSelect.mockReturnValue(
       chain([
-        { id: "tea-1", authorId: "u1", title: "T", createdAt: new Date(), updatedAt: new Date() },
+        {
+          id: "tea-1",
+          authorId: "u1",
+          title: "T",
+          contentExcerpt: "first 500 chars of content",
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        },
       ]),
     );
     const out = await listTeaEntriesForAuthor("u1");
     expect(out).toHaveLength(1);
+    expect(out[0].contentExcerpt).toBe("first 500 chars of content");
     const projection = mockSelect.mock.calls[0][0];
     expect(projection).toHaveProperty("id");
     expect(projection).toHaveProperty("title");
+    expect(projection).toHaveProperty("contentExcerpt");
+    // The author is the caller so leaking the prefix is fine, but we still
+    // never project the raw `content` column (DB-side substring keeps the
+    // wire payload bounded) or the `pin`.
     expect(projection).not.toHaveProperty("content");
     expect(projection).not.toHaveProperty("pin");
   });

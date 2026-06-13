@@ -1,7 +1,11 @@
 import { timingSafeEqual } from "node:crypto";
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, sql } from "drizzle-orm";
 import { db } from "@/db/client";
 import { teaEntries } from "@/db/schema";
+
+// Mirrors EXCERPT_SOURCE_LEN in journal entries-repo. 500 source chars is well
+// over the ~140 the FE renders, leaving slack for markdown-strip + ellipsis.
+const EXCERPT_SOURCE_LEN = 500;
 
 export interface TeaEntryRow {
   id: string;
@@ -18,6 +22,7 @@ export interface TeaEntrySummary {
   id: string;
   authorId: string;
   title: string | null;
+  contentExcerpt: string | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -67,6 +72,10 @@ export async function listTeaEntriesForAuthor(authorId: string): Promise<TeaEntr
       id: teaEntries.id,
       authorId: teaEntries.authorId,
       title: teaEntries.title,
+      // SQL-side substring keeps the wire payload small even for long entries;
+      // the caller is the author so this leaks nothing (PIN gate only applies
+      // to non-authors fetching a single entry).
+      contentExcerpt: sql<string | null>`substring(${teaEntries.content} from 1 for ${EXCERPT_SOURCE_LEN})`,
       createdAt: teaEntries.createdAt,
       updatedAt: teaEntries.updatedAt,
     })
