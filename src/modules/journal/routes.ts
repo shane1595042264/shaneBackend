@@ -47,8 +47,29 @@ import {
   containsInFlightUpload,
   IN_FLIGHT_UPLOAD_MESSAGE,
 } from "@/modules/shared/validators";
+import { createPATRateLimit } from "@/modules/shared/rate-limit";
 
 const noInFlightUpload = (v: string) => !containsInFlightUpload(v);
+
+// Per-PAT rolling-60s rate limits on the journal write surface. JWTs bypass
+// (tokenId is null for browser sessions). Buckets are per-scope so a busy
+// commenter doesn't lock out their own reactions, etc.
+const entriesWriteLimit = createPATRateLimit({
+  bucket: "journal-entries-write",
+  limitPerMinute: 30,
+});
+const suggestionsWriteLimit = createPATRateLimit({
+  bucket: "journal-suggestions-write",
+  limitPerMinute: 30,
+});
+const commentsWriteLimit = createPATRateLimit({
+  bucket: "journal-comments-write",
+  limitPerMinute: 30,
+});
+const reactionsWriteLimit = createPATRateLimit({
+  bucket: "journal-reactions-write",
+  limitPerMinute: 60,
+});
 
 type Vars = { Variables: { userId: string | null; tokenScopes: string[] | null } };
 export const journalRoutes = new Hono<Vars>();
@@ -95,6 +116,7 @@ journalRoutes.post(
   "/entries",
   requireAuth,
   requireScope("entries:write"),
+  entriesWriteLimit,
   zValidator("json", createBody),
   async (c) => {
     const userId = c.get("userId") as string;
@@ -116,6 +138,7 @@ journalRoutes.delete(
   "/entries/:date",
   requireAuth,
   requireScope("entries:write"),
+  entriesWriteLimit,
   zValidator("param", dateParam),
   async (c) => {
     const userId = c.get("userId") as string;
@@ -148,6 +171,7 @@ journalRoutes.post(
   "/entries/:date/appends",
   requireAuth,
   requireScope("entries:write"),
+  entriesWriteLimit,
   zValidator("param", dateParam),
   zValidator("json", appendBody),
   async (c) => {
@@ -209,6 +233,7 @@ journalRoutes.post(
   "/entries/:date/revert",
   requireAuth,
   requireScope("entries:write"),
+  entriesWriteLimit,
   zValidator("param", dateParam),
   zValidator("json", revertBody),
   async (c) => {
@@ -274,6 +299,7 @@ journalRoutes.post(
   "/entries/:date/suggestions",
   requireAuth,
   requireScope("suggestions:write"),
+  suggestionsWriteLimit,
   zValidator("param", dateParam),
   zValidator("json", suggestBody),
   async (c) => {
@@ -323,6 +349,7 @@ journalRoutes.patch(
   "/suggestions/:id/approve",
   requireAuth,
   requireScope("suggestions:write"),
+  suggestionsWriteLimit,
   async (c) => {
     const userId = c.get("userId") as string;
     const id = c.req.param("id");
@@ -359,6 +386,7 @@ journalRoutes.patch(
   "/suggestions/:id/reject",
   requireAuth,
   requireScope("suggestions:write"),
+  suggestionsWriteLimit,
   zValidator("json", rejectBody),
   async (c) => {
     const userId = c.get("userId") as string;
@@ -382,6 +410,7 @@ journalRoutes.patch(
   "/suggestions/:id/withdraw",
   requireAuth,
   requireScope("suggestions:write"),
+  suggestionsWriteLimit,
   async (c) => {
     const userId = c.get("userId") as string;
     const id = c.req.param("id");
@@ -432,6 +461,7 @@ journalRoutes.post(
   "/entries/:date/comments",
   requireAuth,
   requireScope("comments:write"),
+  commentsWriteLimit,
   zValidator("param", dateParam),
   zValidator("json", commentBody),
   async (c) => {
@@ -455,6 +485,7 @@ journalRoutes.patch(
   "/comments/:id",
   requireAuth,
   requireScope("comments:write"),
+  commentsWriteLimit,
   zValidator("json", commentEditBody),
   async (c) => {
     const userId = c.get("userId") as string;
@@ -468,6 +499,7 @@ journalRoutes.delete(
   "/comments/:id",
   requireAuth,
   requireScope("comments:write"),
+  commentsWriteLimit,
   async (c) => {
     const userId = c.get("userId") as string;
     const ok = await deleteCommentRepo(c.req.param("id"), userId);
@@ -481,6 +513,7 @@ journalRoutes.post(
   "/entries/:date/reactions",
   requireAuth,
   requireScope("reactions:write"),
+  reactionsWriteLimit,
   zValidator("param", dateParam),
   zValidator("json", reactionBody),
   async (c) => {
@@ -498,6 +531,7 @@ journalRoutes.post(
   "/comments/:id/reactions",
   requireAuth,
   requireScope("reactions:write"),
+  reactionsWriteLimit,
   zValidator("json", reactionBody),
   async (c) => {
     const userId = c.get("userId") as string;

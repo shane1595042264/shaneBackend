@@ -20,8 +20,17 @@ import {
   isPinAttemptBlocked,
   recordFailedPinAttempt,
 } from "./pin-rate-limit";
+import { createPATRateLimit } from "@/modules/shared/rate-limit";
 
 const noInFlightUpload = (v: string) => !containsInFlightUpload(v);
+
+// Per-PAT 60s rolling limit on writes. JWT browser sessions bypass. Distinct
+// bucket from journal's entries-write so a busy journaler doesn't lock out
+// their tea entries (and vice versa).
+const teaEntriesWriteLimit = createPATRateLimit({
+  bucket: "tea-entries-write",
+  limitPerMinute: 30,
+});
 
 type Vars = { Variables: { userId: string | null; tokenScopes: string[] | null } };
 export const teaEntriesRoutes = new Hono<Vars>();
@@ -45,6 +54,7 @@ teaEntriesRoutes.post(
   "/",
   requireAuth,
   requireScope("entries:write"),
+  teaEntriesWriteLimit,
   zValidator("json", createBody),
   async (c) => {
     const userId = c.get("userId") as string;
@@ -181,6 +191,7 @@ teaEntriesRoutes.patch(
   "/:id",
   requireAuth,
   requireScope("entries:write"),
+  teaEntriesWriteLimit,
   zValidator("param", idParam),
   zValidator("json", patchBody),
   async (c) => {
@@ -210,6 +221,7 @@ teaEntriesRoutes.delete(
   "/:id",
   requireAuth,
   requireScope("entries:write"),
+  teaEntriesWriteLimit,
   zValidator("param", idParam),
   async (c) => {
     const userId = c.get("userId") as string;

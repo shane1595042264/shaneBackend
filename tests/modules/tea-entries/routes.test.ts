@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { Hono } from "hono";
 import { __resetPinAttempts } from "@/modules/tea-entries/pin-rate-limit";
+import { __resetRateLimitBuckets } from "@/modules/shared/rate-limit";
 
 const { mockCreate, mockGetById, mockListForAuthor, mockDelete, mockUpdate } = vi.hoisted(() => ({
   mockCreate: vi.fn(),
@@ -25,17 +26,24 @@ vi.mock("@/modules/auth/user-prefs", () => ({
   DEFAULT_TIMEZONE: "America/Chicago",
 }));
 
+// X-Test-Token presence flips the request from "JWT" to "PAT" by setting
+// tokenId. The PAT rate limiter only counts when tokenId is non-null, so
+// existing tests (which never send the header) bypass it automatically.
 vi.mock("@/modules/auth/middleware", () => ({
   optionalAuth: async (c: any, next: any) => {
     c.set("userId", c.req.header("X-Test-User") ?? null);
-    c.set("tokenScopes", null);
+    const token = c.req.header("X-Test-Token");
+    c.set("tokenScopes", token ? [] : null);
+    c.set("tokenId", token ?? null);
     await next();
   },
   requireAuth: async (c: any, next: any) => {
     const u = c.req.header("X-Test-User");
     if (!u) return c.json({ error: "auth" }, 401);
     c.set("userId", u);
-    c.set("tokenScopes", null);
+    const token = c.req.header("X-Test-Token");
+    c.set("tokenScopes", token ? [] : null);
+    c.set("tokenId", token ?? null);
     await next();
   },
   requireScope: () => async (_c: any, next: any) => {
@@ -47,9 +55,10 @@ import { teaEntriesRoutes } from "@/modules/tea-entries/routes";
 
 beforeEach(() => {
   vi.clearAllMocks();
-  // PIN limiter is module-level state; reset between cases so a failure cap
-  // hit in one test doesn't bleed into the next.
+  // Both rate limiters are module-level state; reset between cases so a
+  // 429 hit in one test doesn't bleed into the next.
   __resetPinAttempts();
+  __resetRateLimitBuckets();
 });
 
 const app = new Hono().route("/api/tea-entries", teaEntriesRoutes);
@@ -412,5 +421,114 @@ describe("DELETE /api/tea-entries/:id", () => {
       headers: { "X-Test-User": "u1" },
     });
     expect(res.status).toBe(404);
+  });
+});
+
+describe("tea-entries write rate limit (per PAT)", () => {
+  it("429s a PAT after 30 POSTs in a minute", async () => {
+    mockCreate.mockResolvedValue({
+      id: "e1",
+      authorId: "u1",
+      authorTimezone: "America/Chicago",
+      title: null,
+      content: "x",
+      pin: "1234",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    const headers = {
+      "Content-Type": "application/json",
+      "X-Test-User": "u1",
+      "X-Test-Token": "pat-test",
+    };
+    const body = JSON.stringify({ content: "x", pin: "1234" });
+
+    for (let i = 0; i < 30; i++) {
+      const ok = await app.request("/api/tea-entries", { method: "POST", headers, body });
+      expect(ok.status).toBe(201);
+    }
+    const blocked = await app.request("/api/tea-entries", { method: "POST", headers, body });
+    expect(blocked.status).toBe(429);
+    expect(blocked.headers.get("Retry-After")).toBe("60");
+  });
+
+  it("JWT requests with no tokenId bypass the limiter", async () => {
+    mockCreate.mockResolvedValue({
+      id: "e1",
+      authorId: "u1",
+      authorTimezone: "America/Chicago",
+      title: null,
+      content: "x",
+      pin: "1234",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    const headers = { "Content-Type": "application/json", "X-Test-User": "u1" };
+    const body = JSON.stringify({ content: "x", pin: "1234" });
+
+    for (let i = 0; i < 40; i++) {
+      const res = await app.request("/api/tea-entries", { method: "POST", headers, body });
+      expect(res.status).toBe(201);
+    }
+  });
+
+  it("POST, PATCH, DELETE share the tea-entries-write bucket", async () => {
+    mockCreate.mockResolvedValue({
+      id: "e1",
+      authorId: "u1",
+      authorTimezone: "America/Chicago",
+      title: null,
+      content: "x",
+      pin: "1234",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    mockUpdate.mockResolvedValue({
+      id: "e1",
+      authorId: "u1",
+      authorTimezone: "America/Chicago",
+      title: "t",
+      content: "x",
+      pin: "1234",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    mockDelete.mockResolvedValue(true);
+    const headers = {
+      "Content-Type": "application/json",
+      "X-Test-User": "u1",
+      "X-Test-Token": "pat-shared",
+    };
+
+    // 10 POST + 10 PATCH + 10 DELETE = 30 fills the shared bucket.
+    for (let i = 0; i < 10; i++) {
+      const r = await app.request("/api/tea-entries", {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ content: "x", pin: "1234" }),
+      });
+      expect(r.status).toBe(201);
+    }
+    for (let i = 0; i < 10; i++) {
+      const r = await app.request(`/api/tea-entries/${VALID_UUID}`, {
+        method: "PATCH",
+        headers,
+        body: JSON.stringify({ title: "t" }),
+      });
+      expect(r.status).toBe(200);
+    }
+    for (let i = 0; i < 10; i++) {
+      const r = await app.request(`/api/tea-entries/${VALID_UUID}`, {
+        method: "DELETE",
+        headers,
+      });
+      expect(r.status).toBe(204);
+    }
+    // 31st request on any of the three is blocked.
+    const blocked = await app.request(`/api/tea-entries/${VALID_UUID}`, {
+      method: "DELETE",
+      headers,
+    });
+    expect(blocked.status).toBe(429);
   });
 });
