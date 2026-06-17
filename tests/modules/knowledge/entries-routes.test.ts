@@ -1,8 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { Hono } from "hono";
+import { __resetRateLimitBuckets } from "@/modules/shared/rate-limit";
 
-const { mockSelect, mockDelete, mockUpdate, mockSql } = vi.hoisted(() => ({
+const { mockSelect, mockInsert, mockDelete, mockUpdate, mockSql } = vi.hoisted(() => ({
   mockSelect: vi.fn(),
+  mockInsert: vi.fn(),
   mockDelete: vi.fn(),
   mockUpdate: vi.fn(),
   // Records the raw template fragments so tests can assert what SQL the
@@ -25,7 +27,7 @@ vi.mock("@/modules/knowledge/bilibili", () => ({
 
 vi.mock("@/db/client", () => ({
   db: {
-    insert: vi.fn(),
+    insert: mockInsert,
     select: mockSelect,
     delete: mockDelete,
     update: mockUpdate,
@@ -50,22 +52,36 @@ vi.mock("drizzle-orm", () => ({
   inArray: vi.fn((c: unknown, vs: unknown[]) => ({ inArray: { c, vs } })),
 }));
 
+// X-Test-Token (or legacy X-Test-Token-Id) presence flips JWT -> PAT (sets
+// tokenId). X-Test-Scopes is a CSV mapped to tokenScopes; requireScope reads
+// it. JWT requests (no token header) keep tokenScopes null and bypass scope
+// checks, matching the production middleware contract.
 vi.mock("@/modules/auth/middleware", () => ({
   optionalAuth: async (c: any, next: any) => {
     c.set("userId", c.req.header("X-Test-User") ?? null);
-    c.set("tokenScopes", c.req.header("X-Test-Scopes")?.split(",") ?? null);
-    c.set("tokenId", c.req.header("X-Test-Token-Id") ?? null);
+    const token = c.req.header("X-Test-Token") ?? c.req.header("X-Test-Token-Id");
+    const scopes = c.req.header("X-Test-Scopes");
+    c.set("tokenScopes", token ? (scopes ? scopes.split(",") : []) : (scopes ? scopes.split(",") : null));
+    c.set("tokenId", token ?? null);
     await next();
   },
   requireAuth: async (c: any, next: any) => {
     const u = c.req.header("X-Test-User");
     if (!u) return c.json({ error: "auth" }, 401);
     c.set("userId", u);
-    c.set("tokenScopes", c.req.header("X-Test-Scopes")?.split(",") ?? null);
-    c.set("tokenId", c.req.header("X-Test-Token-Id") ?? null);
+    const token = c.req.header("X-Test-Token") ?? c.req.header("X-Test-Token-Id");
+    const scopes = c.req.header("X-Test-Scopes");
+    c.set("tokenScopes", token ? (scopes ? scopes.split(",") : []) : (scopes ? scopes.split(",") : null));
+    c.set("tokenId", token ?? null);
     await next();
   },
-  requireScope: (_scope: string) => async (_c: any, next: any) => next(),
+  requireScope: (scope: string) => async (c: any, next: any) => {
+    const scopes = c.get("tokenScopes") as string[] | null;
+    if (scopes !== null && !scopes.includes(scope)) {
+      return c.json({ error: `Token missing required scope: ${scope}` }, 403);
+    }
+    await next();
+  },
 }));
 
 vi.mock("@/modules/vocabulary/ai-enricher", () => ({
@@ -76,6 +92,7 @@ import { knowledgeRoutes } from "@/modules/knowledge/routes";
 
 beforeEach(() => {
   vi.clearAllMocks();
+  __resetRateLimitBuckets();
 });
 
 const app = new Hono().route("/api/knowledge", knowledgeRoutes);
@@ -104,6 +121,12 @@ function updateReturning(rows: unknown[]) {
       }),
     }),
   }));
+}
+
+function insertReturning(row: unknown) {
+  const valuesFn = vi.fn(() => ({ returning: () => Promise.resolve([row]) }));
+  mockInsert.mockImplementation(() => ({ values: valuesFn }));
+  return valuesFn;
 }
 
 describe("DELETE /api/knowledge/entries/:id — ownership", () => {
@@ -318,5 +341,101 @@ describe("GET /api/knowledge/entries — source.app filter (SHAN-189)", () => {
   it("rejects empty ?app= via zod min(1)", async () => {
     const res = await app.request("/api/knowledge/entries?app=");
     expect(res.status).toBe(400);
+  });
+});
+
+// The module's CLAUDE.md states the auth contract is "Requires either a JWT
+// or a PAT with the knowledge:write scope. Anonymous -> 401." POST /entries
+// drifted from that until SHAN-312 — verified live against prod that an
+// anonymous POST returned 201. These specs pin the gate down.
+describe("POST /api/knowledge/entries — auth gate (SHAN-312)", () => {
+  const validId = "11111111-1111-1111-1111-111111111111";
+  const body = JSON.stringify({
+    word: "hello",
+    language: "en",
+    category: "vocabulary",
+    definition: "a greeting",
+    autoEnrich: false,
+  });
+  const jsonHeaders = { "Content-Type": "application/json" };
+
+  it("returns 401 when unauthenticated", async () => {
+    const res = await app.request("/api/knowledge/entries", {
+      method: "POST",
+      headers: jsonHeaders,
+      body,
+    });
+    expect(res.status).toBe(401);
+    expect(mockInsert).not.toHaveBeenCalled();
+  });
+
+  it("returns 403 when PAT lacks knowledge:write scope", async () => {
+    const res = await app.request("/api/knowledge/entries", {
+      method: "POST",
+      headers: {
+        ...jsonHeaders,
+        "X-Test-User": "user-1",
+        "X-Test-Token": "pat-test",
+        "X-Test-Scopes": "entries:write",
+      },
+      body,
+    });
+    expect(res.status).toBe(403);
+    expect(mockInsert).not.toHaveBeenCalled();
+  });
+
+  it("creates the entry and stamps createdBy with the JWT user", async () => {
+    selectReturning([]); // duplicate check finds nothing
+    const valuesFn = insertReturning({
+      id: validId,
+      word: "hello",
+      language: "en",
+      category: "vocabulary",
+      createdBy: "user-1",
+    });
+
+    const res = await app.request("/api/knowledge/entries", {
+      method: "POST",
+      headers: { ...jsonHeaders, "X-Test-User": "user-1" },
+      body,
+    });
+    expect(res.status).toBe(201);
+    const valuesArg = valuesFn.mock.calls[0]![0] as Record<string, unknown>;
+    expect(valuesArg.createdBy).toBe("user-1");
+  });
+
+  it("creates the entry with a PAT carrying knowledge:write scope", async () => {
+    selectReturning([]);
+    insertReturning({
+      id: validId,
+      word: "ciao",
+      language: "it",
+      category: "vocabulary",
+      createdBy: "user-1",
+    });
+
+    const res = await app.request("/api/knowledge/entries", {
+      method: "POST",
+      headers: {
+        ...jsonHeaders,
+        "X-Test-User": "user-1",
+        "X-Test-Token": "pat-test",
+        "X-Test-Scopes": "knowledge:write",
+      },
+      body: JSON.stringify({ word: "ciao", language: "it", autoEnrich: false }),
+    });
+    expect(res.status).toBe(201);
+  });
+
+  it("still returns 409 on duplicate (auth + scope satisfied)", async () => {
+    selectReturning([{ id: validId, word: "hello", language: "en", category: "vocabulary" }]);
+
+    const res = await app.request("/api/knowledge/entries", {
+      method: "POST",
+      headers: { ...jsonHeaders, "X-Test-User": "user-1" },
+      body,
+    });
+    expect(res.status).toBe(409);
+    expect(mockInsert).not.toHaveBeenCalled();
   });
 });

@@ -148,6 +148,15 @@ const batchRateLimit = createPATRateLimit({
   bucket: "knowledge-notes-batch",
   limitPerMinute: 5,
 });
+// POST /entries shares the same vocabWords table as /notes but is a manual
+// single-row create (no LLM classification — optional enrichment is the same
+// Claude call as the vocabulary path). 30/min mirrors the /notes single bucket
+// and SHAN-310's "vocabulary-writes". Separate bucket so a hammered manual
+// loop can't lock out the batch /notes path or vice versa.
+const entriesWriteRateLimit = createPATRateLimit({
+  bucket: "knowledge-entries-write",
+  limitPerMinute: 30,
+});
 
 knowledgeRoutes.post(
   "/notes",
@@ -363,10 +372,19 @@ knowledgeRoutes.get("/entries/:id", zValidator("param", uuidParamSchema), async 
   return c.json({ entry, connections, connectedEntries });
 });
 
-// Create an entry (optionally AI-enriched, for vocab category)
-knowledgeRoutes.post("/entries", optionalAuth, zValidator("json", createWordSchema), async (c) => {
+// Create an entry (optionally AI-enriched, for vocab category). Auth contract
+// matches POST /notes per modules/knowledge/CLAUDE.md: anonymous -> 401, PAT
+// needs knowledge:write scope. SHAN-312 closed the optionalAuth drift that
+// let anonymous callers create rows and trigger enrichWord/postToBilibili.
+knowledgeRoutes.post(
+  "/entries",
+  requireAuth,
+  requireScope("knowledge:write"),
+  entriesWriteRateLimit,
+  zValidator("json", createWordSchema),
+  async (c) => {
   const body = c.req.valid("json");
-  const userId = (c.get("userId") as string | null) ?? null;
+  const userId = c.get("userId") as string;
 
   const [existing] = await db
     .select()
