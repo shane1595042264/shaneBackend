@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { zValidator } from "@hono/zod-validator";
 import { z } from "zod";
 import { requireAuth, requireScope, requireAdmin } from "@/modules/auth/middleware";
+import { createPATRateLimit } from "@/modules/shared/rate-limit";
 import { getPrescription, upsertPrescription, deletePrescription } from "./prescription-repo";
 import { listLocations, upsertLocation, deleteLocation } from "./locations-repo";
 import {
@@ -15,6 +16,27 @@ import { listItemsForSession, syncSessionItem } from "./session-items-repo";
 import { generateSessionItems } from "./generator";
 import { listPracticeableItems, getItemProgressDetail } from "./items-repo";
 import { getSettings, updateSettings } from "./settings-repo";
+
+// Per-PAT rolling-60s rate limits on the practice write surface. JWTs bypass
+// (tokenId is null for browser sessions). Sync runs at runner-tick speed —
+// state changes + pagehide beacon — so its bucket is much larger than the
+// config-write buckets.
+const prescriptionsWriteLimit = createPATRateLimit({
+  bucket: "practice-prescriptions-write",
+  limitPerMinute: 30,
+});
+const locationsWriteLimit = createPATRateLimit({
+  bucket: "practice-locations-write",
+  limitPerMinute: 30,
+});
+const sessionsWriteLimit = createPATRateLimit({
+  bucket: "practice-sessions-write",
+  limitPerMinute: 30,
+});
+const sessionItemsSyncLimit = createPATRateLimit({
+  bucket: "practice-session-items-sync",
+  limitPerMinute: 120,
+});
 
 export const practiceRoutes = new Hono();
 
@@ -65,6 +87,7 @@ practiceRoutes.put(
   "/prescriptions/:itemId",
   requireAuth,
   requireScope("practice:write"),
+  prescriptionsWriteLimit,
   zValidator("param", itemIdParam),
   zValidator("json", prescriptionBody),
   async (c) => {
@@ -80,6 +103,7 @@ practiceRoutes.delete(
   "/prescriptions/:itemId",
   requireAuth,
   requireScope("practice:write"),
+  prescriptionsWriteLimit,
   zValidator("param", itemIdParam),
   async (c) => {
     const ok = await deletePrescription(c.req.valid("param").itemId);
@@ -99,6 +123,7 @@ practiceRoutes.post(
   "/locations",
   requireAuth,
   requireScope("practice:write"),
+  locationsWriteLimit,
   zValidator("json", z.object({ name: z.string().min(1).max(120) })),
   async (c) => {
     const userId = c.get("userId") as string;
@@ -113,6 +138,7 @@ practiceRoutes.delete(
   "/locations/:id",
   requireAuth,
   requireScope("practice:write"),
+  locationsWriteLimit,
   zValidator("param", z.object({ id: z.string().uuid() })),
   async (c) => {
     const userId = c.get("userId") as string;
@@ -138,6 +164,7 @@ practiceRoutes.post(
   "/sessions",
   requireAuth,
   requireScope("practice:write"),
+  sessionsWriteLimit,
   zValidator("json", sessionGenBody),
   async (c) => {
     const userId = c.get("userId") as string;
@@ -208,6 +235,7 @@ practiceRoutes.patch(
   "/sessions/:id",
   requireAuth,
   requireScope("practice:write"),
+  sessionsWriteLimit,
   zValidator("param", z.object({ id: z.string().uuid() })),
   async (c) => {
     const userId = c.get("userId") as string;
@@ -220,6 +248,7 @@ practiceRoutes.delete(
   "/sessions/:id",
   requireAuth,
   requireScope("practice:write"),
+  sessionsWriteLimit,
   zValidator("param", z.object({ id: z.string().uuid() })),
   async (c) => {
     const userId = c.get("userId") as string;
@@ -243,6 +272,7 @@ practiceRoutes.post(
   "/session-items/:id/sync",
   requireAuth,
   requireScope("practice:write"),
+  sessionItemsSyncLimit,
   zValidator("param", z.object({ id: z.string().uuid() })),
   zValidator("json", syncBody),
   async (c) => {
