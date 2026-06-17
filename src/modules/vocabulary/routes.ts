@@ -5,8 +5,22 @@ import { db } from "@/db/client";
 import { vocabWords, vocabConnections } from "@/db/schema";
 import { desc, eq, and, or, ilike, sql, inArray } from "drizzle-orm";
 import { enrichWord } from "./ai-enricher";
+import { requireAuth, requireScope } from "@/modules/auth/middleware";
+import { createPATRateLimit } from "@/modules/shared/rate-limit";
 
 export const vocabularyRoutes = new Hono();
+
+// Two buckets so a noisy enrich loop can't lock out plain CRUD and vice versa.
+// Limits mirror the knowledge module's 30/min on cheap writes; enrich is tighter
+// because every call hits the Anthropic API (economic-DoS surface — SHAN-310).
+const writesRateLimit = createPATRateLimit({
+  bucket: "vocabulary-writes",
+  limitPerMinute: 30,
+});
+const enrichRateLimit = createPATRateLimit({
+  bucket: "vocabulary-enrich",
+  limitPerMinute: 10,
+});
 
 const uuidParamSchema = z.object({
   id: z.string().uuid("Invalid UUID"),
@@ -96,48 +110,59 @@ vocabularyRoutes.get("/words/:id", zValidator("param", uuidParamSchema), async (
   return c.json({ word, connections, connectedWords });
 });
 
-// Create a word (optionally AI-enriched)
-vocabularyRoutes.post("/words", zValidator("json", createWordSchema), async (c) => {
-  const body = c.req.valid("json");
+// Create a word (optionally AI-enriched).
+// Auth: JWT browser session OR PAT with knowledge:write. Same scope as
+// knowledge module — these endpoints write the same vocabWords table.
+vocabularyRoutes.post(
+  "/words",
+  requireAuth,
+  requireScope("knowledge:write"),
+  writesRateLimit,
+  zValidator("json", createWordSchema),
+  async (c) => {
+    const body = c.req.valid("json");
+    const userId = c.get("userId") as string;
 
-  // Check for duplicate word+language
-  const [existing] = await db
-    .select()
-    .from(vocabWords)
-    .where(and(eq(vocabWords.word, body.word), eq(vocabWords.language, body.language)));
+    // Check for duplicate word+language
+    const [existing] = await db
+      .select()
+      .from(vocabWords)
+      .where(and(eq(vocabWords.word, body.word), eq(vocabWords.language, body.language)));
 
-  if (existing) {
-    return c.json(
-      { error: `"${body.word}" already exists in ${body.language}`, existingWord: existing },
-      409
-    );
-  }
-
-  let enriched: Partial<typeof body> = {};
-  if (body.autoEnrich !== false) {
-    try {
-      enriched = await enrichWord(body.word, body.language);
-    } catch (err) {
-      console.error("[vocabulary] AI enrichment failed:", err);
+    if (existing) {
+      return c.json(
+        { error: `"${body.word}" already exists in ${body.language}`, existingWord: existing },
+        409
+      );
     }
+
+    let enriched: Partial<typeof body> = {};
+    if (body.autoEnrich !== false) {
+      try {
+        enriched = await enrichWord(body.word, body.language);
+      } catch (err) {
+        console.error("[vocabulary] AI enrichment failed:", err);
+      }
+    }
+
+    const [word] = await db
+      .insert(vocabWords)
+      .values({
+        word: body.word,
+        language: body.language,
+        definition: body.definition || enriched.definition || null,
+        pronunciation: body.pronunciation || enriched.pronunciation || null,
+        partOfSpeech: body.partOfSpeech || enriched.partOfSpeech || null,
+        exampleSentence: body.exampleSentence || enriched.exampleSentence || null,
+        labels: body.labels || enriched.labels || [],
+        aiMetadata: body.autoEnrich !== false ? { enrichedAt: new Date().toISOString() } : null,
+        createdBy: userId,
+      })
+      .returning();
+
+    return c.json({ word }, 201);
   }
-
-  const [word] = await db
-    .insert(vocabWords)
-    .values({
-      word: body.word,
-      language: body.language,
-      definition: body.definition || enriched.definition || null,
-      pronunciation: body.pronunciation || enriched.pronunciation || null,
-      partOfSpeech: body.partOfSpeech || enriched.partOfSpeech || null,
-      exampleSentence: body.exampleSentence || enriched.exampleSentence || null,
-      labels: body.labels || enriched.labels || [],
-      aiMetadata: body.autoEnrich !== false ? { enrichedAt: new Date().toISOString() } : null,
-    })
-    .returning();
-
-  return c.json({ word }, 201);
-});
+);
 
 // Update a word
 const updateWordSchema = z.object({
@@ -150,56 +175,104 @@ const updateWordSchema = z.object({
   labels: z.array(z.string()).optional(),
 });
 
-vocabularyRoutes.put("/words/:id", zValidator("param", uuidParamSchema), zValidator("json", updateWordSchema), async (c) => {
-  const { id } = c.req.valid("param");
-  const body = c.req.valid("json");
+// Ownership rule mirrors knowledge module's PUT /entries/:id: caller must be
+// the creator, but legacy rows (createdBy IS NULL, predate the column on the
+// vocabulary path) are editable by any authed user.
+vocabularyRoutes.put(
+  "/words/:id",
+  requireAuth,
+  requireScope("knowledge:write"),
+  writesRateLimit,
+  zValidator("param", uuidParamSchema),
+  zValidator("json", updateWordSchema),
+  async (c) => {
+    const { id } = c.req.valid("param");
+    const body = c.req.valid("json");
+    const userId = c.get("userId") as string;
 
-  const [updated] = await db
-    .update(vocabWords)
-    .set({ ...body, updatedAt: new Date() })
-    .where(eq(vocabWords.id, id))
-    .returning();
+    const [existing] = await db
+      .select({ createdBy: vocabWords.createdBy })
+      .from(vocabWords)
+      .where(eq(vocabWords.id, id));
+    if (!existing) return c.json({ error: "Word not found" }, 404);
+    if (existing.createdBy !== null && existing.createdBy !== userId) {
+      return c.json({ error: "You can only edit words you created" }, 403);
+    }
 
-  if (!updated) return c.json({ error: "Word not found" }, 404);
-  return c.json({ word: updated });
-});
-
-// Delete a word (cascades connections)
-vocabularyRoutes.delete("/words/:id", zValidator("param", uuidParamSchema), async (c) => {
-  const { id } = c.req.valid("param");
-  const [deleted] = await db.delete(vocabWords).where(eq(vocabWords.id, id)).returning();
-  if (!deleted) return c.json({ error: "Word not found" }, 404);
-  return c.json({ ok: true });
-});
-
-// AI-enrich an existing word
-vocabularyRoutes.post("/words/:id/enrich", zValidator("param", uuidParamSchema), async (c) => {
-  const { id } = c.req.valid("param");
-  const [word] = await db.select().from(vocabWords).where(eq(vocabWords.id, id));
-  if (!word) return c.json({ error: "Word not found" }, 404);
-
-  try {
-    const enriched = await enrichWord(word.word, word.language);
     const [updated] = await db
       .update(vocabWords)
-      .set({
-        definition: enriched.definition || word.definition,
-        pronunciation: enriched.pronunciation || word.pronunciation,
-        partOfSpeech: enriched.partOfSpeech || word.partOfSpeech,
-        exampleSentence: enriched.exampleSentence || word.exampleSentence,
-        labels: enriched.labels.length > 0 ? enriched.labels : (word.labels as string[]),
-        aiMetadata: { enrichedAt: new Date().toISOString() },
-        updatedAt: new Date(),
-      })
+      .set({ ...body, updatedAt: new Date() })
       .where(eq(vocabWords.id, id))
       .returning();
 
+    if (!updated) return c.json({ error: "Word not found" }, 404);
     return c.json({ word: updated });
-  } catch (err: any) {
-    console.error("[vocabulary] enrich error:", err.message);
-    return c.json({ error: `Enrichment failed: ${err.message}` }, 500);
   }
-});
+);
+
+// Delete a word (cascades connections). Same ownership rule as PUT.
+vocabularyRoutes.delete(
+  "/words/:id",
+  requireAuth,
+  requireScope("knowledge:write"),
+  writesRateLimit,
+  zValidator("param", uuidParamSchema),
+  async (c) => {
+    const { id } = c.req.valid("param");
+    const userId = c.get("userId") as string;
+
+    const [existing] = await db
+      .select({ createdBy: vocabWords.createdBy })
+      .from(vocabWords)
+      .where(eq(vocabWords.id, id));
+    if (!existing) return c.json({ error: "Word not found" }, 404);
+    if (existing.createdBy !== null && existing.createdBy !== userId) {
+      return c.json({ error: "You can only delete words you created" }, 403);
+    }
+
+    const [deleted] = await db.delete(vocabWords).where(eq(vocabWords.id, id)).returning();
+    if (!deleted) return c.json({ error: "Word not found" }, 404);
+    return c.json({ ok: true });
+  }
+);
+
+// AI-enrich an existing word. Separate (tighter) rate-limit bucket because
+// every call fires an Anthropic request — the economic-DoS surface SHAN-310
+// closed.
+vocabularyRoutes.post(
+  "/words/:id/enrich",
+  requireAuth,
+  requireScope("knowledge:write"),
+  enrichRateLimit,
+  zValidator("param", uuidParamSchema),
+  async (c) => {
+    const { id } = c.req.valid("param");
+    const [word] = await db.select().from(vocabWords).where(eq(vocabWords.id, id));
+    if (!word) return c.json({ error: "Word not found" }, 404);
+
+    try {
+      const enriched = await enrichWord(word.word, word.language);
+      const [updated] = await db
+        .update(vocabWords)
+        .set({
+          definition: enriched.definition || word.definition,
+          pronunciation: enriched.pronunciation || word.pronunciation,
+          partOfSpeech: enriched.partOfSpeech || word.partOfSpeech,
+          exampleSentence: enriched.exampleSentence || word.exampleSentence,
+          labels: enriched.labels.length > 0 ? enriched.labels : (word.labels as string[]),
+          aiMetadata: { enrichedAt: new Date().toISOString() },
+          updatedAt: new Date(),
+        })
+        .where(eq(vocabWords.id, id))
+        .returning();
+
+      return c.json({ word: updated });
+    } catch (err: any) {
+      console.error("[vocabulary] enrich error:", err.message);
+      return c.json({ error: `Enrichment failed: ${err.message}` }, 500);
+    }
+  }
+);
 
 // ---------------------------------------------------------------------------
 // Connections CRUD
@@ -223,46 +296,60 @@ vocabularyRoutes.get("/connections", zValidator("query", wordIdQuerySchema), asy
   return c.json({ connections });
 });
 
-vocabularyRoutes.post("/connections", zValidator("json", createConnectionSchema), async (c) => {
-  const body = c.req.valid("json");
+vocabularyRoutes.post(
+  "/connections",
+  requireAuth,
+  requireScope("knowledge:write"),
+  writesRateLimit,
+  zValidator("json", createConnectionSchema),
+  async (c) => {
+    const body = c.req.valid("json");
 
-  if (body.fromWordId === body.toWordId) {
-    return c.json({ error: "Cannot connect a word to itself" }, 400);
-  }
-
-  const existing = await db
-    .select({ id: vocabWords.id })
-    .from(vocabWords)
-    .where(inArray(vocabWords.id, [body.fromWordId, body.toWordId]));
-  const foundIds = new Set(existing.map((r) => r.id));
-  if (!foundIds.has(body.fromWordId)) {
-    return c.json({ error: `Word not found: ${body.fromWordId}` }, 404);
-  }
-  if (!foundIds.has(body.toWordId)) {
-    return c.json({ error: `Word not found: ${body.toWordId}` }, 404);
-  }
-
-  try {
-    const [connection] = await db
-      .insert(vocabConnections)
-      .values(body)
-      .returning();
-
-    return c.json({ connection }, 201);
-  } catch (err: any) {
-    if (err.code === "23505") {
-      return c.json({ error: "This connection already exists" }, 409);
+    if (body.fromWordId === body.toWordId) {
+      return c.json({ error: "Cannot connect a word to itself" }, 400);
     }
-    throw err;
-  }
-});
 
-vocabularyRoutes.delete("/connections/:id", zValidator("param", uuidParamSchema), async (c) => {
-  const { id } = c.req.valid("param");
-  const [deleted] = await db.delete(vocabConnections).where(eq(vocabConnections.id, id)).returning();
-  if (!deleted) return c.json({ error: "Connection not found" }, 404);
-  return c.json({ ok: true });
-});
+    const existing = await db
+      .select({ id: vocabWords.id })
+      .from(vocabWords)
+      .where(inArray(vocabWords.id, [body.fromWordId, body.toWordId]));
+    const foundIds = new Set(existing.map((r) => r.id));
+    if (!foundIds.has(body.fromWordId)) {
+      return c.json({ error: `Word not found: ${body.fromWordId}` }, 404);
+    }
+    if (!foundIds.has(body.toWordId)) {
+      return c.json({ error: `Word not found: ${body.toWordId}` }, 404);
+    }
+
+    try {
+      const [connection] = await db
+        .insert(vocabConnections)
+        .values(body)
+        .returning();
+
+      return c.json({ connection }, 201);
+    } catch (err: any) {
+      if (err.code === "23505") {
+        return c.json({ error: "This connection already exists" }, 409);
+      }
+      throw err;
+    }
+  }
+);
+
+vocabularyRoutes.delete(
+  "/connections/:id",
+  requireAuth,
+  requireScope("knowledge:write"),
+  writesRateLimit,
+  zValidator("param", uuidParamSchema),
+  async (c) => {
+    const { id } = c.req.valid("param");
+    const [deleted] = await db.delete(vocabConnections).where(eq(vocabConnections.id, id)).returning();
+    if (!deleted) return c.json({ error: "Connection not found" }, 404);
+    return c.json({ ok: true });
+  }
+);
 
 // ---------------------------------------------------------------------------
 // Utility: list all distinct labels and languages
