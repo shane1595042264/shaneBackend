@@ -188,8 +188,23 @@ describe("GET /api/trips/:slug", () => {
   });
 });
 
+// Helper: shape returned by getTripBySlug. Tests below only care about
+// ownerId and slug for the ownership branch, so the rest is filler.
+const tripRow = (ownerId: string | null) => ({
+  id: "t1",
+  slug: "tokyo",
+  title: "Tokyo",
+  html: "<p>hi</p>",
+  sourceFilename: null,
+  ownerId,
+  ownerName: null,
+  createdAt: new Date(),
+  updatedAt: new Date(),
+});
+
 describe("PATCH /api/trips/:slug", () => {
-  it("accepts unauthenticated patches (free-for-all)", async () => {
+  it("anonymous trip — anyone may patch (free-for-all preserved)", async () => {
+    mockGet.mockResolvedValue(tripRow(null));
     mockUpdate.mockResolvedValue({
       id: "t1", slug: "tokyo", title: "Updated", sourceFilename: null, updatedAt: new Date(),
     });
@@ -201,7 +216,43 @@ describe("PATCH /api/trips/:slug", () => {
     expect(res.status).toBe(200);
   });
 
+  it("authed trip — anonymous caller gets 403", async () => {
+    mockGet.mockResolvedValue(tripRow("u1"));
+    const res = await app.request("/api/trips/tokyo", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title: "Updated" }),
+    });
+    expect(res.status).toBe(403);
+    expect(mockUpdate).not.toHaveBeenCalled();
+  });
+
+  it("authed trip — authed-but-not-owner caller gets 403", async () => {
+    mockGet.mockResolvedValue(tripRow("u1"));
+    const res = await app.request("/api/trips/tokyo", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", "X-Test-User": "u2" },
+      body: JSON.stringify({ title: "Updated" }),
+    });
+    expect(res.status).toBe(403);
+    expect(mockUpdate).not.toHaveBeenCalled();
+  });
+
+  it("authed trip — owner may patch", async () => {
+    mockGet.mockResolvedValue(tripRow("u1"));
+    mockUpdate.mockResolvedValue({
+      id: "t1", slug: "tokyo", title: "Updated", sourceFilename: null, updatedAt: new Date(),
+    });
+    const res = await app.request("/api/trips/tokyo", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", "X-Test-User": "u1" },
+      body: JSON.stringify({ title: "Updated" }),
+    });
+    expect(res.status).toBe(200);
+  });
+
   it("updates html + re-extracts title when no explicit title given", async () => {
+    mockGet.mockResolvedValue(tripRow("u1"));
     mockUpdate.mockResolvedValue({
       id: "t1", slug: "tokyo", title: "New Title", sourceFilename: null, updatedAt: new Date(),
     });
@@ -219,6 +270,7 @@ describe("PATCH /api/trips/:slug", () => {
   });
 
   it("explicit title in body overrides extraction", async () => {
+    mockGet.mockResolvedValue(tripRow("u1"));
     mockUpdate.mockResolvedValue({
       id: "t1", slug: "tokyo", title: "Override", sourceFilename: null, updatedAt: new Date(),
     });
@@ -231,6 +283,7 @@ describe("PATCH /api/trips/:slug", () => {
   });
 
   it("title-only update (no html) leaves title-passthrough explicit", async () => {
+    mockGet.mockResolvedValue(tripRow("u1"));
     mockUpdate.mockResolvedValue({
       id: "t1", slug: "tokyo", title: "Just A Rename", sourceFilename: null, updatedAt: new Date(),
     });
@@ -247,6 +300,7 @@ describe("PATCH /api/trips/:slug", () => {
   });
 
   it("400 when the body has nothing to update", async () => {
+    mockGet.mockResolvedValue(tripRow("u1"));
     const res = await app.request("/api/trips/tokyo", {
       method: "PATCH",
       headers: { "Content-Type": "application/json", "X-Test-User": "u1" },
@@ -257,16 +311,18 @@ describe("PATCH /api/trips/:slug", () => {
   });
 
   it("404 when slug missing", async () => {
-    mockUpdate.mockResolvedValue(null);
+    mockGet.mockResolvedValue(null);
     const res = await app.request("/api/trips/tokyo", {
       method: "PATCH",
       headers: { "Content-Type": "application/json", "X-Test-User": "u1" },
       body: JSON.stringify({ title: "x" }),
     });
     expect(res.status).toBe(404);
+    expect(mockUpdate).not.toHaveBeenCalled();
   });
 
   it("multipart upload replaces html + sourceFilename", async () => {
+    mockGet.mockResolvedValue(tripRow("u1"));
     mockUpdate.mockResolvedValue({
       id: "t1", slug: "tokyo", title: "Tokyo v2", sourceFilename: "tokyo_v2.html", updatedAt: new Date(),
     });
@@ -285,16 +341,46 @@ describe("PATCH /api/trips/:slug", () => {
 });
 
 describe("DELETE /api/trips/:slug", () => {
-  it("204 on successful delete (no auth required)", async () => {
+  it("anonymous trip — anyone may delete (free-for-all preserved)", async () => {
+    mockGet.mockResolvedValue(tripRow(null));
     mockDelete.mockResolvedValue(true);
     const res = await app.request("/api/trips/tokyo", { method: "DELETE" });
     expect(res.status).toBe(204);
     expect(mockDelete).toHaveBeenCalledWith("tokyo");
   });
 
+  it("authed trip — anonymous caller gets 403", async () => {
+    mockGet.mockResolvedValue(tripRow("u1"));
+    const res = await app.request("/api/trips/tokyo", { method: "DELETE" });
+    expect(res.status).toBe(403);
+    expect(mockDelete).not.toHaveBeenCalled();
+  });
+
+  it("authed trip — authed-but-not-owner caller gets 403", async () => {
+    mockGet.mockResolvedValue(tripRow("u1"));
+    const res = await app.request("/api/trips/tokyo", {
+      method: "DELETE",
+      headers: { "X-Test-User": "u2" },
+    });
+    expect(res.status).toBe(403);
+    expect(mockDelete).not.toHaveBeenCalled();
+  });
+
+  it("authed trip — owner may delete", async () => {
+    mockGet.mockResolvedValue(tripRow("u1"));
+    mockDelete.mockResolvedValue(true);
+    const res = await app.request("/api/trips/tokyo", {
+      method: "DELETE",
+      headers: { "X-Test-User": "u1" },
+    });
+    expect(res.status).toBe(204);
+    expect(mockDelete).toHaveBeenCalledWith("tokyo");
+  });
+
   it("404 when slug missing", async () => {
-    mockDelete.mockResolvedValue(false);
+    mockGet.mockResolvedValue(null);
     const res = await app.request("/api/trips/tokyo", { method: "DELETE" });
     expect(res.status).toBe(404);
+    expect(mockDelete).not.toHaveBeenCalled();
   });
 });

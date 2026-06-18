@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { zValidator } from "@hono/zod-validator";
 import { z } from "zod";
-import { optionalAuth } from "@/modules/auth/middleware";
+import { optionalAuth, requireScope } from "@/modules/auth/middleware";
 import { extractTitle } from "./title";
 import { createTrip, listTrips, getTripBySlug, updateTripBySlug, deleteTripBySlug } from "./repo";
 
@@ -25,12 +25,19 @@ const slugParam = z.object({
 });
 
 /**
- * Trips routes are a deliberate free-for-all: no auth on POST / PATCH /
- * DELETE. Personal site, sandboxed iframes mean uploaded HTML can't
- * touch the parent site. If abuse becomes a problem, re-add the auth
- * gates (the route names + handlers are unchanged — just slot in
- * requireAuth + requireScope("trips:write") between optionalAuth and
- * the handler body).
+ * Trips access policy:
+ *  - POST: open / anonymous-friendly. Drop-an-HTML-file UX is preserved.
+ *    Authed uploads stamp ownerId; anonymous uploads have ownerId === null.
+ *  - GET (list + by slug): open.
+ *  - PATCH /:slug, DELETE /:slug: gated on a per-trip basis.
+ *      * If the trip has ownerId === null (anonymous upload), the
+ *        free-for-all still applies — anyone (authed or not) can edit
+ *        or delete it. This keeps the open-pastebin contract.
+ *      * If the trip has ownerId !== null, only that owner can edit/delete.
+ *        Anonymous callers and authed-but-non-owner callers get 403.
+ *  - Browser sessions (JWT) bypass scope checks; PATs need the
+ *    trips:write scope (enforced by requireScope below). Sandboxed iframes
+ *    still contain whatever HTML lands.
  */
 
 /**
@@ -128,71 +135,102 @@ tripsRoutes.get("/:slug", zValidator("param", slugParam), async (c) => {
  * Slug is never changed by PATCH — that's the whole point of having an
  * update endpoint vs. delete-then-recreate.
  */
-tripsRoutes.patch("/:slug", zValidator("param", slugParam), async (c) => {
-  const slug = c.req.valid("param").slug;
-  const contentType = c.req.header("Content-Type") ?? "";
+tripsRoutes.patch(
+  "/:slug",
+  optionalAuth,
+  requireScope("trips:write"),
+  zValidator("param", slugParam),
+  async (c) => {
+    const slug = c.req.valid("param").slug;
 
-  let html: string | undefined;
-  let providedTitle: string | undefined;
-  let sourceFilename: string | null | undefined;
-
-  if (contentType.includes("multipart/form-data")) {
-    const form = await c.req.formData();
-    const file = form.get("file");
-    if (file instanceof File) {
-      if (file.size > 10 * 1024 * 1024) return c.json({ error: "File too large (max 10MB)" }, 413);
-      html = await file.text();
-      sourceFilename = file.name || null;
+    // Ownership check first — cheaper to fail fast on 403 than to parse the body.
+    const existing = await getTripBySlug(slug);
+    if (!existing) return c.json({ error: "Not found" }, 404);
+    const userId = c.get("userId") as string | null;
+    if (existing.ownerId !== null && existing.ownerId !== userId) {
+      return c.json({ error: "Only the owner can edit this trip" }, 403);
     }
-    const titleField = form.get("title");
-    if (typeof titleField === "string" && titleField.trim()) {
-      providedTitle = titleField.trim().slice(0, 200);
+
+    const contentType = c.req.header("Content-Type") ?? "";
+
+    let html: string | undefined;
+    let providedTitle: string | undefined;
+    let sourceFilename: string | null | undefined;
+
+    if (contentType.includes("multipart/form-data")) {
+      const form = await c.req.formData();
+      const file = form.get("file");
+      if (file instanceof File) {
+        if (file.size > 10 * 1024 * 1024) return c.json({ error: "File too large (max 10MB)" }, 413);
+        html = await file.text();
+        sourceFilename = file.name || null;
+      }
+      const titleField = form.get("title");
+      if (typeof titleField === "string" && titleField.trim()) {
+        providedTitle = titleField.trim().slice(0, 200);
+      }
+    } else {
+      const raw = await c.req.json().catch(() => null);
+      const parsed = jsonPatchBody.safeParse(raw);
+      if (!parsed.success) {
+        return c.json({ error: "Invalid JSON body", details: parsed.error.flatten() }, 400);
+      }
+      html = parsed.data.html;
+      providedTitle = parsed.data.title;
+      if (parsed.data.filename !== undefined) sourceFilename = parsed.data.filename;
     }
-  } else {
-    const raw = await c.req.json().catch(() => null);
-    const parsed = jsonPatchBody.safeParse(raw);
-    if (!parsed.success) {
-      return c.json({ error: "Invalid JSON body", details: parsed.error.flatten() }, 400);
+
+    if (html === undefined && providedTitle === undefined && sourceFilename === undefined) {
+      return c.json({ error: "Nothing to update — provide html, title, or filename" }, 400);
     }
-    html = parsed.data.html;
-    providedTitle = parsed.data.title;
-    if (parsed.data.filename !== undefined) sourceFilename = parsed.data.filename;
-  }
 
-  if (html === undefined && providedTitle === undefined && sourceFilename === undefined) {
-    return c.json({ error: "Nothing to update — provide html, title, or filename" }, 400);
-  }
+    // Re-extract title when html is replaced but no explicit title was given.
+    // Without this the old title would stick even after the content shifts.
+    let titleToWrite: string | undefined;
+    if (providedTitle !== undefined) {
+      titleToWrite = providedTitle;
+    } else if (html !== undefined) {
+      const extracted = extractTitle(html);
+      if (extracted) titleToWrite = extracted;
+    }
 
-  // Re-extract title when html is replaced but no explicit title was given.
-  // Without this the old title would stick even after the content shifts.
-  let titleToWrite: string | undefined;
-  if (providedTitle !== undefined) {
-    titleToWrite = providedTitle;
-  } else if (html !== undefined) {
-    const extracted = extractTitle(html);
-    if (extracted) titleToWrite = extracted;
-  }
+    const updated = await updateTripBySlug(slug, {
+      html,
+      title: titleToWrite,
+      sourceFilename,
+    });
+    if (!updated) return c.json({ error: "Not found" }, 404);
 
-  const updated = await updateTripBySlug(slug, {
-    html,
-    title: titleToWrite,
-    sourceFilename,
-  });
-  if (!updated) return c.json({ error: "Not found" }, 404);
+    return c.json({
+      trip: {
+        id: updated.id,
+        slug: updated.slug,
+        title: updated.title,
+        sourceFilename: updated.sourceFilename,
+        updatedAt: updated.updatedAt,
+      },
+    });
+  },
+);
 
-  return c.json({
-    trip: {
-      id: updated.id,
-      slug: updated.slug,
-      title: updated.title,
-      sourceFilename: updated.sourceFilename,
-      updatedAt: updated.updatedAt,
-    },
-  });
-});
-
-/** DELETE /api/trips/:slug — open. Anyone can delete any trip. */
-tripsRoutes.delete("/:slug", zValidator("param", slugParam), async (c) => {
-  const ok = await deleteTripBySlug(c.req.valid("param").slug);
-  return ok ? c.body(null, 204) : c.json({ error: "Not found" }, 404);
-});
+/**
+ * DELETE /api/trips/:slug — anonymous trips stay open (anyone deletes);
+ * authed trips are owner-only (403 otherwise).
+ */
+tripsRoutes.delete(
+  "/:slug",
+  optionalAuth,
+  requireScope("trips:write"),
+  zValidator("param", slugParam),
+  async (c) => {
+    const slug = c.req.valid("param").slug;
+    const existing = await getTripBySlug(slug);
+    if (!existing) return c.json({ error: "Not found" }, 404);
+    const userId = c.get("userId") as string | null;
+    if (existing.ownerId !== null && existing.ownerId !== userId) {
+      return c.json({ error: "Only the owner can delete this trip" }, 403);
+    }
+    const ok = await deleteTripBySlug(slug);
+    return ok ? c.body(null, 204) : c.json({ error: "Not found" }, 404);
+  },
+);
