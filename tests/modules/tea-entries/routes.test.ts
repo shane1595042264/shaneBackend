@@ -3,10 +3,11 @@ import { Hono } from "hono";
 import { __resetPinAttempts } from "@/modules/tea-entries/pin-rate-limit";
 import { __resetRateLimitBuckets } from "@/modules/shared/rate-limit";
 
-const { mockCreate, mockGetById, mockListForAuthor, mockDelete, mockUpdate } = vi.hoisted(() => ({
+const { mockCreate, mockGetById, mockListForAuthor, mockListPublic, mockDelete, mockUpdate } = vi.hoisted(() => ({
   mockCreate: vi.fn(),
   mockGetById: vi.fn(),
   mockListForAuthor: vi.fn(),
+  mockListPublic: vi.fn(),
   mockDelete: vi.fn(),
   mockUpdate: vi.fn(),
 }));
@@ -15,6 +16,7 @@ vi.mock("@/modules/tea-entries/repo", () => ({
   createTeaEntry: mockCreate,
   getTeaEntryById: mockGetById,
   listTeaEntriesForAuthor: mockListForAuthor,
+  listAllTeaEntriesPublic: mockListPublic,
   deleteTeaEntry: mockDelete,
   updateTeaEntry: mockUpdate,
   // Keep verifyPin real — it's a 4-line constant-time compare with no DB deps.
@@ -130,6 +132,41 @@ describe("GET /api/tea-entries", () => {
     const body = await res.json();
     expect(body.entries).toHaveLength(1);
     expect(mockListForAuthor).toHaveBeenCalledWith("u1");
+  });
+});
+
+describe("GET /api/tea-entries/public", () => {
+  it("returns teasers to anonymous callers without an auth header", async () => {
+    mockListPublic.mockResolvedValue([
+      {
+        id: VALID_UUID,
+        authorId: "u-author",
+        title: "T",
+        contentExcerpt: "first 500 chars",
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      },
+    ]);
+    const res = await app.request("/api/tea-entries/public");
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.entries).toHaveLength(1);
+    expect(body.entries[0].title).toBe("T");
+    expect(body.entries[0].contentExcerpt).toBe("first 500 chars");
+    expect(body.entries[0]).not.toHaveProperty("content");
+    expect(body.entries[0]).not.toHaveProperty("pin");
+    expect(mockListPublic).toHaveBeenCalled();
+  });
+
+  it("still returns teasers when a signed-in non-author calls it", async () => {
+    mockListPublic.mockResolvedValue([]);
+    const res = await app.request("/api/tea-entries/public", {
+      headers: { "X-Test-User": "u-other" },
+    });
+    expect(res.status).toBe(200);
+    expect(mockListPublic).toHaveBeenCalled();
+    // Author-scoped repo path must NOT run for the public feed.
+    expect(mockListForAuthor).not.toHaveBeenCalled();
   });
 });
 
