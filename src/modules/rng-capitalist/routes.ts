@@ -10,12 +10,27 @@ import { generateText } from "@/modules/shared/llm";
 import { calculateThreshold, rollD20, determineVerdict } from "./engine";
 import { createLinkToken, exchangePublicToken, getCurrentBalance, getLastMonthSpend, isPlaidConfigured } from "./plaid";
 import { requireAuth } from "@/modules/auth/middleware";
+import { createPATRateLimit } from "@/modules/shared/rate-limit";
 
 type AuthEnv = { Variables: { userId: string } };
 export const rngRoutes = new Hono<AuthEnv>();
 
 // All RNG routes require authentication
 rngRoutes.use("*", requireAuth);
+
+// Per-PAT rate limits. JWTs (browser sessions) bypass — tokenId is null.
+// evaluate fires the LLM (classifyProduct on URL scrape OR generateText on
+// manual input) on every request, so it gets the tight bucket — mirrors
+// vocabulary-enrich. plaid/* hits Plaid's API; shared bucket across link-token
+// and exchange is fine since both are low-frequency setup calls.
+const evaluateRateLimit = createPATRateLimit({
+  bucket: "rng-capitalist-evaluate",
+  limitPerMinute: 10,
+});
+const plaidRateLimit = createPATRateLimit({
+  bucket: "rng-capitalist-plaid",
+  limitPerMinute: 10,
+});
 
 // Server-side URL guard. The route is auth-gated, but the URL is fed straight
 // into fetch() inside the scraper — so format and protocol must be enforced
@@ -46,7 +61,7 @@ export const evaluateSchema = z.object({
   message: "Provide either a URL or product_name + price",
 });
 
-rngRoutes.post("/evaluate", zValidator("json", evaluateSchema), async (c) => {
+rngRoutes.post("/evaluate", evaluateRateLimit, zValidator("json", evaluateSchema), async (c) => {
   const body = c.req.valid("json");
   const userId = c.get("userId");
 
@@ -158,7 +173,7 @@ rngRoutes.get("/bans", async (c) => {
   return c.json({ bans });
 });
 
-rngRoutes.post("/plaid/link-token", async (c) => {
+rngRoutes.post("/plaid/link-token", plaidRateLimit, async (c) => {
   if (!isPlaidConfigured()) return c.json({ error: "Plaid not configured" }, 500);
   const userId = c.get("userId");
   const linkToken = await createLinkToken(userId);
@@ -166,7 +181,7 @@ rngRoutes.post("/plaid/link-token", async (c) => {
 });
 
 const exchangeSchema = z.object({ public_token: z.string() });
-rngRoutes.post("/plaid/exchange", zValidator("json", exchangeSchema), async (c) => {
+rngRoutes.post("/plaid/exchange", plaidRateLimit, zValidator("json", exchangeSchema), async (c) => {
   const userId = c.get("userId");
   const { public_token } = c.req.valid("json");
   await exchangePublicToken(public_token, userId);
