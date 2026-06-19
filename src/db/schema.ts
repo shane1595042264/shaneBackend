@@ -46,6 +46,10 @@ export const users = pgTable(
     // IANA TZ identifier the user posts in. Drives "today" calculation and
     // the [tz] tag shown to viewers in a different TZ.
     timezone: varchar("timezone", { length: 64 }).notNull().default("America/Chicago"),
+    // Optional 4-digit author-level PIN that unlocks every one of the user's
+    // tea entries (SHAN-320). When set, the per-entry PIN gate also accepts
+    // this value. Null = no universal PIN configured (default).
+    universalTeaPin: varchar("universal_tea_pin", { length: 4 }),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),

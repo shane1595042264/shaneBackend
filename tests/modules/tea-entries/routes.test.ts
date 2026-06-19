@@ -23,8 +23,13 @@ vi.mock("@/modules/tea-entries/repo", () => ({
   verifyPin: (a: string, b: string) => a === b,
 }));
 
+const { mockGetUniversalTeaPin } = vi.hoisted(() => ({
+  mockGetUniversalTeaPin: vi.fn().mockResolvedValue(null),
+}));
+
 vi.mock("@/modules/auth/user-prefs", () => ({
   getUserTimezone: vi.fn().mockResolvedValue("America/Chicago"),
+  getUniversalTeaPin: mockGetUniversalTeaPin,
   DEFAULT_TIMEZONE: "America/Chicago",
 }));
 
@@ -57,6 +62,8 @@ import { teaEntriesRoutes } from "@/modules/tea-entries/routes";
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // Default: no universal PIN set. Individual tests opt in by overriding.
+  mockGetUniversalTeaPin.mockResolvedValue(null);
   // Both rate limiters are module-level state; reset between cases so a
   // 429 hit in one test doesn't bleed into the next.
   __resetPinAttempts();
@@ -195,7 +202,7 @@ describe("GET /api/tea-entries/:id", () => {
     expect(body.entry.content).toBe("secret");
   });
 
-  it("401 to non-author with no PIN header", async () => {
+  it("401 to non-author with no PIN header returns authorId for localStorage lookup", async () => {
     mockGetById.mockResolvedValue({
       id: VALID_UUID,
       authorId: "u-author",
@@ -207,6 +214,9 @@ describe("GET /api/tea-entries/:id", () => {
       headers: { "X-Test-User": "u-other" },
     });
     expect(res.status).toBe(401);
+    const body = await res.json();
+    // Frontend uses authorId to key its per-author PIN cache.
+    expect(body.authorId).toBe("u-author");
   });
 
   it("403 to non-author with wrong PIN", async () => {
@@ -312,6 +322,97 @@ describe("GET /api/tea-entries/:id", () => {
     expect(ok.status).toBe(200);
     // 10 more wrong attempts should be needed to re-arm the limiter — verify
     // the 1st post-clear failure is back to 403 (not 429).
+    const stillOpen = await app.request(`/api/tea-entries/${VALID_UUID}`, {
+      headers: { "X-Tea-Pin": "0000" },
+    });
+    expect(stillOpen.status).toBe(403);
+  });
+
+  it("non-author with author's universal PIN unlocks the entry", async () => {
+    mockGetById.mockResolvedValue({
+      id: VALID_UUID,
+      authorId: "u-author",
+      title: null,
+      content: "secret",
+      pin: "1234",
+    });
+    mockGetUniversalTeaPin.mockResolvedValue("9999");
+    const res = await app.request(`/api/tea-entries/${VALID_UUID}`, {
+      headers: { "X-Test-User": "u-other", "X-Tea-Pin": "9999" },
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.isAuthor).toBe(false);
+    expect(body.entry.content).toBe("secret");
+    expect(body.entry).not.toHaveProperty("pin");
+    expect(mockGetUniversalTeaPin).toHaveBeenCalledWith("u-author");
+  });
+
+  it("per-entry PIN match short-circuits — does not look up universal PIN", async () => {
+    mockGetById.mockResolvedValue({
+      id: VALID_UUID,
+      authorId: "u-author",
+      title: null,
+      content: "secret",
+      pin: "1234",
+    });
+    const res = await app.request(`/api/tea-entries/${VALID_UUID}`, {
+      headers: { "X-Test-User": "u-other", "X-Tea-Pin": "1234" },
+    });
+    expect(res.status).toBe(200);
+    expect(mockGetUniversalTeaPin).not.toHaveBeenCalled();
+  });
+
+  it("wrong per-entry AND wrong universal both count as one strike, returns 403", async () => {
+    mockGetById.mockResolvedValue({
+      id: VALID_UUID,
+      authorId: "u-author",
+      title: null,
+      content: "secret",
+      pin: "1234",
+    });
+    mockGetUniversalTeaPin.mockResolvedValue("9999");
+    const res = await app.request(`/api/tea-entries/${VALID_UUID}`, {
+      headers: { "X-Test-User": "u-other", "X-Tea-Pin": "0000" },
+    });
+    expect(res.status).toBe(403);
+    // After this one strike the bucket should still be unblocked; 9 more
+    // wrong attempts must trip it (proving the universal-PIN miss did not
+    // double-charge the limiter).
+    for (let i = 0; i < 8; i++) {
+      const r = await app.request(`/api/tea-entries/${VALID_UUID}`, {
+        headers: { "X-Tea-Pin": "0000" },
+      });
+      expect(r.status).toBe(403);
+    }
+    const blocked = await app.request(`/api/tea-entries/${VALID_UUID}`, {
+      headers: { "X-Tea-Pin": "0000" },
+    });
+    expect(blocked.status).toBe(429);
+  });
+
+  it("universal-PIN unlock clears the per-entry rate limit bucket", async () => {
+    mockGetById.mockResolvedValue({
+      id: VALID_UUID,
+      authorId: "u-author",
+      title: null,
+      content: "secret",
+      pin: "1234",
+    });
+    mockGetUniversalTeaPin.mockResolvedValue("9999");
+    // Burn 9 strikes with a wrong PIN.
+    for (let i = 0; i < 9; i++) {
+      const r = await app.request(`/api/tea-entries/${VALID_UUID}`, {
+        headers: { "X-Tea-Pin": "0000" },
+      });
+      expect(r.status).toBe(403);
+    }
+    // Universal-PIN unlock clears the bucket.
+    const ok = await app.request(`/api/tea-entries/${VALID_UUID}`, {
+      headers: { "X-Tea-Pin": "9999" },
+    });
+    expect(ok.status).toBe(200);
+    // Next failure is a fresh strike — 403 not 429.
     const stillOpen = await app.request(`/api/tea-entries/${VALID_UUID}`, {
       headers: { "X-Tea-Pin": "0000" },
     });

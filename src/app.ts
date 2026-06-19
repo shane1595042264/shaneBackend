@@ -6,6 +6,7 @@ import { z } from "zod";
 import { journalRoutes } from "@/modules/journal/routes";
 import { rngRoutes } from "@/modules/rng-capitalist/routes";
 import { authRoutes } from "@/modules/auth/routes";
+import { userPrefsRoutes } from "@/modules/auth/user-prefs-routes";
 import { vocabularyRoutes } from "@/modules/vocabulary/routes";
 import { knowledgeRoutes } from "@/modules/knowledge/routes";
 import { slotRoutes } from "@/modules/slot-assignments/routes";
@@ -54,6 +55,7 @@ app.get("/health", async (c) => {
 // API routes
 // ---------------------------------------------------------------------------
 app.route("/api/auth", authRoutes);
+app.route("/api/user-prefs", userPrefsRoutes);
 app.route("/api/journal", journalRoutes);
 app.route("/api/activities", activitiesRoutes);
 app.route("/api/rng", rngRoutes);

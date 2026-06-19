@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import { z } from "zod";
 import { zValidator } from "@hono/zod-validator";
 import { optionalAuth, requireAuth, requireScope } from "@/modules/auth/middleware";
-import { getUserTimezone } from "@/modules/auth/user-prefs";
+import { getUniversalTeaPin, getUserTimezone } from "@/modules/auth/user-prefs";
 import {
   containsInFlightUpload,
   IN_FLIGHT_UPLOAD_MESSAGE,
@@ -150,9 +150,24 @@ teaEntriesRoutes.get(
 
     const submittedPin = c.req.header("X-Tea-Pin") ?? "";
     if (!/^\d{4}$/.test(submittedPin)) {
-      return c.json({ error: "PIN required" }, 401);
+      // 401 carries authorId so the frontend can look up a cached per-author
+      // PIN in localStorage and auto-retry without prompting (SHAN-320). The
+      // authorId is already public via the teaser feed, so leaking it here
+      // adds no new information.
+      return c.json({ error: "PIN required", authorId: row.authorId }, 401);
     }
-    if (!verifyPin(submittedPin, row.pin)) {
+    // Per-entry PIN match is the fast path; only fall back to the author's
+    // universal PIN if it's set (SHAN-320). Both compares are constant-time.
+    // A universal-PIN match unlocks the entry exactly like a per-entry match
+    // — same bucket clear, same response shape.
+    let unlocked = verifyPin(submittedPin, row.pin);
+    if (!unlocked) {
+      const universal = await getUniversalTeaPin(row.authorId);
+      if (universal && verifyPin(submittedPin, universal)) {
+        unlocked = true;
+      }
+    }
+    if (!unlocked) {
       const after = recordFailedPinAttempt(row.id);
       if (after.blocked) {
         return c.json(

@@ -1,0 +1,1 @@
+ALTER TABLE "users" ADD COLUMN "universal_tea_pin" varchar(4);

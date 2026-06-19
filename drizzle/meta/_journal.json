@@ -148,6 +148,13 @@
       "when": 1781294911085,
       "tag": "0020_shocking_punisher",
       "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1781877947170,
+      "tag": "0021_slim_karen_page",
+      "breakpoints": true
     }
   ]
 }
