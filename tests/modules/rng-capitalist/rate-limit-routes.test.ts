@@ -1,8 +1,8 @@
 // Per-PAT rate limits on the rng-capitalist write surface. evaluate fires the
 // LLM on every request (manual-input path → generateText, URL-scrape path →
-// classifyProduct), so it has its own tight bucket. plaid/link-token and
-// plaid/exchange share a bucket since they're both low-frequency setup calls
-// to Plaid's API. JWTs (no tokenId) bypass.
+// classifyProduct), so it has its own tight bucket. The plaid bucket covers
+// every endpoint that hits Plaid's API — plaid/link-token + plaid/exchange
+// (setup) and /budget (read-on-render). JWTs (no tokenId) bypass.
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { Hono } from "hono";
 import { __resetRateLimitBuckets } from "@/modules/shared/rate-limit";
@@ -244,5 +244,54 @@ describe("rng-capitalist write rate limits (per PAT)", () => {
     });
     expect(blocked.status).toBe(429);
     expect(blocked.headers.get("Retry-After")).toBe("60");
+  });
+
+  it("budget joins the plaid bucket — 429s a PAT after 10 GETs in a minute", async () => {
+    const headers = patHeaders();
+    mockGetCurrentBalance.mockResolvedValue(1000);
+    mockGetLastMonthSpend.mockResolvedValue(100);
+    for (let i = 0; i < 10; i++) {
+      const r = await app.request("/api/rng/budget", { headers });
+      expect(r.status).toBe(200);
+    }
+    const blocked = await app.request("/api/rng/budget", { headers });
+    expect(blocked.status).toBe(429);
+    expect(blocked.headers.get("Retry-After")).toBe("60");
+  });
+
+  it("JWT requests with no tokenId bypass the budget limiter", async () => {
+    const headers = jwtHeaders();
+    mockGetCurrentBalance.mockResolvedValue(1000);
+    mockGetLastMonthSpend.mockResolvedValue(100);
+    for (let i = 0; i < 15; i++) {
+      const r = await app.request("/api/rng/budget", { headers });
+      expect(r.status).toBe(200);
+    }
+  });
+
+  it("budget shares the plaid bucket with link-token + exchange (combined counter across all three)", async () => {
+    const headers = patHeaders();
+    mockGetCurrentBalance.mockResolvedValue(1000);
+    mockGetLastMonthSpend.mockResolvedValue(100);
+    // Mix all three plaid-bucket endpoints to hit 10 total.
+    for (let i = 0; i < 4; i++) {
+      const r = await app.request("/api/rng/budget", { headers });
+      expect(r.status).toBe(200);
+    }
+    for (let i = 0; i < 3; i++) {
+      const r = await app.request("/api/rng/plaid/link-token", { method: "POST", headers });
+      expect(r.status).toBe(200);
+    }
+    for (let i = 0; i < 3; i++) {
+      const r = await app.request("/api/rng/plaid/exchange", {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ public_token: "ptok-xyz" }),
+      });
+      expect(r.status).toBe(200);
+    }
+    // 11th plaid-bucket call — budget — is 429.
+    const blocked = await app.request("/api/rng/budget", { headers });
+    expect(blocked.status).toBe(429);
   });
 });

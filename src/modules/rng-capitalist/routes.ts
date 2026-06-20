@@ -21,8 +21,9 @@ rngRoutes.use("*", requireAuth);
 // Per-PAT rate limits. JWTs (browser sessions) bypass — tokenId is null.
 // evaluate fires the LLM (classifyProduct on URL scrape OR generateText on
 // manual input) on every request, so it gets the tight bucket — mirrors
-// vocabulary-enrich. plaid/* hits Plaid's API; shared bucket across link-token
-// and exchange is fine since both are low-frequency setup calls.
+// vocabulary-enrich. plaid bucket covers every endpoint that hits Plaid's API:
+// link-token + exchange (setup) and /budget (read-on-render, hits
+// accountsBalanceGet uncached per plaid.ts).
 const evaluateRateLimit = createPATRateLimit({
   bucket: "rng-capitalist-evaluate",
   limitPerMinute: 10,
@@ -154,7 +155,7 @@ is_entertainment: true if entertainment/luxury/want, false if necessity`,
   });
 });
 
-rngRoutes.get("/budget", async (c) => {
+rngRoutes.get("/budget", plaidRateLimit, async (c) => {
   const userId = c.get("userId");
   const balance = await getCurrentBalance(userId);
   const lastMonthSpend = await getLastMonthSpend(userId);
