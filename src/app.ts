@@ -19,6 +19,7 @@ import { loansRoutes } from "@/modules/loans/routes";
 import { practiceRoutes } from "@/modules/practice/routes";
 import { teaEntriesRoutes } from "@/modules/tea-entries/routes";
 import { isoDate } from "@/modules/shared/validators";
+import { notFoundHandler, errorHandler } from "@/modules/shared/http-errors";
 
 const app = new Hono();
 
@@ -184,5 +185,12 @@ app.get("/api/admin/test-llm", async (c) => {
     return c.json({ error: err.message }, 500);
   }
 });
+
+// ---------------------------------------------------------------------------
+// Fallthrough handlers — keep unmatched routes and uncaught errors on the same
+// JSON { error } shape as every real route (see modules/shared/http-errors).
+// ---------------------------------------------------------------------------
+app.notFound(notFoundHandler);
+app.onError(errorHandler);
 
 export default app;
