@@ -79,6 +79,7 @@ const dateParam = z.object({ date: isoDate });
 const listQuery = z.object({
   from: isoDate.optional(),
   to: isoDate.optional(),
+  q: z.string().trim().min(1).max(100).optional(),
   limit: z.coerce.number().int().min(1).max(100).default(50),
   cursor: z.string().optional(),
 });
@@ -92,9 +93,15 @@ const createBody = z.object({
 });
 
 journalRoutes.get("/entries", optionalAuth, zValidator("query", listQuery), async (c) => {
-  const q = c.req.valid("query");
-  const entries = await listEntries({ from: q.from, to: q.to, limit: q.limit, cursorDate: q.cursor });
-  const nextCursor = entries.length === q.limit ? entries[entries.length - 1].date : null;
+  const query = c.req.valid("query");
+  const entries = await listEntries({
+    from: query.from,
+    to: query.to,
+    q: query.q,
+    limit: query.limit,
+    cursorDate: query.cursor,
+  });
+  const nextCursor = entries.length === query.limit ? entries[entries.length - 1].date : null;
   return c.json({ entries, nextCursor });
 });
 

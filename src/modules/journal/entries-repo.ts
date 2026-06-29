@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { and, eq, desc, lt, gte, lte, sql } from "drizzle-orm";
+import { and, eq, desc, lt, gte, lte, or, ilike, sql } from "drizzle-orm";
 import { db } from "@/db/client";
 import { journalEntries, journalVersions, journalComments, journalAppends, users } from "@/db/schema";
 
@@ -71,6 +71,8 @@ export async function getEntryByDate(date: string) {
 export async function listEntries(opts: {
   from?: string;
   to?: string;
+  /** Case-insensitive content search across the current version body and any appends. */
+  q?: string;
   limit: number;
   cursorDate?: string;
 }) {
@@ -78,6 +80,16 @@ export async function listEntries(opts: {
   if (opts.cursorDate) where.push(lt(journalEntries.date, opts.cursorDate));
   if (opts.from) where.push(gte(journalEntries.date, opts.from));
   if (opts.to) where.push(lte(journalEntries.date, opts.to));
+  if (opts.q) {
+    // Escape LIKE wildcards so a literal % or _ in the query doesn't act as a pattern.
+    const pattern = `%${opts.q.replace(/[\\%_]/g, (ch) => `\\${ch}`)}%`;
+    where.push(
+      or(
+        ilike(journalVersions.content, pattern),
+        sql`EXISTS (SELECT 1 FROM ${journalAppends} WHERE ${journalAppends.entryId} = ${journalEntries.id} AND ${journalAppends.content} ILIKE ${pattern})`
+      )!
+    );
+  }
   const rows = await db
     .select({
       id: journalEntries.id,

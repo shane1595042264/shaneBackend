@@ -11,8 +11,8 @@ vi.mock("@/db/client", () => ({
   db: { select: mockSelect, insert: mockInsert, update: mockUpdate, transaction: mockTransaction },
 }));
 vi.mock("@/db/schema", () => ({
-  journalEntries: {},
-  journalVersions: {},
+  journalEntries: { id: {}, status: {}, date: {} },
+  journalVersions: { content: {} },
   journalComments: { entryId: {} },
   journalAppends: { entryId: {}, content: {}, createdAt: {} },
   users: { id: {}, name: {}, avatarUrl: {} },
@@ -20,11 +20,13 @@ vi.mock("@/db/schema", () => ({
 vi.mock("drizzle-orm", () => ({
   eq: vi.fn((c: unknown, v: unknown) => ({ c, v })),
   and: vi.fn((...args: unknown[]) => ({ and: args })),
+  or: vi.fn((...args: unknown[]) => ({ or: args })),
+  ilike: vi.fn((c: unknown, v: unknown) => ({ c, v, op: "ilike" })),
   desc: vi.fn((c: unknown) => ({ c, dir: "desc" })),
   lt: vi.fn((c: unknown, v: unknown) => ({ c, v, op: "lt" })),
   gte: vi.fn((c: unknown, v: unknown) => ({ c, v, op: "gte" })),
   lte: vi.fn((c: unknown, v: unknown) => ({ c, v, op: "lte" })),
-  sql: vi.fn(),
+  sql: vi.fn((..._args: unknown[]) => ({ sql: true })),
 }));
 
 function chain(rows: unknown[]) {
@@ -36,6 +38,7 @@ function chain(rows: unknown[]) {
 }
 
 import { createEntry, getEntryByDate, listEntries, softDeleteEntry, hashContent } from "@/modules/journal/entries-repo";
+import { ilike, or } from "drizzle-orm";
 
 beforeEach(() => vi.clearAllMocks());
 
@@ -125,6 +128,26 @@ describe("listEntries", () => {
     mockSelect.mockReturnValue(chain([{ id: "e1", date: "2026-04-15" }]));
     const out = await listEntries({ limit: 10, from: "2026-04-01", to: "2026-04-30" });
     expect(out).toHaveLength(1);
+  });
+
+  it("does not apply a content filter when q is absent", async () => {
+    mockSelect.mockReturnValue(chain([{ id: "e1", date: "2026-04-28" }]));
+    await listEntries({ limit: 10 });
+    expect(ilike).not.toHaveBeenCalled();
+    expect(or).not.toHaveBeenCalled();
+  });
+
+  it("applies a case-insensitive content filter when q is provided", async () => {
+    mockSelect.mockReturnValue(chain([{ id: "e1", date: "2026-04-28" }]));
+    await listEntries({ limit: 10, q: "hip hop" });
+    expect(ilike).toHaveBeenCalledWith(expect.anything(), "%hip hop%");
+    expect(or).toHaveBeenCalled();
+  });
+
+  it("escapes LIKE wildcards in q so they match literally", async () => {
+    mockSelect.mockReturnValue(chain([{ id: "e1", date: "2026-04-28" }]));
+    await listEntries({ limit: 10, q: "50%_off\\" });
+    expect(ilike).toHaveBeenCalledWith(expect.anything(), "%50\\%\\_off\\\\%");
   });
 
   it("requests a commentCount column on the select projection", async () => {
