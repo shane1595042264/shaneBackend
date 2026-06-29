@@ -20,6 +20,7 @@ import { practiceRoutes } from "@/modules/practice/routes";
 import { teaEntriesRoutes } from "@/modules/tea-entries/routes";
 import { isoDate } from "@/modules/shared/validators";
 import { notFoundHandler, errorHandler } from "@/modules/shared/http-errors";
+import { getVersionInfo } from "@/modules/shared/version";
 
 const app = new Hono();
 
@@ -42,13 +43,14 @@ app.use(
 // Health check
 // ---------------------------------------------------------------------------
 app.get("/health", async (c) => {
+  const version = getVersionInfo();
   try {
     const { getPool } = await import("@/db/client");
     await getPool().query("SELECT 1");
-    return c.json({ status: "ok", timestamp: new Date().toISOString() });
+    return c.json({ status: "ok", timestamp: new Date().toISOString(), ...version });
   } catch (err) {
     console.error("Health check DB failure:", err);
-    return c.json({ status: "unhealthy", timestamp: new Date().toISOString(), error: "database connection failed" }, 503);
+    return c.json({ status: "unhealthy", timestamp: new Date().toISOString(), error: "database connection failed", ...version }, 503);
   }
 });
 
