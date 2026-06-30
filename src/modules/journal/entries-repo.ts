@@ -4,6 +4,9 @@ import { db } from "@/db/client";
 import { journalEntries, journalVersions, journalComments, journalAppends, users } from "@/db/schema";
 
 const EXCERPT_SOURCE_LEN = 500;
+// When a content search (q) matches deep in the body, start the excerpt this many
+// chars before the first match so the matched term is visible in the result card.
+const SNIPPET_CONTEXT_BEFORE = 60;
 
 export function hashContent(content: string): string {
   return createHash("sha256").update(content).digest("hex");
@@ -90,6 +93,18 @@ export async function listEntries(opts: {
       )!
     );
   }
+  // Combined searchable text: current version body followed by all appends, in order.
+  const sourceText = sql`${journalVersions.content} || coalesce(
+        (SELECT E'\n\n' || string_agg(${journalAppends.content}, E'\n\n' ORDER BY ${journalAppends.createdAt} ASC)
+           FROM ${journalAppends}
+           WHERE ${journalAppends.entryId} = ${journalEntries.id}),
+        ''
+      )`;
+  // When searching, start the excerpt a small window before the first case-insensitive
+  // match so the matched term is visible in the result card; otherwise start at the top.
+  const excerptStart = opts.q
+    ? sql`greatest(1, position(lower(${opts.q}) in lower(${sourceText})) - ${SNIPPET_CONTEXT_BEFORE})`
+    : sql`1`;
   const rows = await db
     .select({
       id: journalEntries.id,
@@ -102,15 +117,7 @@ export async function listEntries(opts: {
       pendingSuggestionCount: journalEntries.pendingSuggestionCount,
       createdAt: journalEntries.createdAt,
       updatedAt: journalEntries.updatedAt,
-      contentExcerpt: sql<string | null>`substring(
-        ${journalVersions.content} || coalesce(
-          (SELECT E'\n\n' || string_agg(${journalAppends.content}, E'\n\n' ORDER BY ${journalAppends.createdAt} ASC)
-             FROM ${journalAppends}
-             WHERE ${journalAppends.entryId} = ${journalEntries.id}),
-          ''
-        )
-        from 1 for ${EXCERPT_SOURCE_LEN}
-      )`,
+      contentExcerpt: sql<string | null>`substring(${sourceText} from ${excerptStart} for ${EXCERPT_SOURCE_LEN})`,
       commentCount: sql<number>`(SELECT COUNT(*)::int FROM ${journalComments} WHERE ${journalComments.entryId} = ${journalEntries.id})`,
       appendCount: sql<number>`(SELECT COUNT(*)::int FROM ${journalAppends} WHERE ${journalAppends.entryId} = ${journalEntries.id})`,
       authorName: users.name,

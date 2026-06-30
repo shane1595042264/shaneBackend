@@ -171,6 +171,13 @@ describe("listEntries", () => {
     expect(projection).toHaveProperty("contentExcerpt");
   });
 
+  it("still projects a contentExcerpt when q is provided (match-centered branch)", async () => {
+    mockSelect.mockReturnValue(chain([{ id: "e1", date: "2026-04-28", contentExcerpt: "music" }]));
+    await listEntries({ limit: 10, q: "music" });
+    const projection = mockSelect.mock.calls[0][0];
+    expect(projection).toHaveProperty("contentExcerpt");
+  });
+
   it("projects authorName/authorAvatarUrl and maps them into author { id, name, avatarUrl }", async () => {
     mockSelect.mockReturnValue(
       chain([
