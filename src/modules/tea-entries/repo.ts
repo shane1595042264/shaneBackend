@@ -85,25 +85,6 @@ export async function listTeaEntriesForAuthor(authorId: string): Promise<TeaEntr
   return rows as TeaEntrySummary[];
 }
 
-// Public teaser list — every tea entry, no author filter. The route is
-// unauthenticated; only the title + first EXCERPT_SOURCE_LEN content chars
-// leave the DB (never the full content, never the PIN). The detail GET still
-// enforces the per-entry PIN gate.
-export async function listAllTeaEntriesPublic(): Promise<TeaEntrySummary[]> {
-  const rows = await db
-    .select({
-      id: teaEntries.id,
-      authorId: teaEntries.authorId,
-      title: teaEntries.title,
-      contentExcerpt: sql<string | null>`substring(${teaEntries.content} from 1 for ${EXCERPT_SOURCE_LEN})`,
-      createdAt: teaEntries.createdAt,
-      updatedAt: teaEntries.updatedAt,
-    })
-    .from(teaEntries)
-    .orderBy(desc(teaEntries.createdAt));
-  return rows as TeaEntrySummary[];
-}
-
 export async function deleteTeaEntry(id: string, authorId: string): Promise<boolean> {
   const result = await db
     .delete(teaEntries)

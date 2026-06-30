@@ -11,7 +11,6 @@ import {
   createTeaEntry,
   deleteTeaEntry,
   getTeaEntryById,
-  listAllTeaEntriesPublic,
   listTeaEntriesForAuthor,
   updateTeaEntry,
   verifyPin,
@@ -88,17 +87,6 @@ teaEntriesRoutes.post(
 teaEntriesRoutes.get("/", requireAuth, async (c) => {
   const userId = c.get("userId") as string;
   const entries = await listTeaEntriesForAuthor(userId);
-  return c.json({ entries });
-});
-
-// Public teaser feed — every tea entry, no auth, no PAT scope. Returns title
-// + ~500-char content excerpt + timestamps so /journal/tea can render to
-// anyone. Detail GET still gates on the per-entry PIN, so the excerpt is the
-// only thing that escapes the gate. Declared BEFORE the /:id route so the
-// literal segment wins routing (UUID validator on /:id would 400 "public"
-// otherwise — explicit > implicit).
-teaEntriesRoutes.get("/public", async (c) => {
-  const entries = await listAllTeaEntriesPublic();
   return c.json({ entries });
 });
 

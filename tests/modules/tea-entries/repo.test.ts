@@ -41,7 +41,6 @@ import {
   createTeaEntry,
   deleteTeaEntry,
   getTeaEntryById,
-  listAllTeaEntriesPublic,
   listTeaEntriesForAuthor,
   updateTeaEntry,
   verifyPin,
@@ -139,43 +138,6 @@ describe("listTeaEntriesForAuthor", () => {
     // wire payload bounded) or the `pin`.
     expect(projection).not.toHaveProperty("content");
     expect(projection).not.toHaveProperty("pin");
-  });
-});
-
-describe("listAllTeaEntriesPublic", () => {
-  it("returns teasers with no author filter and the excerpt projection (no content, no pin)", async () => {
-    mockSelect.mockReturnValue(
-      chain([
-        {
-          id: "tea-1",
-          authorId: "u1",
-          title: "T1",
-          contentExcerpt: "first 500 chars",
-          createdAt: new Date(),
-          updatedAt: new Date(),
-        },
-        {
-          id: "tea-2",
-          authorId: "u2",
-          title: null,
-          contentExcerpt: "another author's prefix",
-          createdAt: new Date(),
-          updatedAt: new Date(),
-        },
-      ]),
-    );
-    const out = await listAllTeaEntriesPublic();
-    expect(out).toHaveLength(2);
-    expect(out.map((r) => r.authorId).sort()).toEqual(["u1", "u2"]);
-    const projection = mockSelect.mock.calls[0][0];
-    expect(projection).toHaveProperty("contentExcerpt");
-    // The full content and pin must never escape the public projection.
-    expect(projection).not.toHaveProperty("content");
-    expect(projection).not.toHaveProperty("pin");
-    // No .where() invocation on the chain — public list spans every author.
-    const fromChain = mockSelect.mock.results[0].value;
-    expect(fromChain.from).toHaveBeenCalled();
-    expect(fromChain.where).not.toHaveBeenCalled();
   });
 });
 
