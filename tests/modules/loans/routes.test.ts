@@ -29,6 +29,7 @@ vi.mock("drizzle-orm", () => ({
   eq: vi.fn((c: unknown, v: unknown) => ({ eq: { c, v } })),
   and: vi.fn((...args: unknown[]) => ({ and: args })),
   desc: vi.fn((c: unknown) => ({ c, dir: "desc" })),
+  lt: vi.fn((c: unknown, v: unknown) => ({ lt: { c, v } })),
 }));
 
 vi.mock("@/modules/auth/middleware", () => ({
@@ -55,10 +56,16 @@ const ENTRY_ID = "11111111-1111-1111-1111-111111111111";
 function selectReturning(rows: unknown[]) {
   mockSelect.mockImplementation(() => ({
     from: () => ({
-      where: (clause: unknown) => {
-        const result = Promise.resolve(rows);
-        return Object.assign(result, {
-          orderBy: () => Promise.resolve(rows),
+      // .where() is awaited directly on the PATCH/DELETE lookup paths, and
+      // chained with .orderBy()[.limit()] on the GET list path. Support both:
+      // the returned promise resolves to rows, and also carries .orderBy(),
+      // whose result resolves to rows AND carries .limit() for opt-in paging.
+      where: () => {
+        const orderByResult = Object.assign(Promise.resolve(rows), {
+          limit: () => Promise.resolve(rows),
+        });
+        return Object.assign(Promise.resolve(rows), {
+          orderBy: () => orderByResult,
         });
       },
     }),
@@ -121,6 +128,50 @@ describe("GET /api/loans", () => {
     expect(body.entries).toHaveLength(1);
     expect(body.entries[0].amount).toBe(100.25);
     expect(body.entries[0].borrowerName).toBe("Alice");
+  });
+
+  it("bare list has nextCursor null (no pagination requested)", async () => {
+    selectReturning([makeRow(), makeRow({ id: "22222222-2222-2222-2222-222222222222" })]);
+    const res = await app.request("/api/loans", {
+      headers: { "X-Test-User": USER_A },
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.entries).toHaveLength(2);
+    expect(body.nextCursor).toBeNull();
+  });
+
+  it("returns nextCursor when a full page (length === limit) comes back", async () => {
+    const last = makeRow({
+      id: "22222222-2222-2222-2222-222222222222",
+      createdAt: new Date("2026-05-28T00:00:00Z"),
+    });
+    selectReturning([makeRow(), last]);
+    const res = await app.request("/api/loans?limit=2", {
+      headers: { "X-Test-User": USER_A },
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.entries).toHaveLength(2);
+    expect(body.nextCursor).toBe(last.createdAt.toISOString());
+  });
+
+  it("returns nextCursor null when the page is not full", async () => {
+    selectReturning([makeRow()]);
+    const res = await app.request("/api/loans?limit=5", {
+      headers: { "X-Test-User": USER_A },
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.entries).toHaveLength(1);
+    expect(body.nextCursor).toBeNull();
+  });
+
+  it("rejects an out-of-range limit", async () => {
+    const res = await app.request("/api/loans?limit=500", {
+      headers: { "X-Test-User": USER_A },
+    });
+    expect(res.status).toBe(400);
   });
 });
 
