@@ -24,6 +24,13 @@ const slugParam = z.object({
   slug: z.string().regex(/^[a-z0-9][a-z0-9-]{0,79}$/),
 });
 
+// Opt-in keyset pagination for the list endpoint. Both optional, so a
+// bare GET /api/trips keeps returning the full list (nextCursor null).
+const listQuery = z.object({
+  limit: z.coerce.number().int().min(1).max(100).optional(),
+  cursor: z.string().optional(),
+});
+
 /**
  * Trips access policy:
  *  - POST: open / anonymous-friendly. Drop-an-HTML-file UX is preserved.
@@ -110,10 +117,23 @@ tripsRoutes.post("/", optionalAuth, async (c) => {
   );
 });
 
-/** GET /api/trips — list metadata only (no html, keeps payload small) */
-tripsRoutes.get("/", async (c) => {
-  const trips = await listTrips();
-  return c.json({ trips });
+/**
+ * GET /api/trips — list metadata only (no html, keeps payload small).
+ *
+ * Opt-in pagination: pass ?limit=N (1..100) and optionally ?cursor=<ISO
+ * createdAt of the last item from the previous page>. With no params the
+ * full list is returned and nextCursor is null (legacy behavior). When a
+ * full page (length === limit) comes back, nextCursor is the createdAt of
+ * the last row so the caller can fetch the next page.
+ */
+tripsRoutes.get("/", zValidator("query", listQuery), async (c) => {
+  const { limit, cursor } = c.req.valid("query");
+  const trips = await listTrips({ limit, cursor });
+  const nextCursor =
+    limit && trips.length === limit
+      ? new Date(trips[trips.length - 1].createdAt).toISOString()
+      : null;
+  return c.json({ trips, nextCursor });
 });
 
 /** GET /api/trips/:slug — full row, including HTML */

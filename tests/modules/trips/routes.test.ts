@@ -159,11 +159,53 @@ describe("POST /api/trips (multipart)", () => {
 });
 
 describe("GET /api/trips", () => {
-  it("lists trips (anonymous OK)", async () => {
+  it("lists trips (anonymous OK); no params → full list, nextCursor null", async () => {
     mockList.mockResolvedValue([{ id: "t1", slug: "tokyo", title: "Tokyo" }]);
     const res = await app.request("/api/trips");
     expect(res.status).toBe(200);
-    expect((await res.json()).trips).toHaveLength(1);
+    const body = await res.json();
+    expect(body.trips).toHaveLength(1);
+    expect(body.nextCursor).toBeNull();
+    // Legacy behavior preserved: called with no bounds.
+    expect(mockList).toHaveBeenCalledWith({ limit: undefined, cursor: undefined });
+  });
+
+  it("passes limit + cursor through to the repo", async () => {
+    mockList.mockResolvedValue([]);
+    await app.request("/api/trips?limit=10&cursor=2026-01-01T00:00:00.000Z");
+    expect(mockList).toHaveBeenCalledWith({ limit: 10, cursor: "2026-01-01T00:00:00.000Z" });
+  });
+
+  it("returns nextCursor = last createdAt when a full page comes back", async () => {
+    const last = new Date("2026-02-01T12:00:00.000Z");
+    mockList.mockResolvedValue([
+      { id: "t1", slug: "a", title: "A", createdAt: new Date("2026-03-01T00:00:00.000Z") },
+      { id: "t2", slug: "b", title: "B", createdAt: last },
+    ]);
+    const res = await app.request("/api/trips?limit=2");
+    const body = await res.json();
+    expect(body.nextCursor).toBe(last.toISOString());
+  });
+
+  it("returns nextCursor null when fewer than limit rows come back (last page)", async () => {
+    mockList.mockResolvedValue([
+      { id: "t1", slug: "a", title: "A", createdAt: new Date("2026-03-01T00:00:00.000Z") },
+    ]);
+    const res = await app.request("/api/trips?limit=10");
+    const body = await res.json();
+    expect(body.nextCursor).toBeNull();
+  });
+
+  it("rejects an out-of-range limit at the validator (0)", async () => {
+    const res = await app.request("/api/trips?limit=0");
+    expect(res.status).toBe(400);
+    expect(mockList).not.toHaveBeenCalled();
+  });
+
+  it("rejects a non-numeric limit at the validator", async () => {
+    const res = await app.request("/api/trips?limit=abc");
+    expect(res.status).toBe(400);
+    expect(mockList).not.toHaveBeenCalled();
   });
 });
 

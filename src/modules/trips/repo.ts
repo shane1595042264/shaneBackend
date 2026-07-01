@@ -1,4 +1,4 @@
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, lt } from "drizzle-orm";
 import { db } from "@/db/client";
 import { trips, users } from "@/db/schema";
 import { generateUniqueSlug } from "./slug";
@@ -43,8 +43,28 @@ export async function createTrip(input: {
   return { ...row, ownerName: null };
 }
 
-export async function listTrips(): Promise<TripListItem[]> {
-  const rows = await db
+/**
+ * List trip metadata (no html), newest first.
+ *
+ * Pagination is opt-in and keyset-based, mirroring the journal
+ * /entries pattern:
+ *  - No opts → return every trip (unchanged legacy behavior).
+ *  - opts.limit → return at most `limit` rows.
+ *  - opts.cursor (ISO createdAt of the last row seen) → return only rows
+ *    strictly older than the cursor, so pages don't overlap.
+ * An invalid cursor string is ignored rather than throwing (the route
+ * validator already guards shape; this is defense in depth).
+ */
+export async function listTrips(opts: { limit?: number; cursor?: string } = {}): Promise<TripListItem[]> {
+  const conditions = [];
+  if (opts.cursor) {
+    const cursorDate = new Date(opts.cursor);
+    if (!Number.isNaN(cursorDate.getTime())) {
+      conditions.push(lt(trips.createdAt, cursorDate));
+    }
+  }
+
+  const query = db
     .select({
       id: trips.id,
       slug: trips.slug,
@@ -56,8 +76,10 @@ export async function listTrips(): Promise<TripListItem[]> {
     })
     .from(trips)
     .leftJoin(users, eq(users.id, trips.ownerId))
+    .where(conditions.length ? and(...conditions) : undefined)
     .orderBy(desc(trips.createdAt));
-  return rows;
+
+  return opts.limit ? await query.limit(opts.limit) : await query;
 }
 
 export async function getTripBySlug(slug: string): Promise<TripFull | null> {
