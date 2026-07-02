@@ -499,6 +499,10 @@ export const entryReactions = pgTable(
   },
   (t) => [
     unique("entry_reactions_user_id_entry_id_emoji_unique").on(t.userId, t.entryId, t.emoji),
+    // Reaction summaries filter by entry_id alone (summarizeEntryReactions).
+    // The composite unique above leads with user_id, so it can't serve that
+    // query — without this index it seq-scans the whole table.
+    index("entry_reactions_entry_id_idx").on(t.entryId),
   ]
 );
 
@@ -517,6 +521,10 @@ export const commentReactions = pgTable(
   },
   (t) => [
     unique("comment_reactions_user_id_comment_id_emoji_unique").on(t.userId, t.commentId, t.emoji),
+    // Filtered by comment_id alone (summarizeCommentReactions + comments-repo
+    // batch inArray). The composite unique leads with user_id and can't serve
+    // it, so this avoids a seq scan per comment-reaction lookup.
+    index("comment_reactions_comment_id_idx").on(t.commentId),
   ]
 );
 

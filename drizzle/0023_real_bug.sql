@@ -1,0 +1,2 @@
+CREATE INDEX "comment_reactions_comment_id_idx" ON "comment_reactions" USING btree ("comment_id");--> statement-breakpoint
+CREATE INDEX "entry_reactions_entry_id_idx" ON "entry_reactions" USING btree ("entry_id");
