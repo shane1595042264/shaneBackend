@@ -128,7 +128,7 @@ describe("GET /api/tea-entries", () => {
     expect(res.status).toBe(401);
   });
 
-  it("returns the author's tea entries", async () => {
+  it("returns the author's tea entries; bare GET yields the full list with nextCursor null", async () => {
     mockListForAuthor.mockResolvedValue([{ id: VALID_UUID, title: "T" }]);
     const res = await app.request("/api/tea-entries", {
       headers: { "X-Test-User": "u1" },
@@ -136,7 +136,50 @@ describe("GET /api/tea-entries", () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.entries).toHaveLength(1);
-    expect(mockListForAuthor).toHaveBeenCalledWith("u1");
+    expect(body.nextCursor).toBeNull();
+    // Opt-in pagination: no query params → limit/cursor undefined.
+    expect(mockListForAuthor).toHaveBeenCalledWith("u1", {
+      limit: undefined,
+      cursor: undefined,
+    });
+  });
+
+  it("with ?limit passes limit/cursor through and returns a nextCursor on a full page", async () => {
+    const created = new Date("2026-07-01T00:00:00.000Z");
+    mockListForAuthor.mockResolvedValue([
+      { id: VALID_UUID, title: "T", createdAt: created },
+    ]);
+    const res = await app.request("/api/tea-entries?limit=1&cursor=2026-07-02T00:00:00.000Z", {
+      headers: { "X-Test-User": "u1" },
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.entries).toHaveLength(1);
+    // length === limit → nextCursor is the last row's createdAt.
+    expect(body.nextCursor).toBe(created.toISOString());
+    expect(mockListForAuthor).toHaveBeenCalledWith("u1", {
+      limit: 1,
+      cursor: "2026-07-02T00:00:00.000Z",
+    });
+  });
+
+  it("returns nextCursor null when a page comes back short of the limit", async () => {
+    mockListForAuthor.mockResolvedValue([
+      { id: VALID_UUID, title: "T", createdAt: new Date("2026-07-01T00:00:00.000Z") },
+    ]);
+    const res = await app.request("/api/tea-entries?limit=10", {
+      headers: { "X-Test-User": "u1" },
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.nextCursor).toBeNull();
+  });
+
+  it("rejects a limit above 100", async () => {
+    const res = await app.request("/api/tea-entries?limit=101", {
+      headers: { "X-Test-User": "u1" },
+    });
+    expect(res.status).toBe(400);
   });
 });
 

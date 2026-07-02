@@ -1,5 +1,5 @@
 import { timingSafeEqual } from "node:crypto";
-import { and, desc, eq, sql } from "drizzle-orm";
+import { and, desc, eq, lt, sql } from "drizzle-orm";
 import { db } from "@/db/client";
 import { teaEntries } from "@/db/schema";
 
@@ -66,8 +66,24 @@ export async function getTeaEntryById(id: string): Promise<TeaEntryRow | null> {
   return (row as TeaEntryRow | undefined) ?? null;
 }
 
-export async function listTeaEntriesForAuthor(authorId: string): Promise<TeaEntrySummary[]> {
-  const rows = await db
+// Opt-in keyset pagination. With no opts the full list is returned (legacy
+// behavior). Pass { limit, cursor } to page: cursor is the ISO createdAt of the
+// last row from the previous page, seeked via the (author_id, created_at) index
+// (tea_entries_author_created_idx). Mirrors the loans/trips contract
+// (SHAN-335/336).
+export async function listTeaEntriesForAuthor(
+  authorId: string,
+  opts: { limit?: number; cursor?: string } = {},
+): Promise<TeaEntrySummary[]> {
+  const conditions = [eq(teaEntries.authorId, authorId)];
+  if (opts.cursor) {
+    const cursorDate = new Date(opts.cursor);
+    if (!Number.isNaN(cursorDate.getTime())) {
+      conditions.push(lt(teaEntries.createdAt, cursorDate));
+    }
+  }
+
+  const query = db
     .select({
       id: teaEntries.id,
       authorId: teaEntries.authorId,
@@ -80,8 +96,10 @@ export async function listTeaEntriesForAuthor(authorId: string): Promise<TeaEntr
       updatedAt: teaEntries.updatedAt,
     })
     .from(teaEntries)
-    .where(eq(teaEntries.authorId, authorId))
+    .where(and(...conditions))
     .orderBy(desc(teaEntries.createdAt));
+
+  const rows = opts.limit ? await query.limit(opts.limit) : await query;
   return rows as TeaEntrySummary[];
 }
 

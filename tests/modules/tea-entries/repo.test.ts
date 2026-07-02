@@ -22,6 +22,7 @@ vi.mock("@/db/schema", () => ({
 vi.mock("drizzle-orm", () => ({
   eq: vi.fn((c: unknown, v: unknown) => ({ c, v })),
   and: vi.fn((...args: unknown[]) => ({ and: args })),
+  lt: vi.fn((c: unknown, v: unknown) => ({ lt: [c, v] })),
   desc: vi.fn((c: unknown) => ({ c, dir: "desc" })),
   sql: Object.assign(
     (strings: TemplateStringsArray, ...values: unknown[]) => ({ kind: "sql", strings, values }),
@@ -138,6 +139,31 @@ describe("listTeaEntriesForAuthor", () => {
     // wire payload bounded) or the `pin`.
     expect(projection).not.toHaveProperty("content");
     expect(projection).not.toHaveProperty("pin");
+  });
+
+  it("no opts → no limit applied (full list, legacy behavior)", async () => {
+    const c = chain([]);
+    mockSelect.mockReturnValue(c);
+    await listTeaEntriesForAuthor("u1");
+    expect((c.limit as ReturnType<typeof vi.fn>)).not.toHaveBeenCalled();
+  });
+
+  it("limit opt applies .limit(); cursor opt adds a keyset lt() condition", async () => {
+    const c = chain([]);
+    mockSelect.mockReturnValue(c);
+    await listTeaEntriesForAuthor("u1", { limit: 5, cursor: "2026-07-02T00:00:00.000Z" });
+    expect((c.limit as ReturnType<typeof vi.fn>)).toHaveBeenCalledWith(5);
+    // and() wraps the author eq plus the cursor lt — two conditions.
+    const andArg = (c.where as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(andArg.and).toHaveLength(2);
+  });
+
+  it("ignores an unparseable cursor (no lt condition added)", async () => {
+    const c = chain([]);
+    mockSelect.mockReturnValue(c);
+    await listTeaEntriesForAuthor("u1", { limit: 5, cursor: "not-a-date" });
+    const andArg = (c.where as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(andArg.and).toHaveLength(1);
   });
 });
 

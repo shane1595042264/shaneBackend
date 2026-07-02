@@ -50,6 +50,14 @@ const createBody = z.object({
 
 const idParam = z.object({ id: z.string().uuid() });
 
+// Opt-in keyset pagination for the list endpoint. Both optional, so a bare
+// GET /api/tea-entries keeps returning the full list (nextCursor null). Mirrors
+// the loans/trips list contract (SHAN-336/335).
+const listQuery = z.object({
+  limit: z.coerce.number().int().min(1).max(100).optional(),
+  cursor: z.string().optional(),
+});
+
 teaEntriesRoutes.post(
   "/",
   requireAuth,
@@ -84,10 +92,20 @@ teaEntriesRoutes.post(
   },
 );
 
-teaEntriesRoutes.get("/", requireAuth, async (c) => {
+// Opt-in keyset pagination: pass ?limit=N (1..100) and optionally
+// ?cursor=<ISO createdAt of the last item from the previous page>. With no
+// params the full list is returned and nextCursor is null (legacy behavior).
+// When a full page (length === limit) comes back, nextCursor is the createdAt
+// of the last row so the caller can fetch the next page.
+teaEntriesRoutes.get("/", requireAuth, zValidator("query", listQuery), async (c) => {
   const userId = c.get("userId") as string;
-  const entries = await listTeaEntriesForAuthor(userId);
-  return c.json({ entries });
+  const { limit, cursor } = c.req.valid("query");
+  const entries = await listTeaEntriesForAuthor(userId, { limit, cursor });
+  const nextCursor =
+    limit && entries.length === limit
+      ? entries[entries.length - 1].createdAt.toISOString()
+      : null;
+  return c.json({ entries, nextCursor });
 });
 
 // Per-post auth: the author always gets the full row (content + pin display).
