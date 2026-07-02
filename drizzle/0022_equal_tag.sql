@@ -1,0 +1,2 @@
+ALTER TABLE "vocab_words" ADD COLUMN "memorization_locations" jsonb DEFAULT '[]'::jsonb;--> statement-breakpoint
+ALTER TABLE "vocab_words" ADD COLUMN "long_term_memorized" boolean DEFAULT false NOT NULL;

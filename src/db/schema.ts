@@ -264,6 +264,13 @@ export const vocabWords = pgTable(
     labels: jsonb("labels").default([]),
     aiMetadata: jsonb("ai_metadata"),
     source: jsonb("source"),
+    // Location-memorization technique (SHAN-339): distinct place-names where this
+    // card has been practiced. Once practiced at LONG_TERM_THRESHOLD (7) different
+    // locations the knowledge is considered long-term memorized. longTermMemorized
+    // is a denormalized flag (recomputed on every write) kept as its own column so
+    // it can be filtered on cheaply later.
+    memorizationLocations: jsonb("memorization_locations").default([]),
+    longTermMemorized: boolean("long_term_memorized").notNull().default(false),
     createdBy: uuid("created_by").references(() => users.id, { onDelete: "set null" }),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()

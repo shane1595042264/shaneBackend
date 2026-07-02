@@ -7,6 +7,7 @@ import { desc, eq, and, or, ilike, sql, inArray } from "drizzle-orm";
 import { enrichWord } from "@/modules/vocabulary/ai-enricher";
 import { classifyNote, type ClassificationSource } from "./classifier";
 import { postToBilibili } from "./bilibili";
+import { normalizeLocations, computeLongTermMemorized } from "./memorization";
 import { optionalAuth, requireAuth, requireScope } from "@/modules/auth/middleware";
 import { createPATRateLimit } from "@/modules/shared/rate-limit";
 import {
@@ -445,6 +446,10 @@ const updateWordSchema = z.object({
   partOfSpeech: z.string().optional(),
   exampleSentence: z.string().optional(),
   labels: z.array(z.string()).optional(),
+  // Location-memorization technique (SHAN-339): the distinct places this card has
+  // been practiced. long_term_memorized is derived server-side, never trusted from
+  // the client.
+  memorizationLocations: z.array(z.string()).optional(),
 });
 
 // Manual edit of an entry. Ownership rule mirrors DELETE: caller must be the
@@ -470,9 +475,19 @@ knowledgeRoutes.put(
       return c.json({ error: "You can only edit entries you created" }, 403);
     }
 
+    // Derive long_term_memorized from the (normalized) location set — never trust
+    // a client-supplied flag. Only touch these columns when the caller sent them.
+    const { memorizationLocations, ...rest } = body;
+    const patch: Record<string, unknown> = { ...rest, updatedAt: new Date() };
+    if (memorizationLocations !== undefined) {
+      const locations = normalizeLocations(memorizationLocations);
+      patch.memorizationLocations = locations;
+      patch.longTermMemorized = computeLongTermMemorized(locations);
+    }
+
     const [updated] = await db
       .update(vocabWords)
-      .set({ ...body, updatedAt: new Date() })
+      .set(patch)
       .where(eq(vocabWords.id, id))
       .returning();
 

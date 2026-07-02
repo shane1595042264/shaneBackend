@@ -38,6 +38,8 @@ vi.mock("@/db/schema", () => ({
   vocabWords: {
     id: "vocabWords.id",
     createdBy: "vocabWords.createdBy",
+    memorizationLocations: "vocabWords.memorizationLocations",
+    longTermMemorized: "vocabWords.longTermMemorized",
   },
   vocabConnections: {},
 }));
@@ -293,6 +295,59 @@ describe("PUT /api/knowledge/entries/:id — ownership (SHAN-222)", () => {
       body,
     });
     expect(res.status).toBe(200);
+  });
+
+  // SHAN-339: long_term_memorized is derived server-side from the normalized
+  // location set, never trusted from the client.
+  function captureUpdate() {
+    const setFn = vi.fn(() => ({
+      where: () => ({ returning: () => Promise.resolve([{ id: validId }]) }),
+    }));
+    mockUpdate.mockImplementation(() => ({ set: setFn }));
+    return setFn;
+  }
+
+  it("derives long_term_memorized=false below 7 distinct locations and normalizes them", async () => {
+    selectReturning([{ createdBy: "user-1" }]);
+    const setFn = captureUpdate();
+    const res = await app.request(`/api/knowledge/entries/${validId}`, {
+      method: "PUT",
+      headers: { ...jsonHeaders, "X-Test-User": "user-1" },
+      body: JSON.stringify({ memorizationLocations: ["Cafe", "cafe", " Library "] }),
+    });
+    expect(res.status).toBe(200);
+    const patch = setFn.mock.calls[0][0];
+    expect(patch.memorizationLocations).toEqual(["Cafe", "Library"]);
+    expect(patch.longTermMemorized).toBe(false);
+  });
+
+  it("derives long_term_memorized=true at 7 distinct locations", async () => {
+    selectReturning([{ createdBy: "user-1" }]);
+    const setFn = captureUpdate();
+    const res = await app.request(`/api/knowledge/entries/${validId}`, {
+      method: "PUT",
+      headers: { ...jsonHeaders, "X-Test-User": "user-1" },
+      body: JSON.stringify({
+        memorizationLocations: ["a", "b", "c", "d", "e", "f", "g"],
+      }),
+    });
+    expect(res.status).toBe(200);
+    const patch = setFn.mock.calls[0][0];
+    expect(patch.longTermMemorized).toBe(true);
+  });
+
+  it("does not touch memorization columns when the field is absent", async () => {
+    selectReturning([{ createdBy: "user-1" }]);
+    const setFn = captureUpdate();
+    const res = await app.request(`/api/knowledge/entries/${validId}`, {
+      method: "PUT",
+      headers: { ...jsonHeaders, "X-Test-User": "user-1" },
+      body: JSON.stringify({ definition: "edited" }),
+    });
+    expect(res.status).toBe(200);
+    const patch = setFn.mock.calls[0][0];
+    expect(patch).not.toHaveProperty("memorizationLocations");
+    expect(patch).not.toHaveProperty("longTermMemorized");
   });
 });
 
