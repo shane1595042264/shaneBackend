@@ -551,7 +551,7 @@ knowledgeRoutes.post("/entries/bulk-delete", requireAuth, zValidator("json", bul
 });
 
 // AI-enrich an existing entry
-knowledgeRoutes.post("/entries/:id/enrich", zValidator("param", uuidParamSchema), async (c) => {
+knowledgeRoutes.post("/entries/:id/enrich", requireAuth, requireScope("knowledge:write"), zValidator("param", uuidParamSchema), async (c) => {
   const { id } = c.req.valid("param");
   const [entry] = await db.select().from(vocabWords).where(eq(vocabWords.id, id));
   if (!entry) return c.json({ error: "Entry not found" }, 404);
@@ -601,7 +601,7 @@ knowledgeRoutes.get("/connections", zValidator("query", wordIdQuerySchema), asyn
   return c.json({ connections });
 });
 
-knowledgeRoutes.post("/connections", zValidator("json", createConnectionSchema), async (c) => {
+knowledgeRoutes.post("/connections", requireAuth, requireScope("knowledge:write"), zValidator("json", createConnectionSchema), async (c) => {
   const body = c.req.valid("json");
 
   if (body.fromWordId === body.toWordId) {
@@ -635,7 +635,7 @@ knowledgeRoutes.post("/connections", zValidator("json", createConnectionSchema),
   }
 });
 
-knowledgeRoutes.delete("/connections/:id", zValidator("param", uuidParamSchema), async (c) => {
+knowledgeRoutes.delete("/connections/:id", requireAuth, requireScope("knowledge:write"), zValidator("param", uuidParamSchema), async (c) => {
   const { id } = c.req.valid("param");
   const [deleted] = await db.delete(vocabConnections).where(eq(vocabConnections.id, id)).returning();
   if (!deleted) return c.json({ error: "Connection not found" }, 404);
