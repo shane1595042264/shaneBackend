@@ -84,6 +84,7 @@ vi.mock("@/modules/auth/middleware", () => ({
 }));
 
 import { vocabularyRoutes } from "@/modules/vocabulary/routes";
+import { enrichWord } from "@/modules/vocabulary/ai-enricher";
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -283,6 +284,40 @@ describe("POST /api/vocabulary/words/:id/enrich — auth gate", () => {
       headers: patHeaders({ scopes: "reactions:write" }),
     });
     expect(res.status).toBe(403);
+  });
+
+  // SHAN-344: never leak raw err.message (Postgres/driver internals or Anthropic
+  // API error bodies) to callers — mirrors the SHAN-343 hardening.
+  it("returns a generic 500 body (no raw driver text) when enrichment throws", async () => {
+    const secret =
+      "connection terminated: password authentication failed for user postgres";
+    selectRows([{ id: validId, word: "build", language: "en" }]);
+    vi.mocked(enrichWord).mockRejectedValueOnce(new Error(secret));
+
+    const res = await app.request(`/api/vocabulary/words/${validId}/enrich`, {
+      method: "POST",
+      headers: jwtHeaders("u-shane"),
+    });
+    expect(res.status).toBe(500);
+    const body = await res.json();
+    expect(body.error).toBe("Enrichment failed");
+    expect(JSON.stringify(body)).not.toContain("password");
+  });
+
+  it("maps LLM-provider exhaustion to a safe 502 without leaking provider internals", async () => {
+    selectRows([{ id: validId, word: "build", language: "en" }]);
+    vi.mocked(enrichWord).mockRejectedValueOnce(
+      new Error("All LLM providers failed. Anthropic: 401 invalid x-api-key; Groq: 429")
+    );
+
+    const res = await app.request(`/api/vocabulary/words/${validId}/enrich`, {
+      method: "POST",
+      headers: jwtHeaders("u-shane"),
+    });
+    expect(res.status).toBe(502);
+    const body = await res.json();
+    expect(JSON.stringify(body)).not.toContain("x-api-key");
+    expect(JSON.stringify(body)).not.toContain("Anthropic");
   });
 });
 

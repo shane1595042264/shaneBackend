@@ -91,6 +91,7 @@ vi.mock("@/modules/vocabulary/ai-enricher", () => ({
 }));
 
 import { knowledgeRoutes } from "@/modules/knowledge/routes";
+import { enrichWord } from "@/modules/vocabulary/ai-enricher";
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -418,6 +419,45 @@ describe("GET /api/knowledge/entries — source.app filter (SHAN-189)", () => {
     const body = await res.json();
     expect(body.error).toBe("Internal Server Error");
     expect(JSON.stringify(body)).not.toContain("password");
+  });
+});
+
+// SHAN-344: the /enrich handler must not leak raw err.message (Postgres/driver
+// internals or Anthropic API error bodies) to callers — the same class of leak
+// SHAN-343 closed on the list/notes endpoints.
+describe("POST /api/knowledge/entries/:id/enrich — no raw error leak (SHAN-344)", () => {
+  const validId = "11111111-1111-1111-1111-111111111111";
+
+  it("returns a generic 500 body (no raw driver text) when enrichment throws", async () => {
+    const secret =
+      "connection terminated: password authentication failed for user postgres";
+    selectReturning([{ id: validId, word: "build", language: "en" }]);
+    vi.mocked(enrichWord).mockRejectedValueOnce(new Error(secret));
+
+    const res = await app.request(`/api/knowledge/entries/${validId}/enrich`, {
+      method: "POST",
+      headers: { "X-Test-User": "user-1" },
+    });
+    expect(res.status).toBe(500);
+    const body = await res.json();
+    expect(body.error).toBe("Enrichment failed");
+    expect(JSON.stringify(body)).not.toContain("password");
+  });
+
+  it("maps LLM-provider exhaustion to a safe 502 without leaking provider internals", async () => {
+    selectReturning([{ id: validId, word: "build", language: "en" }]);
+    vi.mocked(enrichWord).mockRejectedValueOnce(
+      new Error("All LLM providers failed. Anthropic: 401 invalid x-api-key; Groq: 429")
+    );
+
+    const res = await app.request(`/api/knowledge/entries/${validId}/enrich`, {
+      method: "POST",
+      headers: { "X-Test-User": "user-1" },
+    });
+    expect(res.status).toBe(502);
+    const body = await res.json();
+    expect(JSON.stringify(body)).not.toContain("x-api-key");
+    expect(JSON.stringify(body)).not.toContain("Anthropic");
   });
 });
 

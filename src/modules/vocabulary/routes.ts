@@ -269,8 +269,18 @@ vocabularyRoutes.post(
 
       return c.json({ word: updated });
     } catch (err: any) {
-      console.error("[vocabulary] enrich error:", err.message);
-      return c.json({ error: `Enrichment failed: ${err.message}` }, 500);
+      console.error("[vocabulary] enrich error:", err.message, err.stack);
+      // Never leak raw err.message — it can carry Postgres/driver internals or
+      // Anthropic API error bodies. Match the SHAN-343 POST /notes contract:
+      // surface LLM-chain exhaustion as a safe 502 so callers can retry, and
+      // fold everything else into a generic 500.
+      if (err?.message?.includes("All LLM providers failed")) {
+        return c.json(
+          { error: "Language model providers are temporarily unavailable. Please retry." },
+          502
+        );
+      }
+      return c.json({ error: "Enrichment failed" }, 500);
     }
   }
 );
