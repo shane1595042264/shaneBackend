@@ -105,13 +105,22 @@ is_entertainment: true if entertainment/luxury/want, false if necessity`,
       scraped = await scrapeProductUrl(body.url!);
       avatarUrl = scraped.ogImage;
     } catch (err: any) {
-      return c.json({ error: `Failed to fetch URL: ${err.message}`, needs_manual: true }, 400);
+      // Never leak raw err.message — scraper failures carry network/driver
+      // internals (getaddrinfo ENOTFOUND, target host, etc.). Log the real
+      // error; return a safe, actionable message. Keep needs_manual so the
+      // frontend still offers the manual-entry fallback (lib/rng-api.ts).
+      console.error("[rng] scrapeProductUrl error:", err?.message, err?.stack);
+      return c.json({ error: "Could not fetch that URL. Please enter the product details manually.", needs_manual: true }, 400);
     }
 
     try {
       classified = await classifyProduct(scraped.html);
     } catch (err: any) {
-      return c.json({ error: err.message, needs_manual: true }, 400);
+      // classifyProduct routes through the shared LLM chain, whose exhaustion
+      // error embeds upstream API bodies ("All LLM providers failed. Anthropic:
+      // ...; Groq: ..."). Log it, surface a generic message, keep needs_manual.
+      console.error("[rng] classifyProduct error:", err?.message, err?.stack);
+      return c.json({ error: "Could not analyze that product automatically. Please enter the details manually.", needs_manual: true }, 400);
     }
 
     // If AI returned price 0 or negative, the scrape likely failed (CAPTCHA, blocked, etc.)
