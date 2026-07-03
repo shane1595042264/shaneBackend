@@ -21,6 +21,7 @@ import { teaEntriesRoutes } from "@/modules/tea-entries/routes";
 import { isoDate } from "@/modules/shared/validators";
 import { notFoundHandler, errorHandler } from "@/modules/shared/http-errors";
 import { getVersionInfo } from "@/modules/shared/version";
+import { isAdminAuthed } from "@/modules/shared/admin-auth";
 
 const app = new Hono();
 
@@ -77,8 +78,7 @@ app.route("/api/integrations/calendar", calendarConnectRoutes);
 // Admin — migrate vocabulary tables
 // ---------------------------------------------------------------------------
 app.post("/api/admin/migrate-vocabulary", async (c) => {
-  const adminToken = process.env.ADMIN_TOKEN;
-  if (adminToken && c.req.header("Authorization") !== `Bearer ${adminToken}`) {
+  if (!isAdminAuthed(c)) {
     return c.json({ error: "Unauthorized" }, 401);
   }
   try {
@@ -153,8 +153,7 @@ const adminDateParamSchema = z.object({ date: isoDate });
 
 // Debug: ingest only (fast, should finish within 30s)
 app.get("/api/admin/ingest/:date", zValidator("param", adminDateParamSchema), async (c) => {
-  const adminToken = process.env.ADMIN_TOKEN;
-  if (adminToken && c.req.header("Authorization") !== `Bearer ${adminToken}`) {
+  if (!isAdminAuthed(c)) {
     return c.json({ error: "Unauthorized" }, 401);
   }
   const { date } = c.req.valid("param");
@@ -170,8 +169,7 @@ app.get("/api/admin/ingest/:date", zValidator("param", adminDateParamSchema), as
 
 // Debug: test LLM fallback chain
 app.get("/api/admin/test-llm", async (c) => {
-  const adminToken = process.env.ADMIN_TOKEN;
-  if (adminToken && c.req.header("Authorization") !== `Bearer ${adminToken}`) {
+  if (!isAdminAuthed(c)) {
     return c.json({ error: "Unauthorized" }, 401);
   }
   try {
