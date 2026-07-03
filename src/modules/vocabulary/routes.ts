@@ -78,7 +78,8 @@ vocabularyRoutes.get("/words", zValidator("query", wordsQuerySchema), async (c) 
     return c.json({ words });
   } catch (err: any) {
     console.error("[vocabulary] GET /words error:", err.message, err.stack);
-    return c.json({ error: err.message }, 500);
+    // Don't leak raw DB/driver error text to callers — log it, return generic.
+    return c.json({ error: "Internal Server Error" }, 500);
   }
 });
 

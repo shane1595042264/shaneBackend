@@ -397,6 +397,28 @@ describe("GET /api/knowledge/entries — source.app filter (SHAN-189)", () => {
     const res = await app.request("/api/knowledge/entries?app=");
     expect(res.status).toBe(400);
   });
+
+  // SHAN-343: a DB/driver failure must not leak its raw message to callers.
+  it("returns a generic 500 body (no raw driver text) when the query throws", async () => {
+    const secret =
+      "connection terminated: password authentication failed for user postgres";
+    const rejecting: Record<string, unknown> = {};
+    for (const m of ["from", "where", "orderBy", "limit", "offset"]) {
+      rejecting[m] = vi.fn(() => rejecting);
+    }
+    // Build the rejection lazily inside then() so the handlers attach the
+    // instant the route awaits — no floating unhandled rejection.
+    Object.assign(rejecting, {
+      then: (r: any, j: any) => Promise.reject(new Error(secret)).then(r, j),
+    });
+    mockSelect.mockReturnValue(rejecting);
+
+    const res = await app.request("/api/knowledge/entries");
+    expect(res.status).toBe(500);
+    const body = await res.json();
+    expect(body.error).toBe("Internal Server Error");
+    expect(JSON.stringify(body)).not.toContain("password");
+  });
 });
 
 // The module's CLAUDE.md states the auth contract is "Requires either a JWT

@@ -255,8 +255,15 @@ knowledgeRoutes.post(
       // Distinguish LLM-chain exhaustion from generic backend errors so callers can
       // retry intelligently. The shared llm module throws this exact message string
       // when Anthropic, Gemini, and Groq have all failed (see shared/llm.ts:223).
-      const status = err?.message?.includes("All LLM providers failed") ? 502 : 500;
-      return c.json({ error: err.message }, status);
+      // Return safe, caller-actionable messages — never the raw err.message, which
+      // can carry Postgres/driver internals.
+      if (err?.message?.includes("All LLM providers failed")) {
+        return c.json(
+          { error: "Language model providers are temporarily unavailable. Please retry." },
+          502
+        );
+      }
+      return c.json({ error: "Internal Server Error" }, 500);
     }
   }
 );
@@ -342,7 +349,8 @@ knowledgeRoutes.get("/entries", zValidator("query", wordsQuerySchema), async (c)
     return c.json({ entries, total, limit, offset });
   } catch (err: any) {
     console.error("[knowledge] GET /entries error:", err.message, err.stack);
-    return c.json({ error: err.message }, 500);
+    // Don't leak raw DB/driver error text to callers — log it, return generic.
+    return c.json({ error: "Internal Server Error" }, 500);
   }
 });
 
