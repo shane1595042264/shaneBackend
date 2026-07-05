@@ -311,13 +311,18 @@ tripGroupsRoutes.post(
       return c.json({ suggestion: suggestionJson(suggestion), modelUsed }, 201);
     } catch (err) {
       const message = (err as Error).message;
+      console.error("[trip-groups] consolidate error:", message, (err as Error).stack);
       // Same contract as knowledge/routes.ts: 502 = upstream LLM trouble
-      // (chain exhausted or bad output), retryable; 500 = our bug.
-      const status =
-        message.includes("All LLM providers failed") || message.startsWith("AI ")
-          ? 502
-          : 500;
-      return c.json({ error: message }, status);
+      // (chain exhausted or bad output), retryable; 500 = our bug. Never leak
+      // the raw err.message — it can carry Postgres/driver internals or raw
+      // Anthropic API error bodies (SHAN-343/344/353).
+      if (message.includes("All LLM providers failed") || message.startsWith("AI ")) {
+        return c.json(
+          { error: "Language model providers are temporarily unavailable. Please retry." },
+          502,
+        );
+      }
+      return c.json({ error: "Failed to consolidate itinerary" }, 500);
     }
   },
 );
@@ -375,7 +380,11 @@ tripGroupsRoutes.post(
       const created = await insertEvents(accessToken, events);
       return c.json({ created, deletedPrevious: deleted, skippedDays });
     } catch (err) {
-      return c.json({ error: (err as Error).message }, 502);
+      // Never leak the raw err.message — Google Calendar API failures carry
+      // OAuth/token internals and raw upstream error bodies (SHAN-353). Log
+      // the detail server-side, return a generic retryable 502.
+      console.error("[trip-groups] calendar export error:", (err as Error).message, (err as Error).stack);
+      return c.json({ error: "Calendar export failed. Please retry." }, 502);
     }
   },
 );
