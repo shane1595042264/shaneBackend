@@ -105,6 +105,7 @@ function makeRow(overrides: Record<string, unknown> = {}) {
     currency: "USD",
     description: null,
     status: "outstanding",
+    direction: "owed_to_me",
     repaidAt: null,
     createdAt: new Date("2026-05-29T00:00:00Z"),
     updatedAt: new Date("2026-05-29T00:00:00Z"),
@@ -236,6 +237,39 @@ describe("POST /api/loans", () => {
     });
     expect(res.status).toBe(201);
   });
+
+  it("defaults direction to owed_to_me and serializes it", async () => {
+    insertReturning([makeRow()]);
+    const res = await app.request("/api/loans", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Test-User": USER_A },
+      body: JSON.stringify({ borrowerName: "Bob", amount: "10" }),
+    });
+    expect(res.status).toBe(201);
+    const body = await res.json();
+    expect(body.entry.direction).toBe("owed_to_me");
+  });
+
+  it("accepts direction i_owe", async () => {
+    insertReturning([makeRow({ direction: "i_owe" })]);
+    const res = await app.request("/api/loans", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Test-User": USER_A },
+      body: JSON.stringify({ borrowerName: "Khue", amount: "16", direction: "i_owe" }),
+    });
+    expect(res.status).toBe(201);
+    const body = await res.json();
+    expect(body.entry.direction).toBe("i_owe");
+  });
+
+  it("rejects an invalid direction", async () => {
+    const res = await app.request("/api/loans", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Test-User": USER_A },
+      body: JSON.stringify({ borrowerName: "Bob", amount: "10", direction: "sideways" }),
+    });
+    expect(res.status).toBe(400);
+  });
 });
 
 describe("PATCH /api/loans/:id — ownership + status", () => {
@@ -292,6 +326,19 @@ describe("PATCH /api/loans/:id — ownership + status", () => {
     expect(body.entry.status).toBe("repaid");
     expect(body.entry.repaidAt).not.toBeNull();
     expect(mockUpdate).toHaveBeenCalled();
+  });
+
+  it("updates direction", async () => {
+    selectReturning([makeRow({ direction: "owed_to_me" })]);
+    updateReturning([makeRow({ direction: "i_owe" })]);
+    const res = await app.request(`/api/loans/${ENTRY_ID}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", "X-Test-User": USER_A },
+      body: JSON.stringify({ direction: "i_owe" }),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.entry.direction).toBe("i_owe");
   });
 
   it("unmarks repaid and clears repaidAt", async () => {

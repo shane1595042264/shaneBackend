@@ -848,6 +848,9 @@ export const loanEntries = pgTable(
     currency: varchar("currency", { length: 3 }).notNull().default("USD"),
     description: text("description"),
     status: varchar("status", { length: 20 }).notNull().default("outstanding"),
+    // Which way the debt runs: "owed_to_me" (someone borrowed from Shane, the
+    // default and legacy behavior) or "i_owe" (Shane owes someone else).
+    direction: varchar("direction", { length: 20 }).notNull().default("owed_to_me"),
     repaidAt: timestamp("repaid_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),

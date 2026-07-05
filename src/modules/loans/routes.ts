@@ -23,11 +23,16 @@ const amountSchema = z
   .transform((v) => (typeof v === "number" ? v.toString() : v.trim()))
   .refine((s) => /^\d+(\.\d{1,2})?$/.test(s), { message: "amount must be a non-negative decimal with up to 2 fractional digits" });
 
+// "owed_to_me" = someone borrowed from Shane (default/legacy); "i_owe" = Shane
+// owes someone else.
+const directionSchema = z.enum(["owed_to_me", "i_owe"]);
+
 const createSchema = z.object({
   borrowerName: z.string().min(1).max(255),
   amount: amountSchema,
   currency: z.string().length(3).optional(),
   description: z.string().max(2000).optional().nullable(),
+  direction: directionSchema.optional(),
 });
 
 // Opt-in keyset pagination for the list endpoint. Both optional, so a bare
@@ -45,6 +50,7 @@ const patchSchema = z
     currency: z.string().length(3).optional(),
     description: z.string().max(2000).optional().nullable(),
     status: z.enum(["outstanding", "repaid"]).optional(),
+    direction: directionSchema.optional(),
   })
   .refine((d) => Object.keys(d).length > 0, { message: "no fields to update" });
 
@@ -57,6 +63,7 @@ function serialize(row: typeof loanEntries.$inferSelect) {
     currency: row.currency,
     description: row.description,
     status: row.status,
+    direction: row.direction,
     repaidAt: row.repaidAt?.toISOString() ?? null,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
@@ -108,6 +115,7 @@ loansRoutes.post("/", zValidator("json", createSchema), async (c) => {
       amount: body.amount,
       currency: body.currency ?? "USD",
       description: body.description ?? null,
+      direction: body.direction ?? "owed_to_me",
     })
     .returning();
   return c.json({ entry: serialize(row) }, 201);
@@ -132,6 +140,7 @@ loansRoutes.patch(
     if (body.amount !== undefined) patch.amount = body.amount;
     if (body.currency !== undefined) patch.currency = body.currency;
     if (body.description !== undefined) patch.description = body.description;
+    if (body.direction !== undefined) patch.direction = body.direction;
     if (body.status !== undefined) {
       patch.status = body.status;
       // Stamp repaidAt when transitioning to repaid; clear it on the reverse.

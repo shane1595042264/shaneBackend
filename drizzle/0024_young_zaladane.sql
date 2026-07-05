@@ -1,0 +1,1 @@
+ALTER TABLE "loan_entries" ADD COLUMN "direction" varchar(20) DEFAULT 'owed_to_me' NOT NULL;
