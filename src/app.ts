@@ -140,7 +140,11 @@ app.post("/api/admin/migrate-vocabulary", async (c) => {
     `);
     return c.json({ ok: true, message: "Vocabulary/Knowledge tables created" });
   } catch (err: any) {
-    return c.json({ error: err.message }, 500);
+    // SHAN-351: log the real error server-side; never leak raw driver/DB
+    // internals in the response body (matches SHAN-344/346 + the global
+    // errorHandler in modules/shared/http-errors).
+    console.error("[admin] migrate-vocabulary failed:", err);
+    return c.json({ error: "Migration failed" }, 500);
   }
 });
 
@@ -162,8 +166,9 @@ app.get("/api/admin/ingest/:date", zValidator("param", adminDateParamSchema), as
     const ingested = await ingestActivities(date);
     return c.json({ ok: true, date, ingested });
   } catch (err: any) {
+    // SHAN-351: log real error server-side; return a safe generic message.
     console.error(`[admin] Ingest failed for ${date}:`, err);
-    return c.json({ error: err.message }, 500);
+    return c.json({ error: "Ingestion failed" }, 500);
   }
 });
 
@@ -181,8 +186,10 @@ app.get("/api/admin/test-llm", async (c) => {
     });
     return c.json({ ok: true, text: result.text, usage: result.usage });
   } catch (err: any) {
+    // SHAN-351: LLM-chain-exhaustion errors embed upstream provider bodies
+    // (incl. API keys). Log server-side; return a safe generic message only.
     console.error(`[admin] test-llm failed:`, err);
-    return c.json({ error: err.message }, 500);
+    return c.json({ error: "LLM test failed" }, 500);
   }
 });
 
