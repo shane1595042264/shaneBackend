@@ -270,6 +270,43 @@ describe("POST /api/loans", () => {
     });
     expect(res.status).toBe(400);
   });
+
+  it("rejects a non-alphabetic currency code", async () => {
+    const res = await app.request("/api/loans", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Test-User": USER_A },
+      body: JSON.stringify({ borrowerName: "Bob", amount: "10", currency: "123" }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it("rejects a 3-char currency containing a space", async () => {
+    const res = await app.request("/api/loans", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Test-User": USER_A },
+      body: JSON.stringify({ borrowerName: "Bob", amount: "10", currency: "us " }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it("normalizes a lowercase currency to uppercase before persisting", async () => {
+    let inserted: Record<string, unknown> | undefined;
+    mockInsert.mockImplementation(() => ({
+      values: (v: Record<string, unknown>) => {
+        inserted = v;
+        return { returning: () => Promise.resolve([makeRow({ currency: v.currency })]) };
+      },
+    }));
+    const res = await app.request("/api/loans", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Test-User": USER_A },
+      body: JSON.stringify({ borrowerName: "Bob", amount: "10", currency: "eur" }),
+    });
+    expect(res.status).toBe(201);
+    expect(inserted?.currency).toBe("EUR");
+    const body = await res.json();
+    expect(body.entry.currency).toBe("EUR");
+  });
 });
 
 describe("PATCH /api/loans/:id — ownership + status", () => {

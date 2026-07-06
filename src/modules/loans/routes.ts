@@ -27,10 +27,19 @@ const amountSchema = z
 // owes someone else.
 const directionSchema = z.enum(["owed_to_me", "i_owe"]);
 
+// ISO 4217 shape: exactly three alphabetic characters, normalized to uppercase.
+// Rejects junk like "123", "$$$", or "us " (3 chars with a space) that a bare
+// .length(3) would let through into the ledger, and stores "usd" as "USD".
+const currencySchema = z
+  .string()
+  .length(3)
+  .regex(/^[A-Za-z]{3}$/, "currency must be a 3-letter ISO 4217 code")
+  .transform((s) => s.toUpperCase());
+
 const createSchema = z.object({
   borrowerName: z.string().min(1).max(255),
   amount: amountSchema,
-  currency: z.string().length(3).optional(),
+  currency: currencySchema.optional(),
   description: z.string().max(2000).optional().nullable(),
   direction: directionSchema.optional(),
 });
@@ -47,7 +56,7 @@ const patchSchema = z
   .object({
     borrowerName: z.string().min(1).max(255).optional(),
     amount: amountSchema.optional(),
-    currency: z.string().length(3).optional(),
+    currency: currencySchema.optional(),
     description: z.string().max(2000).optional().nullable(),
     status: z.enum(["outstanding", "repaid"]).optional(),
     direction: directionSchema.optional(),
