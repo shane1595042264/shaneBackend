@@ -11,6 +11,7 @@ import {
   updateSkincareProduct,
   type SkincareProductRow,
 } from "./repo";
+import { searchProducts } from "./search";
 
 // Per-PAT 60s rolling write limit. JWT browser sessions bypass. Distinct
 // bucket so a busy skincare updater doesn't lock out their journal/tea writes.
@@ -54,6 +55,10 @@ const reorderBody = z.object({
   orderedIds: z.array(z.string().uuid()).min(1).max(100),
 });
 
+const searchQuery = z.object({
+  q: z.string().trim().min(2).max(100),
+});
+
 function serialize(row: SkincareProductRow) {
   return {
     id: row.id,
@@ -78,6 +83,21 @@ skincareRoutes.get("/", requireAuth, async (c) => {
   const night = rows.filter((r) => r.timeOfDay === "night").map(serialize);
   return c.json({ morning, night });
 });
+
+// Product-search autofill for the add form. Read-only proxy to Open Beauty
+// Facts (see ./search). requireAuth (not requireScope) — it's a read, and the
+// browser typeahead runs on a JWT session. Always 200 with a list; the proxy
+// swallows upstream errors and returns [] so the form degrades to manual entry.
+skincareRoutes.get(
+  "/search",
+  requireAuth,
+  zValidator("query", searchQuery),
+  async (c) => {
+    const { q } = c.req.valid("query");
+    const results = await searchProducts(q);
+    return c.json({ results });
+  },
+);
 
 skincareRoutes.post(
   "/",
