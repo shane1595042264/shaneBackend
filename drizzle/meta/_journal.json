@@ -176,6 +176,13 @@
       "when": 1783268170085,
       "tag": "0024_young_zaladane",
       "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1783476392071,
+      "tag": "0025_majestic_sphinx",
+      "breakpoints": true
     }
   ]
 }

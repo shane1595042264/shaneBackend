@@ -949,3 +949,35 @@ export const practiceSettings = pgTable("practice_settings", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   updatedBy: uuid("updated_by").references(() => users.id, { onDelete: "set null" }),
 });
+
+// ------------------------------------------------------------------
+// skincare_products — "Skincare" element (SHAN-364 Phase 1, SHAN-365)
+// Per-user list of skincare products, split into a morning and a night
+// routine (timeOfDay). Each product carries a free-arrange `position`
+// within its routine (drag/arrow reorder, imitating the trips element)
+// and a `startedAt` timestamp — the "consistency timer" start, so the
+// frontend can render "Day N" since the routine was started. Image URL
+// is nullable now (manual entry in Phase 2); auto-fetch lands in Phase 3.
+// ------------------------------------------------------------------
+export const skincareProducts = pgTable(
+  "skincare_products",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    // "morning" | "night" — enforced by the zod schema in routes.ts.
+    timeOfDay: varchar("time_of_day", { length: 10 }).notNull(),
+    name: text("name").notNull(),
+    brand: text("brand"),
+    imageUrl: text("image_url"),
+    position: integer("position").notNull(),
+    // Streak/timer anchor: when the product (and thus the routine) started.
+    startedAt: timestamp("started_at", { withTimezone: true }).notNull().defaultNow(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("skincare_products_user_time_pos_idx").on(t.userId, t.timeOfDay, t.position),
+  ],
+);
