@@ -81,6 +81,9 @@ import { journalRoutes } from "@/modules/journal/routes";
 beforeEach(() => vi.clearAllMocks());
 const app = new Hono().route("/api/journal", journalRoutes);
 
+// Valid UUID for :id path params — routes now reject malformed UUIDs with 400.
+const CID = "22222222-2222-4222-8222-222222222222";
+
 describe("GET /api/journal/entries/:date/comments", () => {
   it("returns the comment list", async () => {
     mockGetByDate.mockResolvedValue({ entry: { id: "e1" }, currentVersion: {} });
@@ -136,7 +139,7 @@ describe("POST /api/journal/entries/:date/comments", () => {
 describe("PATCH /api/journal/comments/:id", () => {
   it("updates when caller is author", async () => {
     mockUpdateComment.mockResolvedValue({ id: "c1", content: "edited" });
-    const res = await app.request("/api/journal/comments/c1", {
+    const res = await app.request(`/api/journal/comments/${CID}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json", "X-Test-User": "u1" },
       body: JSON.stringify({ content: "edited" }),
@@ -146,7 +149,7 @@ describe("PATCH /api/journal/comments/:id", () => {
 
   it("404 when not author / not found", async () => {
     mockUpdateComment.mockResolvedValue(null);
-    const res = await app.request("/api/journal/comments/c1", {
+    const res = await app.request(`/api/journal/comments/${CID}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json", "X-Test-User": "u1" },
       body: JSON.stringify({ content: "x" }),
@@ -158,7 +161,7 @@ describe("PATCH /api/journal/comments/:id", () => {
 describe("DELETE /api/journal/comments/:id", () => {
   it("204 when caller is permitted", async () => {
     mockDeleteComment.mockResolvedValue(true);
-    const res = await app.request("/api/journal/comments/c1", {
+    const res = await app.request(`/api/journal/comments/${CID}`, {
       method: "DELETE",
       headers: { "X-Test-User": "u1" },
     });
@@ -167,7 +170,7 @@ describe("DELETE /api/journal/comments/:id", () => {
 
   it("404 when caller is not permitted", async () => {
     mockDeleteComment.mockResolvedValue(false);
-    const res = await app.request("/api/journal/comments/c1", {
+    const res = await app.request(`/api/journal/comments/${CID}`, {
       method: "DELETE",
       headers: { "X-Test-User": "stranger" },
     });

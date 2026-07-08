@@ -92,6 +92,9 @@ import { journalRoutes } from "@/modules/journal/routes";
 beforeEach(() => vi.clearAllMocks());
 const app = new Hono().route("/api/journal", journalRoutes);
 
+// Valid UUID for :id path params — routes now reject malformed UUIDs with 400.
+const CID = "33333333-3333-4333-8333-333333333333";
+
 describe("POST /api/journal/entries/:date/reactions", () => {
   it("toggles 'added' on first call", async () => {
     mockGetByDate.mockResolvedValue({ entry: { id: "e1" }, currentVersion: {} });
@@ -150,18 +153,19 @@ describe("POST /api/journal/comments/:id/reactions", () => {
   it("toggles 'added'", async () => {
     mockGetComment.mockResolvedValue({ id: "c1" });
     mockToggleComment.mockResolvedValue("added");
-    const res = await app.request("/api/journal/comments/c1/reactions", {
+    const res = await app.request(`/api/journal/comments/${CID}/reactions`, {
       method: "POST",
       headers: { "Content-Type": "application/json", "X-Test-User": "u1" },
       body: JSON.stringify({ emoji: "heart" }),
     });
     expect(res.status).toBe(200);
     expect((await res.json()).result).toBe("added");
-    expect(mockToggleComment).toHaveBeenCalledWith("u1", "c1", "heart");
+    expect(mockToggleComment).toHaveBeenCalledWith("u1", CID, "heart");
   });
 
   it("400 on invalid emoji", async () => {
-    const res = await app.request("/api/journal/comments/c1/reactions", {
+    mockGetComment.mockResolvedValue({ id: "c1" });
+    const res = await app.request(`/api/journal/comments/${CID}/reactions`, {
       method: "POST",
       headers: { "Content-Type": "application/json", "X-Test-User": "u1" },
       body: JSON.stringify({ emoji: "thumbsup" }),
@@ -171,7 +175,7 @@ describe("POST /api/journal/comments/:id/reactions", () => {
 
   it("404 when comment missing", async () => {
     mockGetComment.mockResolvedValue(null);
-    const res = await app.request("/api/journal/comments/c1/reactions", {
+    const res = await app.request(`/api/journal/comments/${CID}/reactions`, {
       method: "POST",
       headers: { "Content-Type": "application/json", "X-Test-User": "u1" },
       body: JSON.stringify({ emoji: "heart" }),
@@ -213,7 +217,7 @@ describe("GET /api/journal/comments/:id/reactions", () => {
     mockGetComment.mockResolvedValue({ id: "c1" });
     mockSummarizeComment.mockResolvedValue([{ emoji: "hooray", count: 2 }]);
     mockListMyCommentReactions.mockResolvedValue([{ emoji: "hooray" }]);
-    const res = await app.request("/api/journal/comments/c1/reactions", { headers: { "X-Test-User": "u1" } });
+    const res = await app.request(`/api/journal/comments/${CID}/reactions`, { headers: { "X-Test-User": "u1" } });
     const body = await res.json();
     expect(body.summary).toEqual([{ emoji: "hooray", count: 2 }]);
     expect(body.mine).toEqual(["hooray"]);
@@ -221,7 +225,7 @@ describe("GET /api/journal/comments/:id/reactions", () => {
 
   it("404 when comment missing", async () => {
     mockGetComment.mockResolvedValue(null);
-    const res = await app.request("/api/journal/comments/c1/reactions");
+    const res = await app.request(`/api/journal/comments/${CID}/reactions`);
     expect(res.status).toBe(404);
     expect(mockSummarizeComment).not.toHaveBeenCalled();
   });

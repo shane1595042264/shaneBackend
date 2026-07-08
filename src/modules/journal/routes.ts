@@ -75,6 +75,10 @@ type Vars = { Variables: { userId: string | null; tokenScopes: string[] | null }
 export const journalRoutes = new Hono<Vars>();
 
 const dateParam = z.object({ date: isoDate });
+// Guards the :id path param on suggestion/comment routes. Without this a
+// malformed id reaches the Postgres uuid column and throws "invalid input
+// syntax for type uuid", surfacing as a misleading 500 instead of a 400.
+const uuidParam = z.object({ id: z.string().uuid() });
 
 const listQuery = z.object({
   from: isoDate.optional(),
@@ -346,8 +350,8 @@ journalRoutes.get(
   }
 );
 
-journalRoutes.get("/suggestions/:id", optionalAuth, async (c) => {
-  const row = await getSuggestion(c.req.param("id"));
+journalRoutes.get("/suggestions/:id", optionalAuth, zValidator("param", uuidParam), async (c) => {
+  const row = await getSuggestion(c.req.valid("param").id);
   if (!row) return c.json({ error: "Not found" }, 404);
   return c.json({ suggestion: row });
 });
@@ -357,9 +361,10 @@ journalRoutes.patch(
   requireAuth,
   requireScope("suggestions:write"),
   suggestionsWriteLimit,
+  zValidator("param", uuidParam),
   async (c) => {
     const userId = c.get("userId") as string;
-    const id = c.req.param("id");
+    const id = c.req.valid("param").id;
 
     const s = await getSuggestion(id);
     if (!s) return c.json({ error: "Not found" }, 404);
@@ -394,10 +399,11 @@ journalRoutes.patch(
   requireAuth,
   requireScope("suggestions:write"),
   suggestionsWriteLimit,
+  zValidator("param", uuidParam),
   zValidator("json", rejectBody),
   async (c) => {
     const userId = c.get("userId") as string;
-    const id = c.req.param("id");
+    const id = c.req.valid("param").id;
     const s = await getSuggestion(id);
     if (!s) return c.json({ error: "Not found" }, 404);
 
@@ -418,9 +424,10 @@ journalRoutes.patch(
   requireAuth,
   requireScope("suggestions:write"),
   suggestionsWriteLimit,
+  zValidator("param", uuidParam),
   async (c) => {
     const userId = c.get("userId") as string;
-    const id = c.req.param("id");
+    const id = c.req.valid("param").id;
     try {
       const updated = await withdrawSuggestion(id, userId);
       return c.json({ suggestion: { ...updated, status: "withdrawn" } });
@@ -493,10 +500,11 @@ journalRoutes.patch(
   requireAuth,
   requireScope("comments:write"),
   commentsWriteLimit,
+  zValidator("param", uuidParam),
   zValidator("json", commentEditBody),
   async (c) => {
     const userId = c.get("userId") as string;
-    const updated = await updateCommentRepo(c.req.param("id"), userId, c.req.valid("json").content);
+    const updated = await updateCommentRepo(c.req.valid("param").id, userId, c.req.valid("json").content);
     if (!updated) return c.json({ error: "Not found or not author" }, 404);
     return c.json({ comment: updated });
   }
@@ -507,9 +515,10 @@ journalRoutes.delete(
   requireAuth,
   requireScope("comments:write"),
   commentsWriteLimit,
+  zValidator("param", uuidParam),
   async (c) => {
     const userId = c.get("userId") as string;
-    const ok = await deleteCommentRepo(c.req.param("id"), userId);
+    const ok = await deleteCommentRepo(c.req.valid("param").id, userId);
     return ok ? c.body(null, 204) : c.json({ error: "Not found or not authorized" }, 404);
   }
 );
@@ -539,12 +548,13 @@ journalRoutes.post(
   requireAuth,
   requireScope("reactions:write"),
   reactionsWriteLimit,
+  zValidator("param", uuidParam),
   zValidator("json", reactionBody),
   async (c) => {
     const userId = c.get("userId") as string;
     const { emoji } = c.req.valid("json");
     if (!isAllowedEmoji(emoji)) return c.json({ error: "Invalid emoji" }, 400);
-    const commentId = c.req.param("id");
+    const commentId = c.req.valid("param").id;
     const comment = await getComment(commentId);
     if (!comment) return c.json({ error: "Not found" }, 404);
     const result = await toggleCommentReaction(userId, commentId, emoji);
@@ -566,9 +576,9 @@ journalRoutes.get(
   }
 );
 
-journalRoutes.get("/comments/:id/reactions", optionalAuth, async (c) => {
+journalRoutes.get("/comments/:id/reactions", optionalAuth, zValidator("param", uuidParam), async (c) => {
   const userId = c.get("userId") as string | null;
-  const commentId = c.req.param("id");
+  const commentId = c.req.valid("param").id;
   const comment = await getComment(commentId);
   if (!comment) return c.json({ error: "Not found" }, 404);
   const summary = await summarizeCommentReactions(commentId);
@@ -593,7 +603,6 @@ journalRoutes.get("/comments/:id/reactions", optionalAuth, async (c) => {
 const IMAGE_MAX_BYTES = 5 * 1024 * 1024;
 const IMAGE_DAILY_LIMIT = 100;
 const IMAGE_WINDOW_MS = 24 * 60 * 60 * 1000;
-const imageIdParam = z.object({ id: z.string().uuid() });
 
 journalRoutes.post("/images", requireAuth, async (c) => {
   const userId = c.get("userId") as string;
@@ -638,7 +647,7 @@ journalRoutes.post("/images", requireAuth, async (c) => {
   return c.json({ id, url: `/api/journal/images/${id}` }, 201);
 });
 
-journalRoutes.get("/images/:id", zValidator("param", imageIdParam), async (c) => {
+journalRoutes.get("/images/:id", zValidator("param", uuidParam), async (c) => {
   const { id } = c.req.valid("param");
   const row = await getImageById(id);
   if (!row) return c.json({ error: "Not found" }, 404);

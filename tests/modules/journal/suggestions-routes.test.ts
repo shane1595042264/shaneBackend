@@ -88,6 +88,9 @@ import { VersionConflictError } from "@/modules/journal/versions-repo";
 beforeEach(() => vi.clearAllMocks());
 const app = new Hono().route("/api/journal", journalRoutes);
 
+// Valid UUID for :id path params — routes now reject malformed UUIDs with 400.
+const SID = "11111111-1111-4111-8111-111111111111";
+
 describe("POST /api/journal/entries/:date/suggestions", () => {
   it("creates a suggestion when caller is non-author", async () => {
     mockGetByDate.mockResolvedValue({ entry: { id: "e1", authorId: "owner" }, currentVersion: { id: "v1", versionNum: 1 } });
@@ -171,13 +174,13 @@ describe("GET /api/journal/entries/:date/suggestions", () => {
 describe("GET /api/journal/suggestions/:id", () => {
   it("returns the suggestion", async () => {
     mockGetSug.mockResolvedValue({ id: "s1" });
-    const res = await app.request("/api/journal/suggestions/s1");
+    const res = await app.request(`/api/journal/suggestions/${SID}`);
     expect(res.status).toBe(200);
   });
 
   it("404 when missing", async () => {
     mockGetSug.mockResolvedValue(null);
-    const res = await app.request("/api/journal/suggestions/missing");
+    const res = await app.request(`/api/journal/suggestions/${SID}`);
     expect(res.status).toBe(404);
   });
 });
@@ -187,19 +190,19 @@ describe("PATCH /api/journal/suggestions/:id/approve", () => {
     mockGetSug.mockResolvedValue({ id: "s1", entryId: "e1", status: "pending" });
     mockSelect.mockReturnValue(chain([{ authorId: "owner" }]));
     mockApprove.mockResolvedValue({ id: "v2", versionNum: 2 });
-    const res = await app.request("/api/journal/suggestions/s1/approve", {
+    const res = await app.request(`/api/journal/suggestions/${SID}/approve`, {
       method: "PATCH",
       headers: { "X-Test-User": "owner", "If-Match": "1" },
     });
     expect(res.status).toBe(200);
     expect((await res.json()).versionNum).toBe(2);
-    expect(mockApprove).toHaveBeenCalledWith("s1", "owner", 1);
+    expect(mockApprove).toHaveBeenCalledWith(SID, "owner", 1);
   });
 
   it("403 when caller is not the entry author", async () => {
     mockGetSug.mockResolvedValue({ id: "s1", entryId: "e1", status: "pending" });
     mockSelect.mockReturnValue(chain([{ authorId: "owner" }]));
-    const res = await app.request("/api/journal/suggestions/s1/approve", {
+    const res = await app.request(`/api/journal/suggestions/${SID}/approve`, {
       method: "PATCH",
       headers: { "X-Test-User": "stranger", "If-Match": "1" },
     });
@@ -208,7 +211,7 @@ describe("PATCH /api/journal/suggestions/:id/approve", () => {
 
   it("428 when If-Match header missing", async () => {
     mockGetSug.mockResolvedValue({ id: "s1", entryId: "e1", status: "pending" });
-    const res = await app.request("/api/journal/suggestions/s1/approve", {
+    const res = await app.request(`/api/journal/suggestions/${SID}/approve`, {
       method: "PATCH",
       headers: { "X-Test-User": "owner" },
     });
@@ -219,7 +222,7 @@ describe("PATCH /api/journal/suggestions/:id/approve", () => {
     mockGetSug.mockResolvedValue({ id: "s1", entryId: "e1", status: "pending" });
     mockSelect.mockReturnValue(chain([{ authorId: "owner" }]));
     mockApprove.mockRejectedValue(new VersionConflictError(5));
-    const res = await app.request("/api/journal/suggestions/s1/approve", {
+    const res = await app.request(`/api/journal/suggestions/${SID}/approve`, {
       method: "PATCH",
       headers: { "X-Test-User": "owner", "If-Match": "1" },
     });
@@ -229,7 +232,7 @@ describe("PATCH /api/journal/suggestions/:id/approve", () => {
 
   it("404 when suggestion missing", async () => {
     mockGetSug.mockResolvedValue(null);
-    const res = await app.request("/api/journal/suggestions/s1/approve", {
+    const res = await app.request(`/api/journal/suggestions/${SID}/approve`, {
       method: "PATCH",
       headers: { "X-Test-User": "owner", "If-Match": "1" },
     });
@@ -242,19 +245,19 @@ describe("PATCH /api/journal/suggestions/:id/reject", () => {
     mockGetSug.mockResolvedValue({ id: "s1", entryId: "e1", status: "pending" });
     mockSelect.mockReturnValue(chain([{ authorId: "owner" }]));
     mockReject.mockResolvedValue({ id: "s1", entryId: "e1", status: "pending" });
-    const res = await app.request("/api/journal/suggestions/s1/reject", {
+    const res = await app.request(`/api/journal/suggestions/${SID}/reject`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json", "X-Test-User": "owner" },
       body: JSON.stringify({ reason: "not for me" }),
     });
     expect(res.status).toBe(200);
-    expect(mockReject).toHaveBeenCalledWith("s1", "owner", "not for me");
+    expect(mockReject).toHaveBeenCalledWith(SID, "owner", "not for me");
   });
 
   it("403 when caller is not entry author", async () => {
     mockGetSug.mockResolvedValue({ id: "s1", entryId: "e1", status: "pending" });
     mockSelect.mockReturnValue(chain([{ authorId: "owner" }]));
-    const res = await app.request("/api/journal/suggestions/s1/reject", {
+    const res = await app.request(`/api/journal/suggestions/${SID}/reject`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json", "X-Test-User": "stranger" },
       body: JSON.stringify({}),
@@ -266,17 +269,17 @@ describe("PATCH /api/journal/suggestions/:id/reject", () => {
 describe("PATCH /api/journal/suggestions/:id/withdraw", () => {
   it("withdraws when caller is proposer", async () => {
     mockWithdraw.mockResolvedValue({ id: "s1", status: "pending" });
-    const res = await app.request("/api/journal/suggestions/s1/withdraw", {
+    const res = await app.request(`/api/journal/suggestions/${SID}/withdraw`, {
       method: "PATCH",
       headers: { "X-Test-User": "stranger" },
     });
     expect(res.status).toBe(200);
-    expect(mockWithdraw).toHaveBeenCalledWith("s1", "stranger");
+    expect(mockWithdraw).toHaveBeenCalledWith(SID, "stranger");
   });
 
   it("403 when withdrawSuggestion throws (non-proposer)", async () => {
     mockWithdraw.mockRejectedValue(new Error("Cannot withdraw"));
-    const res = await app.request("/api/journal/suggestions/s1/withdraw", {
+    const res = await app.request(`/api/journal/suggestions/${SID}/withdraw`, {
       method: "PATCH",
       headers: { "X-Test-User": "wrong" },
     });
