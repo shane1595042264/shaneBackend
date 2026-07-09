@@ -119,24 +119,36 @@ describe("GET /api/auth/tokens", () => {
 });
 
 describe("DELETE /api/auth/tokens/:id", () => {
+  const TOKEN_ID = "11111111-1111-4111-8111-111111111111";
+
   it("revokes the token", async () => {
     mockRevoke.mockResolvedValue(true);
     const tok = await jwt("user-1");
-    const res = await app.request("/api/auth/tokens/tok-1", {
+    const res = await app.request(`/api/auth/tokens/${TOKEN_ID}`, {
       method: "DELETE",
       headers: { Authorization: `Bearer ${tok}` },
     });
     expect(res.status).toBe(204);
-    expect(mockRevoke).toHaveBeenCalledWith("user-1", "tok-1");
+    expect(mockRevoke).toHaveBeenCalledWith("user-1", TOKEN_ID);
   });
 
   it("returns 404 if no matching token", async () => {
     mockRevoke.mockResolvedValue(false);
     const tok = await jwt("user-1");
-    const res = await app.request("/api/auth/tokens/missing", {
+    const res = await app.request(`/api/auth/tokens/${TOKEN_ID}`, {
       method: "DELETE",
       headers: { Authorization: `Bearer ${tok}` },
     });
     expect(res.status).toBe(404);
+  });
+
+  it("returns 400 on a malformed (non-UUID) id without touching the DB", async () => {
+    const tok = await jwt("user-1");
+    const res = await app.request("/api/auth/tokens/not-a-uuid", {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${tok}` },
+    });
+    expect(res.status).toBe(400);
+    expect(mockRevoke).not.toHaveBeenCalled();
   });
 });

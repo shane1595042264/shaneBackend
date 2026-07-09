@@ -191,9 +191,19 @@ authRoutes.get("/tokens", requireAuth, async (c) => {
   return c.json({ tokens });
 });
 
-authRoutes.delete("/tokens/:id", requireAuth, async (c) => {
-  const userId = c.get("userId") as string;
-  const tokenId = c.req.param("id");
-  const ok = await revokeToken(userId, tokenId);
-  return ok ? c.body(null, 204) : c.json({ error: "Token not found" }, 404);
-});
+// Reject malformed :id before it reaches the uuid column — a bad id would
+// otherwise throw "invalid input syntax for type uuid" in Postgres and surface
+// as a misleading 500 instead of a 400. Mirrors the SHAN-362 journal guard.
+const uuidParamSchema = z.object({ id: z.string().uuid() });
+
+authRoutes.delete(
+  "/tokens/:id",
+  requireAuth,
+  zValidator("param", uuidParamSchema),
+  async (c) => {
+    const userId = c.get("userId") as string;
+    const { id: tokenId } = c.req.valid("param");
+    const ok = await revokeToken(userId, tokenId);
+    return ok ? c.body(null, 204) : c.json({ error: "Token not found" }, 404);
+  },
+);
