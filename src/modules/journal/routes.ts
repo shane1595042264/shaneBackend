@@ -85,7 +85,12 @@ const listQuery = z.object({
   to: isoDate.optional(),
   q: z.string().trim().min(1).max(100).optional(),
   limit: z.coerce.number().int().min(1).max(100).default(50),
-  cursor: z.string().optional(),
+  // SHAN-373: validate as an ISO date, not z.string().datetime(). The journal
+  // cursor is the entry `date` (YYYY-MM-DD) that nextCursor emits below — unlike
+  // trips/loans/tea-entries (SHAN-372), which paginate by a createdAt timestamp.
+  // Without this, a malformed cursor reaches `lt(journalEntries.date, ...)` and
+  // Postgres throws "invalid input syntax for type date" → a misleading 500.
+  cursor: isoDate.optional(),
 });
 
 const createBody = z.object({

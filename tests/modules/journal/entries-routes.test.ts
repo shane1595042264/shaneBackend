@@ -78,6 +78,34 @@ describe("GET /api/journal/entries", () => {
       limit: 10,
     }));
   });
+
+  it("rejects a malformed (non-date) cursor with 400 instead of 500 (SHAN-373)", async () => {
+    mockListEntries.mockResolvedValue([]);
+    const res = await app.request("/api/journal/entries?cursor=not-a-date");
+    expect(res.status).toBe(400);
+    expect(mockListEntries).not.toHaveBeenCalled();
+  });
+
+  it("rejects a datetime cursor with 400 — journal paginates by date, not timestamp (SHAN-373)", async () => {
+    mockListEntries.mockResolvedValue([]);
+    const res = await app.request("/api/journal/entries?cursor=2026-05-01T00:00:00.000Z");
+    expect(res.status).toBe(400);
+    expect(mockListEntries).not.toHaveBeenCalled();
+  });
+
+  it("rejects a calendar-invalid cursor (2026-02-30) with 400 (SHAN-373)", async () => {
+    mockListEntries.mockResolvedValue([]);
+    const res = await app.request("/api/journal/entries?cursor=2026-02-30");
+    expect(res.status).toBe(400);
+    expect(mockListEntries).not.toHaveBeenCalled();
+  });
+
+  it("accepts a valid YYYY-MM-DD cursor with 200 (SHAN-373)", async () => {
+    mockListEntries.mockResolvedValue([]);
+    const res = await app.request("/api/journal/entries?cursor=2026-05-01");
+    expect(res.status).toBe(200);
+    expect(mockListEntries).toHaveBeenCalledWith(expect.objectContaining({ cursorDate: "2026-05-01" }));
+  });
 });
 
 describe("GET /api/journal/entries/:date", () => {
