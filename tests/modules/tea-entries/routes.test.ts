@@ -181,6 +181,14 @@ describe("GET /api/tea-entries", () => {
     });
     expect(res.status).toBe(400);
   });
+
+  it("rejects a malformed (non-ISO) cursor with 400 instead of silently returning page 1", async () => {
+    const res = await app.request("/api/tea-entries?cursor=not-a-date", {
+      headers: { "X-Test-User": "u1" },
+    });
+    expect(res.status).toBe(400);
+    expect(mockListForAuthor).not.toHaveBeenCalled();
+  });
 });
 
 describe("GET /api/tea-entries/public (removed — SHAN-334)", () => {

@@ -174,6 +174,13 @@ describe("GET /api/loans", () => {
     });
     expect(res.status).toBe(400);
   });
+
+  it("rejects a malformed (non-ISO) cursor with 400 instead of silently returning page 1", async () => {
+    const res = await app.request("/api/loans?cursor=not-a-date", {
+      headers: { "X-Test-User": USER_A },
+    });
+    expect(res.status).toBe(400);
+  });
 });
 
 describe("POST /api/loans", () => {

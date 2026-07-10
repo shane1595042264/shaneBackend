@@ -49,7 +49,11 @@ const createSchema = z.object({
 // trips list contract (SHAN-335).
 const listQuery = z.object({
   limit: z.coerce.number().int().min(1).max(100).optional(),
-  cursor: z.string().optional(),
+  // Cursor is the ISO createdAt of the last row from the previous page. Validate
+  // the ISO shape here so a malformed cursor is rejected with 400 rather than
+  // silently swallowed downstream (which would resurface page 1). nextCursor is
+  // always toISOString() (UTC Z), so valid cursors round-trip unchanged.
+  cursor: z.string().datetime().optional(),
 });
 
 const patchSchema = z

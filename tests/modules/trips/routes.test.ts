@@ -176,6 +176,13 @@ describe("GET /api/trips", () => {
     expect(mockList).toHaveBeenCalledWith({ limit: 10, cursor: "2026-01-01T00:00:00.000Z" });
   });
 
+  it("rejects a malformed (non-ISO) cursor with 400 instead of silently returning page 1", async () => {
+    mockList.mockResolvedValue([]);
+    const res = await app.request("/api/trips?cursor=not-a-date");
+    expect(res.status).toBe(400);
+    expect(mockList).not.toHaveBeenCalled();
+  });
+
   it("returns nextCursor = last createdAt when a full page comes back", async () => {
     const last = new Date("2026-02-01T12:00:00.000Z");
     mockList.mockResolvedValue([
