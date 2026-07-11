@@ -260,6 +260,7 @@ journalRoutes.post(
     const ifMatch = c.req.header("If-Match");
     if (!ifMatch) return c.json({ error: "If-Match header required" }, 428);
     const ifMatchNum = parseInt(ifMatch, 10);
+    if (Number.isNaN(ifMatchNum)) return c.json({ error: "Invalid If-Match" }, 400);
 
     const row = await getEntryByDate(date);
     if (!row) return c.json({ error: "Not found" }, 404);

@@ -167,4 +167,14 @@ describe("POST /api/journal/entries/:date/revert", () => {
     });
     expect(res.status).toBe(428);
   });
+
+  it("returns 400 when If-Match is malformed (not a number)", async () => {
+    const res = await app.request("/api/journal/entries/2026-04-29/revert", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Test-User": "u1", "If-Match": "not-a-number" },
+      body: JSON.stringify({ target_version_num: 2 }),
+    });
+    expect(res.status).toBe(400);
+    expect(mockRevert).not.toHaveBeenCalled();
+  });
 });
