@@ -303,11 +303,24 @@ practiceRoutes.post(
 
 // ----- Aggregations -----
 
-practiceRoutes.get("/items", requireAuth, async (c) => {
+// Validate the query up front so an oversized/malformed ?category is rejected
+// with 400 rather than silently swallowed (which returns an empty list). Mirrors
+// the sibling /sessions/preview contract (previewQuery) and the list-query
+// hardening in SHAN-372/373/380. include_solidified stays a passthrough string
+// (the frontend only sends "true"); anything else reads as false as before.
+const itemsQuery = z.object({
+  category: z.string().max(100).optional(),
+  include_solidified: z.string().optional(),
+});
+
+practiceRoutes.get("/items", requireAuth, zValidator("query", itemsQuery), async (c) => {
   const userId = c.get("userId") as string;
-  const cat = c.req.query("category") ?? null;
-  const inc = c.req.query("include_solidified") === "true";
-  const items = await listPracticeableItems({ userId, categoryFilter: cat, includeSolidified: inc });
+  const { category, include_solidified } = c.req.valid("query");
+  const items = await listPracticeableItems({
+    userId,
+    categoryFilter: category ?? null,
+    includeSolidified: include_solidified === "true",
+  });
   return c.json({ items });
 });
 

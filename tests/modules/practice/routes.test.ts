@@ -88,6 +88,18 @@ describe("GET /items", () => {
     expect(res.status).toBe(200);
     expect((await res.json()).items).toHaveLength(1);
   });
+  it("200 and passes a valid ?category through to the repo", async () => {
+    mocks.items.listPracticeable.mockResolvedValue([]);
+    const res = await app.request("/api/practice/items?category=verbs", { headers: { "X-Test-User": "u1" } });
+    expect(res.status).toBe(200);
+    expect(mocks.items.listPracticeable).toHaveBeenCalledWith(expect.objectContaining({ categoryFilter: "verbs" }));
+  });
+  it("400 on an oversized ?category (>100 chars)", async () => {
+    mocks.items.listPracticeable.mockClear();
+    const res = await app.request(`/api/practice/items?category=${"x".repeat(101)}`, { headers: { "X-Test-User": "u1" } });
+    expect(res.status).toBe(400);
+    expect(mocks.items.listPracticeable).not.toHaveBeenCalled();
+  });
 });
 
 describe("GET /sessions/preview", () => {
