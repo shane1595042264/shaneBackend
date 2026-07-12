@@ -203,12 +203,26 @@ practiceRoutes.post(
   },
 );
 
-practiceRoutes.get("/sessions/preview", requireAuth, async (c) => {
+// Validate the preview query up front so a malformed ?n (e.g. ?n=abc, ?n=-5,
+// ?n=999) is rejected with 400 rather than silently coerced to the default 5 —
+// mirrors the loans/journal list-query hardening (SHAN-372/373). Absent ?n keeps
+// the default of 5. include_solidified stays a passthrough string (the frontend
+// only ever sends "true"); anything other than "true" reads as false as before.
+const previewQuery = z.object({
+  category: z.string().max(100).optional(),
+  n: z.coerce.number().int().min(1).max(50).optional(),
+  include_solidified: z.string().optional(),
+});
+
+practiceRoutes.get("/sessions/preview", requireAuth, zValidator("query", previewQuery), async (c) => {
   const userId = c.get("userId") as string;
-  const cat = c.req.query("category") ?? null;
-  const n = Math.max(1, Math.min(50, parseInt(c.req.query("n") ?? "5", 10) || 5));
-  const inc = c.req.query("include_solidified") === "true";
-  const items = await generateSessionItems({ userId, categoryFilter: cat, n, includeSolidified: inc });
+  const { category, n, include_solidified } = c.req.valid("query");
+  const items = await generateSessionItems({
+    userId,
+    categoryFilter: category ?? null,
+    n: n ?? 5,
+    includeSolidified: include_solidified === "true",
+  });
   return c.json({ items });
 });
 

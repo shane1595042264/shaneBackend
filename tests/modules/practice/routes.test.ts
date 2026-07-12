@@ -90,6 +90,34 @@ describe("GET /items", () => {
   });
 });
 
+describe("GET /sessions/preview", () => {
+  it("200 with a valid ?n", async () => {
+    mocks.generator.mockResolvedValue([{ itemId: "i1", prescription: { setMode: "time", setSize: 60, restSeconds: 30 } }]);
+    const res = await app.request("/api/practice/sessions/preview?n=3", { headers: { "X-Test-User": "u1" } });
+    expect(res.status).toBe(200);
+    expect(mocks.generator).toHaveBeenCalledWith(expect.objectContaining({ n: 3 }));
+  });
+  it("defaults n to 5 when omitted", async () => {
+    mocks.generator.mockResolvedValue([]);
+    const res = await app.request("/api/practice/sessions/preview", { headers: { "X-Test-User": "u1" } });
+    expect(res.status).toBe(200);
+    expect(mocks.generator).toHaveBeenCalledWith(expect.objectContaining({ n: 5 }));
+  });
+  it("400 on non-numeric ?n", async () => {
+    const res = await app.request("/api/practice/sessions/preview?n=abc", { headers: { "X-Test-User": "u1" } });
+    expect(res.status).toBe(400);
+    expect(mocks.generator).not.toHaveBeenCalled();
+  });
+  it("400 on negative ?n", async () => {
+    const res = await app.request("/api/practice/sessions/preview?n=-1", { headers: { "X-Test-User": "u1" } });
+    expect(res.status).toBe(400);
+  });
+  it("400 on out-of-range ?n", async () => {
+    const res = await app.request("/api/practice/sessions/preview?n=999", { headers: { "X-Test-User": "u1" } });
+    expect(res.status).toBe(400);
+  });
+});
+
 describe("GET /items/:itemId/progress", () => {
   it("404 when item not found", async () => {
     mocks.items.getProgress.mockResolvedValue(null);
