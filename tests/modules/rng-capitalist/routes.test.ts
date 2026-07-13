@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { evaluateSchema } from "@/modules/rng-capitalist/routes";
+import { evaluateSchema, historyQuerySchema } from "@/modules/rng-capitalist/routes";
 
 describe("evaluateSchema URL validation", () => {
   it("accepts a valid https URL", () => {
@@ -52,6 +52,58 @@ describe("evaluateSchema body shape", () => {
 
   it("rejects product_name without price", () => {
     const r = evaluateSchema.safeParse({ product_name: "Steam Deck" });
+    expect(r.success).toBe(false);
+  });
+});
+
+describe("historyQuerySchema pagination validation", () => {
+  it("accepts an empty query (bare GET, legacy behavior)", () => {
+    const r = historyQuerySchema.safeParse({});
+    expect(r.success).toBe(true);
+    if (r.success) {
+      expect(r.data.limit).toBeUndefined();
+      expect(r.data.cursor).toBeUndefined();
+    }
+  });
+
+  it("coerces a numeric-string ?limit within range", () => {
+    const r = historyQuerySchema.safeParse({ limit: "25" });
+    expect(r.success).toBe(true);
+    if (r.success) expect(r.data.limit).toBe(25);
+  });
+
+  it("rejects a non-numeric ?limit", () => {
+    const r = historyQuerySchema.safeParse({ limit: "abc" });
+    expect(r.success).toBe(false);
+  });
+
+  it("rejects ?limit below 1", () => {
+    const r = historyQuerySchema.safeParse({ limit: "0" });
+    expect(r.success).toBe(false);
+  });
+
+  it("rejects ?limit above 100", () => {
+    const r = historyQuerySchema.safeParse({ limit: "101" });
+    expect(r.success).toBe(false);
+  });
+
+  it("rejects a fractional ?limit", () => {
+    const r = historyQuerySchema.safeParse({ limit: "5.5" });
+    expect(r.success).toBe(false);
+  });
+
+  it("accepts a valid ISO ?cursor", () => {
+    const r = historyQuerySchema.safeParse({ cursor: "2026-07-13T14:00:00.000Z" });
+    expect(r.success).toBe(true);
+  });
+
+  it("rejects a malformed ?cursor", () => {
+    const r = historyQuerySchema.safeParse({ cursor: "not-a-date" });
+    expect(r.success).toBe(false);
+  });
+
+  it("rejects a date-only ?cursor (must be full ISO datetime)", () => {
+    const r = historyQuerySchema.safeParse({ cursor: "2026-07-13" });
     expect(r.success).toBe(false);
   });
 });

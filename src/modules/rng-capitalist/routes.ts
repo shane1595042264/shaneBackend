@@ -3,7 +3,7 @@ import { zValidator } from "@hono/zod-validator";
 import { z } from "zod";
 import { db } from "@/db/client";
 import { rngDecisions, rngBanList } from "@/db/schema";
-import { desc, gt, eq, and } from "drizzle-orm";
+import { desc, gt, lt, eq, and } from "drizzle-orm";
 import { scrapeProductUrl } from "./scraper";
 import { classifyProduct } from "./classifier";
 import { generateText } from "@/modules/shared/llm";
@@ -171,10 +171,45 @@ rngRoutes.get("/budget", plaidRateLimit, async (c) => {
   return c.json({ connected: balance !== null, balance, last_month_spend: lastMonthSpend, remaining_budget: balance !== null && lastMonthSpend !== null ? balance - lastMonthSpend : null });
 });
 
-rngRoutes.get("/history", async (c) => {
+// Opt-in keyset pagination: pass ?limit=N (1..100) and optionally
+// ?cursor=<ISO createdAt of the last row from the previous page>. With no
+// params the endpoint returns the latest 100 (legacy behavior) and nextCursor
+// is null — the frontend (rng-api.ts fetchHistory) reads only .decisions and
+// passes no params, so it is unaffected. Malformed params 400 via zValidator.
+// Mirrors the tea-entries/loans/trips list contract (SHAN-335/336).
+export const historyQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(100).optional(),
+  // Cursor is the ISO createdAt of the last row from the previous page. Validate
+  // the ISO shape so a malformed cursor is rejected with 400 rather than
+  // silently swallowed. nextCursor is always toISOString() (UTC Z), so valid
+  // cursors round-trip unchanged.
+  cursor: z.string().datetime().optional(),
+});
+
+rngRoutes.get("/history", zValidator("query", historyQuerySchema), async (c) => {
   const userId = c.get("userId");
-  const decisions = await db.select().from(rngDecisions).where(eq(rngDecisions.userId, userId)).orderBy(desc(rngDecisions.createdAt)).limit(100);
-  return c.json({ decisions: decisions.map((d) => ({ ...d, price: Number(d.price), balanceAtTime: d.balanceAtTime ? Number(d.balanceAtTime) : null, remainingBudget: d.remainingBudget ? Number(d.remainingBudget) : null })) });
+  const { limit, cursor } = c.req.valid("query");
+  const conditions = [eq(rngDecisions.userId, userId)];
+  if (cursor) conditions.push(lt(rngDecisions.createdAt, new Date(cursor)));
+  const rows = await db
+    .select()
+    .from(rngDecisions)
+    .where(and(...conditions))
+    .orderBy(desc(rngDecisions.createdAt))
+    .limit(limit ?? 100);
+  const decisions = rows.map((d) => ({
+    ...d,
+    price: Number(d.price),
+    balanceAtTime: d.balanceAtTime ? Number(d.balanceAtTime) : null,
+    remainingBudget: d.remainingBudget ? Number(d.remainingBudget) : null,
+  }));
+  // Only surface a cursor when the caller opted into paging (?limit) and a full
+  // page came back — a partial/legacy page means there's nothing more to fetch.
+  const nextCursor =
+    limit && rows.length === limit
+      ? rows[rows.length - 1].createdAt?.toISOString() ?? null
+      : null;
+  return c.json({ decisions, nextCursor });
 });
 
 rngRoutes.get("/bans", async (c) => {
