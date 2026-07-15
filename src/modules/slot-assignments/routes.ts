@@ -28,11 +28,21 @@ slotRoutes.get("/", async (c) => {
   return c.json({ assignments });
 });
 
+// The periodic table has 118 elements, so a legitimate layout maps at most
+// 118 slots. Cap the record so a client can't persist an oversized JSONB blob
+// under their user row — the route is auth-only (no scope), so bounding the
+// payload is the only guard on write size.
+const MAX_SLOTS = 118;
+
 const putSchema = z.object({
-  assignments: z.record(
-    z.string().regex(/^\d+$/, "Keys must be atomic numbers"),
-    z.string().min(1, "App ID required")
-  ),
+  assignments: z
+    .record(
+      z.string().regex(/^\d+$/, "Keys must be atomic numbers"),
+      z.string().min(1, "App ID required").max(128, "App ID too long")
+    )
+    .refine((a) => Object.keys(a).length <= MAX_SLOTS, {
+      message: `At most ${MAX_SLOTS} assignments allowed`,
+    }),
 });
 
 // PUT / — save the user's slot assignments
