@@ -856,8 +856,13 @@ export const loanEntries = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
-    index("loan_entries_user_id_idx").on(t.userId),
-    index("loan_entries_created_at_idx").on(t.createdAt),
+    // Composite (user_id, created_at) serves the only list query —
+    // keyset-paginated GET /api/loans: WHERE user_id = ? [AND created_at <
+    // cursor] ORDER BY created_at DESC. Mirrors trips_owner_created_idx /
+    // tea_entries_author_created_idx. Replaces the old pair of single-column
+    // indexes: user_id alone was subsumed by this prefix, and created_at alone
+    // backed no query (all loan reads are user-scoped).
+    index("loan_entries_user_created_idx").on(t.userId, t.createdAt),
   ],
 );
 
