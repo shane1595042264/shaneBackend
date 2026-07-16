@@ -556,3 +556,107 @@ describe("POST /api/knowledge/entries — auth gate (SHAN-312)", () => {
     expect(mockInsert).not.toHaveBeenCalled();
   });
 });
+
+// SHAN-396: createWordSchema/updateWordSchema had no length bounds, so an
+// oversized field slipped past zod and hit the vocabWords varchar/text columns,
+// tripping a Postgres "value too long" 500 (or storing a multi-MB blob for the
+// unbounded text/jsonb columns). Bounds now reject oversized payloads with 400.
+describe("POST /api/knowledge/entries — payload length bounds (SHAN-396)", () => {
+  const jsonHeaders = { "Content-Type": "application/json" };
+  const authHeaders = { ...jsonHeaders, "X-Test-User": "user-1" };
+
+  it("rejects a word longer than the varchar(255) column with 400", async () => {
+    const res = await app.request("/api/knowledge/entries", {
+      method: "POST",
+      headers: authHeaders,
+      body: JSON.stringify({ word: "x".repeat(256), language: "en", autoEnrich: false }),
+    });
+    expect(res.status).toBe(400);
+    expect(mockInsert).not.toHaveBeenCalled();
+  });
+
+  it("rejects a language longer than the varchar(50) column with 400", async () => {
+    const res = await app.request("/api/knowledge/entries", {
+      method: "POST",
+      headers: authHeaders,
+      body: JSON.stringify({ word: "hello", language: "e".repeat(51), autoEnrich: false }),
+    });
+    expect(res.status).toBe(400);
+    expect(mockInsert).not.toHaveBeenCalled();
+  });
+
+  it("rejects an over-cap definition with 400", async () => {
+    const res = await app.request("/api/knowledge/entries", {
+      method: "POST",
+      headers: authHeaders,
+      body: JSON.stringify({
+        word: "hello",
+        language: "en",
+        definition: "d".repeat(20001),
+        autoEnrich: false,
+      }),
+    });
+    expect(res.status).toBe(400);
+    expect(mockInsert).not.toHaveBeenCalled();
+  });
+
+  it("rejects more than 50 labels with 400", async () => {
+    const res = await app.request("/api/knowledge/entries", {
+      method: "POST",
+      headers: authHeaders,
+      body: JSON.stringify({
+        word: "hello",
+        language: "en",
+        labels: Array.from({ length: 51 }, (_, i) => `label-${i}`),
+        autoEnrich: false,
+      }),
+    });
+    expect(res.status).toBe(400);
+    expect(mockInsert).not.toHaveBeenCalled();
+  });
+
+  it("accepts a payload at the boundary (word 255, 50 labels)", async () => {
+    selectReturning([]); // duplicate check finds nothing
+    insertReturning({ id: "11111111-1111-1111-1111-111111111111", word: "boundary" });
+
+    const res = await app.request("/api/knowledge/entries", {
+      method: "POST",
+      headers: authHeaders,
+      body: JSON.stringify({
+        word: "x".repeat(255),
+        language: "e".repeat(50),
+        labels: Array.from({ length: 50 }, (_, i) => `label-${i}`),
+        autoEnrich: false,
+      }),
+    });
+    expect(res.status).toBe(201);
+  });
+});
+
+describe("PUT /api/knowledge/entries/:id — payload length bounds (SHAN-396)", () => {
+  const validId = "11111111-1111-1111-1111-111111111111";
+  const jsonHeaders = { "Content-Type": "application/json" };
+  const authHeaders = { ...jsonHeaders, "X-Test-User": "user-1" };
+
+  it("rejects an over-cap definition with 400 before touching the DB", async () => {
+    const res = await app.request(`/api/knowledge/entries/${validId}`, {
+      method: "PUT",
+      headers: authHeaders,
+      body: JSON.stringify({ definition: "d".repeat(20001) }),
+    });
+    expect(res.status).toBe(400);
+    expect(mockUpdate).not.toHaveBeenCalled();
+  });
+
+  it("rejects more than 50 memorizationLocations with 400", async () => {
+    const res = await app.request(`/api/knowledge/entries/${validId}`, {
+      method: "PUT",
+      headers: authHeaders,
+      body: JSON.stringify({
+        memorizationLocations: Array.from({ length: 51 }, (_, i) => `loc-${i}`),
+      }),
+    });
+    expect(res.status).toBe(400);
+    expect(mockUpdate).not.toHaveBeenCalled();
+  });
+});

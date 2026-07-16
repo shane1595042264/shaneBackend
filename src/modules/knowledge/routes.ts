@@ -284,15 +284,20 @@ knowledgeRoutes.get("/categories", async (c) => {
 // Entries CRUD (renamed from "words" but same structure)
 // ---------------------------------------------------------------------------
 
+// Length bounds mirror the vocabWords column types so an oversized value fails
+// validation with a clean 400 instead of slipping past zod and tripping a
+// Postgres "value too long for type character varying(N)" 500. The text/jsonb
+// columns have no DB limit, so we cap them here to keep a single request from
+// storing a multi-megabyte blob (same posture as POST /notes: text 5000, array 50).
 const createWordSchema = z.object({
-  word: z.string().min(1),
-  language: z.string().min(1),
-  category: z.string().optional().default("vocabulary"),
-  definition: z.string().optional(),
-  pronunciation: z.string().optional(),
-  partOfSpeech: z.string().optional(),
-  exampleSentence: z.string().optional(),
-  labels: z.array(z.string()).optional(),
+  word: z.string().min(1).max(255),
+  language: z.string().min(1).max(50),
+  category: z.string().max(100).optional().default("vocabulary"),
+  definition: z.string().max(20000).optional(),
+  pronunciation: z.string().max(255).optional(),
+  partOfSpeech: z.string().max(50).optional(),
+  exampleSentence: z.string().max(2000).optional(),
+  labels: z.array(z.string().max(100)).max(50).optional(),
   autoEnrich: z.boolean().optional(),
 });
 
@@ -445,19 +450,21 @@ knowledgeRoutes.post(
 });
 
 // Update an entry
+// Same length bounds as createWordSchema (see note there) so the manual
+// editor's write-back can't slip an oversized value past zod into a Postgres 500.
 const updateWordSchema = z.object({
-  word: z.string().min(1).optional(),
-  language: z.string().min(1).optional(),
-  category: z.string().optional(),
-  definition: z.string().optional(),
-  pronunciation: z.string().optional(),
-  partOfSpeech: z.string().optional(),
-  exampleSentence: z.string().optional(),
-  labels: z.array(z.string()).optional(),
+  word: z.string().min(1).max(255).optional(),
+  language: z.string().min(1).max(50).optional(),
+  category: z.string().max(100).optional(),
+  definition: z.string().max(20000).optional(),
+  pronunciation: z.string().max(255).optional(),
+  partOfSpeech: z.string().max(50).optional(),
+  exampleSentence: z.string().max(2000).optional(),
+  labels: z.array(z.string().max(100)).max(50).optional(),
   // Location-memorization technique (SHAN-339): the distinct places this card has
   // been practiced. long_term_memorized is derived server-side, never trusted from
   // the client.
-  memorizationLocations: z.array(z.string()).optional(),
+  memorizationLocations: z.array(z.string().max(120)).max(50).optional(),
 });
 
 // Manual edit of an entry. Ownership rule mirrors DELETE: caller must be the
