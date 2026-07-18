@@ -356,6 +356,78 @@ describe("DELETE /api/vocabulary/connections/:id — auth gate", () => {
   });
 });
 
+// SHAN-401: oversized string fields must be rejected with 400 by the zod
+// schema BEFORE any DB write, mirroring the knowledge module's bounds on the
+// shared vocabWords columns. If validation is skipped the mocked db.insert
+// would resolve and return 201 — these tests fail loudly if a bound is dropped.
+describe("POST /api/vocabulary/words — payload bounds (SHAN-401)", () => {
+  it.each([
+    ["word", { word: "a".repeat(256), language: "en" }],
+    ["language", { word: "hi", language: "e".repeat(51) }],
+    ["definition", { word: "hi", language: "en", definition: "d".repeat(20001) }],
+    ["pronunciation", { word: "hi", language: "en", pronunciation: "p".repeat(256) }],
+    ["partOfSpeech", { word: "hi", language: "en", partOfSpeech: "x".repeat(51) }],
+    ["exampleSentence", { word: "hi", language: "en", exampleSentence: "s".repeat(2001) }],
+    ["a label item", { word: "hi", language: "en", labels: ["l".repeat(101)] }],
+    ["too many labels", { word: "hi", language: "en", labels: Array(51).fill("l") }],
+  ])("rejects oversized %s with 400", async (_field, payload) => {
+    // db mocks left unconfigured — a 201 would mean validation was bypassed.
+    const res = await app.request("/api/vocabulary/words", {
+      method: "POST",
+      headers: jwtHeaders("u-shane"),
+      body: JSON.stringify({ ...payload, autoEnrich: false }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it("accepts a word at the exact field limits (201)", async () => {
+    selectRows([]);
+    insertReturning({ id: validId, word: "ok", language: "en", createdBy: "u-shane" });
+    const res = await app.request("/api/vocabulary/words", {
+      method: "POST",
+      headers: jwtHeaders("u-shane"),
+      body: JSON.stringify({
+        word: "a".repeat(255),
+        language: "e".repeat(50),
+        definition: "d".repeat(20000),
+        pronunciation: "p".repeat(255),
+        partOfSpeech: "x".repeat(50),
+        exampleSentence: "s".repeat(2000),
+        labels: Array(50).fill("l".repeat(100)),
+        autoEnrich: false,
+      }),
+    });
+    expect(res.status).toBe(201);
+  });
+});
+
+describe("PUT /api/vocabulary/words/:id — payload bounds (SHAN-401)", () => {
+  it("rejects an oversized definition with 400 before touching the DB", async () => {
+    const res = await app.request(`/api/vocabulary/words/${validId}`, {
+      method: "PUT",
+      headers: jwtHeaders("u-shane"),
+      body: JSON.stringify({ definition: "d".repeat(20001) }),
+    });
+    expect(res.status).toBe(400);
+  });
+});
+
+describe("POST /api/vocabulary/connections — payload bounds (SHAN-401)", () => {
+  it("rejects an oversized note with 400", async () => {
+    const res = await app.request("/api/vocabulary/connections", {
+      method: "POST",
+      headers: jwtHeaders("u-shane"),
+      body: JSON.stringify({
+        fromWordId: validId,
+        toWordId: otherWordId,
+        connectionType: "synonym",
+        note: "n".repeat(1001),
+      }),
+    });
+    expect(res.status).toBe(400);
+  });
+});
+
 describe("vocabulary write rate limits (per PAT)", () => {
   const body = JSON.stringify({ word: "spam", language: "en", autoEnrich: false });
 

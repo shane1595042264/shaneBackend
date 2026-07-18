@@ -42,14 +42,20 @@ const wordIdQuerySchema = z.object({
 // Words CRUD
 // ---------------------------------------------------------------------------
 
+// SHAN-401: bounds mirror the knowledge module's createWordSchema exactly
+// (knowledge/routes.ts) — both write the same vocabWords columns, so the caps
+// must match or the two paths disagree on what's storable. Without them a PAT
+// agent or client regression can POST multi-MB blobs per row (storage-abuse /
+// payload-DoS) that today land as silent DB writes or 500s instead of a 400.
+// Additive: every previously-valid word is well under these limits.
 const createWordSchema = z.object({
-  word: z.string().min(1),
-  language: z.string().min(1),
-  definition: z.string().optional(),
-  pronunciation: z.string().optional(),
-  partOfSpeech: z.string().optional(),
-  exampleSentence: z.string().optional(),
-  labels: z.array(z.string()).optional(),
+  word: z.string().min(1).max(255),
+  language: z.string().min(1).max(50),
+  definition: z.string().max(20000).optional(),
+  pronunciation: z.string().max(255).optional(),
+  partOfSpeech: z.string().max(50).optional(),
+  exampleSentence: z.string().max(2000).optional(),
+  labels: z.array(z.string().max(100)).max(50).optional(),
   autoEnrich: z.boolean().optional(),
 });
 
@@ -166,14 +172,15 @@ vocabularyRoutes.post(
 );
 
 // Update a word
+// SHAN-401: same bounds as createWordSchema above (knowledge-module parity).
 const updateWordSchema = z.object({
-  word: z.string().min(1).optional(),
-  language: z.string().min(1).optional(),
-  definition: z.string().optional(),
-  pronunciation: z.string().optional(),
-  partOfSpeech: z.string().optional(),
-  exampleSentence: z.string().optional(),
-  labels: z.array(z.string()).optional(),
+  word: z.string().min(1).max(255).optional(),
+  language: z.string().min(1).max(50).optional(),
+  definition: z.string().max(20000).optional(),
+  pronunciation: z.string().max(255).optional(),
+  partOfSpeech: z.string().max(50).optional(),
+  exampleSentence: z.string().max(2000).optional(),
+  labels: z.array(z.string().max(100)).max(50).optional(),
 });
 
 // Ownership rule mirrors knowledge module's PUT /entries/:id: caller must be
@@ -293,7 +300,9 @@ const createConnectionSchema = z.object({
   fromWordId: z.string().uuid(),
   toWordId: z.string().uuid(),
   connectionType: z.enum(["synonym", "antonym", "related", "translation", "root"]),
-  note: z.string().optional(),
+  // SHAN-401: short free-text annotation on a connection — bound it so an
+  // unbounded text column can't be filled with a runaway payload.
+  note: z.string().max(1000).optional(),
 });
 
 vocabularyRoutes.get("/connections", zValidator("query", wordIdQuerySchema), async (c) => {
