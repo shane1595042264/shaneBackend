@@ -146,6 +146,19 @@ describe("POST /api/journal/entries/:date/suggestions", () => {
     });
     expect(res.status).toBe(404);
   });
+
+  // SHAN-398: proposed_content persists to the unbounded journal_suggestions
+  // text column. Cap it at 100k chars, rejecting oversized payloads before the
+  // repo (or the base-version lookup) runs.
+  it("returns 400 when proposed_content exceeds the 100k cap (SHAN-398)", async () => {
+    const res = await app.request("/api/journal/entries/2026-05-03/suggestions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Test-User": "stranger" },
+      body: JSON.stringify({ base_version_num: 1, proposed_content: "x".repeat(100_001) }),
+    });
+    expect(res.status).toBe(400);
+    expect(mockCreateSug).not.toHaveBeenCalled();
+  });
 });
 
 describe("GET /api/journal/entries/:date/suggestions", () => {

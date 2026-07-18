@@ -6,6 +6,8 @@ import { getUniversalTeaPin, getUserTimezone } from "@/modules/auth/user-prefs";
 import {
   containsInFlightUpload,
   IN_FLIGHT_UPLOAD_MESSAGE,
+  MAX_MARKDOWN_BODY,
+  MAX_MARKDOWN_BODY_MESSAGE,
 } from "@/modules/shared/validators";
 import {
   createTeaEntry,
@@ -44,6 +46,7 @@ const createBody = z.object({
   content: z
     .string()
     .min(1)
+    .max(MAX_MARKDOWN_BODY, { message: MAX_MARKDOWN_BODY_MESSAGE })
     .refine(noInFlightUpload, { message: IN_FLIGHT_UPLOAD_MESSAGE }),
   pin: pinSchema,
 });
@@ -215,6 +218,7 @@ const patchBody = z
     content: z
       .string()
       .min(1)
+      .max(MAX_MARKDOWN_BODY, { message: MAX_MARKDOWN_BODY_MESSAGE })
       .refine(noInFlightUpload, { message: IN_FLIGHT_UPLOAD_MESSAGE })
       .optional(),
     pin: pinSchema.optional(),

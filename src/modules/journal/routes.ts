@@ -46,6 +46,8 @@ import {
   isoDate,
   containsInFlightUpload,
   IN_FLIGHT_UPLOAD_MESSAGE,
+  MAX_MARKDOWN_BODY,
+  MAX_MARKDOWN_BODY_MESSAGE,
 } from "@/modules/shared/validators";
 import { createPATRateLimit } from "@/modules/shared/rate-limit";
 
@@ -98,6 +100,7 @@ const createBody = z.object({
   content: z
     .string()
     .min(1)
+    .max(MAX_MARKDOWN_BODY, { message: MAX_MARKDOWN_BODY_MESSAGE })
     .refine(noInFlightUpload, { message: IN_FLIGHT_UPLOAD_MESSAGE }),
 });
 
@@ -180,6 +183,7 @@ const appendBody = z.object({
   content: z
     .string()
     .min(1)
+    .max(MAX_MARKDOWN_BODY, { message: MAX_MARKDOWN_BODY_MESSAGE })
     .refine(noInFlightUpload, { message: IN_FLIGHT_UPLOAD_MESSAGE }),
 });
 
@@ -305,9 +309,10 @@ const suggestBody = z.object({
   proposed_content: z
     .string()
     .min(1)
+    .max(MAX_MARKDOWN_BODY, { message: MAX_MARKDOWN_BODY_MESSAGE })
     .refine(noInFlightUpload, { message: IN_FLIGHT_UPLOAD_MESSAGE }),
 });
-const rejectBody = z.object({ reason: z.string().optional() });
+const rejectBody = z.object({ reason: z.string().max(2000).optional() });
 const suggestionListQuery = z.object({
   status: z.enum(["pending", "approved", "rejected", "withdrawn"]).optional(),
 });

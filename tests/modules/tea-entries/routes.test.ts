@@ -99,6 +99,18 @@ describe("POST /api/tea-entries", () => {
     expect(res.status).toBe(400);
   });
 
+  // SHAN-398: content persists to the unbounded tea_entries.content text column.
+  // Cap at 100k chars so an oversized payload is rejected with 400 before the repo.
+  it("rejects content over the 100k markdown-body cap (SHAN-398)", async () => {
+    const res = await app.request("/api/tea-entries", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Test-User": "u1" },
+      body: JSON.stringify({ content: "x".repeat(100_001), pin: "1234" }),
+    });
+    expect(res.status).toBe(400);
+    expect(mockCreate).not.toHaveBeenCalled();
+  });
+
   it("creates and returns 201 with the entry (no PIN echoed in response)", async () => {
     mockCreate.mockResolvedValue({
       id: VALID_UUID,

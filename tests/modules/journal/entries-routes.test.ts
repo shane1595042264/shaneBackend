@@ -222,6 +222,33 @@ describe("POST /api/journal/entries", () => {
     expect(res.status).toBe(400);
     expect(mockCreateEntry).not.toHaveBeenCalled();
   });
+
+  // SHAN-398: content persists to the unbounded journal_versions.content text
+  // column. Without a cap a PAT agent could POST a multi-MB blob per row. Bound
+  // at 100k chars — reject oversized with 400 before the repo is touched.
+  it("returns 400 when content exceeds the 100k markdown-body cap (SHAN-398)", async () => {
+    const res = await app.request("/api/journal/entries", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Test-User": "u1" },
+      body: JSON.stringify({ date: "2026-04-29", content: "x".repeat(100_001) }),
+    });
+    expect(res.status).toBe(400);
+    expect(mockCreateEntry).not.toHaveBeenCalled();
+  });
+
+  it("accepts content at the 100k boundary (SHAN-398)", async () => {
+    mockCreateEntry.mockResolvedValue({
+      entry: { id: "e1", date: "2026-04-29", authorId: "u1" },
+      version: { id: "v1", versionNum: 1 },
+    });
+    const res = await app.request("/api/journal/entries", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Test-User": "u1" },
+      body: JSON.stringify({ date: "2026-04-29", content: "x".repeat(100_000) }),
+    });
+    expect(res.status).toBe(201);
+    expect(mockCreateEntry).toHaveBeenCalled();
+  });
 });
 
 describe("DELETE /api/journal/entries/:date", () => {

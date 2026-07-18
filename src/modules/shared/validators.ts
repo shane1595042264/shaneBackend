@@ -33,3 +33,13 @@ export const IN_FLIGHT_UPLOAD_MESSAGE =
 export function containsInFlightUpload(content: string): boolean {
   return IN_FLIGHT_UPLOAD_REGEX.test(content);
 }
+
+// SHAN-398 (follow-up to SHAN-396): journal/tea markdown bodies persist to
+// unbounded Postgres `text` columns. Without a cap, a PAT agent or a client
+// regression can POST a multi-MB blob per row — a storage-abuse / payload-DoS
+// vector. 100k chars is generous for a full wiki-blog entry (~20k words) while
+// blocking runaway payloads. The bound is additive: no previously-valid body
+// (all well under 100k) breaks.
+export const MAX_MARKDOWN_BODY = 100_000;
+export const MAX_MARKDOWN_BODY_MESSAGE =
+  "Content is too long (max 100,000 characters).";

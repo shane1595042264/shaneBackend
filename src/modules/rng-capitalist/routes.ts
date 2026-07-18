@@ -54,7 +54,7 @@ const evaluateUrlSchema = z
 
 export const evaluateSchema = z.object({
   url: evaluateUrlSchema.optional(),
-  product_name: z.string().optional(),
+  product_name: z.string().max(500).optional(),
   price: z.number().optional(),
   override_balance: z.number().optional(),
   override_last_month_spend: z.number().optional(),

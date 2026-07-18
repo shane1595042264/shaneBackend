@@ -54,6 +54,18 @@ describe("evaluateSchema body shape", () => {
     const r = evaluateSchema.safeParse({ product_name: "Steam Deck" });
     expect(r.success).toBe(false);
   });
+
+  // SHAN-398: product_name persists to the unbounded rng_decisions.product_name
+  // text column. Cap it at 500 chars so an oversized name can't be stored.
+  it("rejects a product_name longer than 500 chars", () => {
+    const r = evaluateSchema.safeParse({ product_name: "x".repeat(501), price: 10 });
+    expect(r.success).toBe(false);
+  });
+
+  it("accepts a product_name at the 500-char boundary", () => {
+    const r = evaluateSchema.safeParse({ product_name: "x".repeat(500), price: 10 });
+    expect(r.success).toBe(true);
+  });
 });
 
 describe("historyQuerySchema pagination validation", () => {
