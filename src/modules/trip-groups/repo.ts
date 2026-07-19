@@ -1,4 +1,4 @@
-import { and, asc, desc, eq } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import { db } from "@/db/client";
 import {
   tripGroups,
@@ -111,25 +111,30 @@ export async function listGroupsForUser(userId: string): Promise<TripGroupSummar
 
   const groupIds = rows.map((r) => r.id);
 
-  // Fan-out counts per group. Two cheap queries beat repeating subqueries
-  // in the main select.
+  // Batch-aggregate member + idea counts across all of the user's groups in
+  // two grouped queries rather than fanning out per-group (was 2N+1 queries).
   const memberCounts = new Map<string, number>();
   const ideaCounts = new Map<string, number>();
 
-  // Naive .length-counts. Fine for personal-site cardinality (groups in
-  // the tens, members per group in single digits).
-  for (const id of groupIds) {
-    const ms = await db
-      .select({ id: tripGroupMembers.id })
-      .from(tripGroupMembers)
-      .where(eq(tripGroupMembers.groupId, id));
-    memberCounts.set(id, ms.length);
-    const is = await db
-      .select({ id: tripIdeas.id })
-      .from(tripIdeas)
-      .where(eq(tripIdeas.groupId, id));
-    ideaCounts.set(id, is.length);
-  }
+  const memberRows = await db
+    .select({
+      groupId: tripGroupMembers.groupId,
+      count: sql<number>`count(*)::int`,
+    })
+    .from(tripGroupMembers)
+    .where(inArray(tripGroupMembers.groupId, groupIds))
+    .groupBy(tripGroupMembers.groupId);
+  for (const r of memberRows) memberCounts.set(r.groupId, r.count);
+
+  const ideaRows = await db
+    .select({
+      groupId: tripIdeas.groupId,
+      count: sql<number>`count(*)::int`,
+    })
+    .from(tripIdeas)
+    .where(inArray(tripIdeas.groupId, groupIds))
+    .groupBy(tripIdeas.groupId);
+  for (const r of ideaRows) ideaCounts.set(r.groupId, r.count);
 
   return rows.map((r) => ({
     ...r,
