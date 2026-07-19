@@ -955,6 +955,21 @@ describe("PUT /api/trip-groups/:slug/itinerary (SHAN-276)", () => {
     expect(mockSaveItinerary).not.toHaveBeenCalled();
   });
 
+  it("rejects an itinerary with an oversized field (SHAN-403 bounds)", async () => {
+    mockGetGroupBySlug.mockResolvedValue(groupRow);
+    const oversized = {
+      summary: "a".repeat(5001),
+      days: [{ day: 1, title: "Day", location: null, activities: [] }],
+    };
+    const res = await app.request(`/api/trip-groups/${SLUG}/itinerary`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", "X-Test-User": USER_A },
+      body: JSON.stringify({ itinerary: oversized }),
+    });
+    expect(res.status).toBe(400);
+    expect(mockSaveItinerary).not.toHaveBeenCalled();
+  });
+
   it("403 for non-members", async () => {
     mockGetGroupBySlug.mockResolvedValue({ ...groupRow, ownerId: USER_A });
     mockIsMember.mockResolvedValue(false);

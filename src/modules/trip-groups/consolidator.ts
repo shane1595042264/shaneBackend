@@ -8,10 +8,15 @@ import { generateText } from "@/modules/shared/llm";
  * flow yet — that lands in Phase 4.
  */
 
+// Upper bounds (SHAN-403): itinerarySchema also validates the user-facing
+// PUT /:slug/itinerary write body, so every user-supplied field needs a cap
+// to block oversized/abusive payloads. Limits are generous enough for any
+// legitimate multi-country trip; all other consumers use safeParse, so
+// tightening these only rejects oversized WRITES with a clean 400.
 const activitySchema = z.object({
-  time: z.string().nullable(),
-  title: z.string().min(1),
-  notes: z.string().nullable(),
+  time: z.string().max(50).nullable(),
+  title: z.string().min(1).max(500),
+  notes: z.string().max(2000).nullable(),
 });
 
 // Meals are timeline fixtures, not events (SHAN-282): every day has
@@ -19,16 +24,16 @@ const activitySchema = z.object({
 // (or null when unassigned).
 const mealsSchema = z
   .object({
-    breakfast: z.string().nullable().optional().default(null),
-    lunch: z.string().nullable().optional().default(null),
-    dinner: z.string().nullable().optional().default(null),
+    breakfast: z.string().max(300).nullable().optional().default(null),
+    lunch: z.string().max(300).nullable().optional().default(null),
+    dinner: z.string().max(300).nullable().optional().default(null),
   })
   .optional()
   .default({ breakfast: null, lunch: null, dinner: null });
 
 const daySchema = z.object({
   day: z.number().int().min(1),
-  title: z.string().min(1),
+  title: z.string().min(1).max(300),
   // Calendar date "YYYY-MM-DD" when the ideas pin the trip to real dates
   // (SHAN-277); null when the trip is still floating.
   date: z
@@ -37,16 +42,16 @@ const daySchema = z.object({
     .nullable()
     .optional()
     .default(null),
-  location: z.string().nullable(),
+  location: z.string().max(300).nullable(),
   // Country grouping for the collapsible sections (SHAN-277).
-  country: z.string().nullable().optional().default(null),
+  country: z.string().max(120).nullable().optional().default(null),
   meals: mealsSchema,
-  activities: z.array(activitySchema),
+  activities: z.array(activitySchema).max(100),
 });
 
 export const itinerarySchema = z.object({
-  summary: z.string().min(1),
-  days: z.array(daySchema).min(1),
+  summary: z.string().min(1).max(5000),
+  days: z.array(daySchema).min(1).max(60),
 });
 
 export type TripItinerary = z.infer<typeof itinerarySchema>;
