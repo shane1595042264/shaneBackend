@@ -1,5 +1,10 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { searchProducts, __resetSearchCache } from "@/modules/skincare/search";
+import {
+  searchProducts,
+  __resetSearchCache,
+  __cacheSize,
+  __MAX_CACHE_ENTRIES,
+} from "@/modules/skincare/search";
 
 function mockFetchOnce(products: unknown[], ok = true) {
   return vi.fn().mockResolvedValueOnce({
@@ -83,6 +88,53 @@ describe("skincare searchProducts", () => {
     const second = await searchProducts("SERUM"); // normalized to same key
     expect(first).toEqual(second);
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the cache bounded: inserting more than the cap never exceeds it", async () => {
+    // Every call returns one product (name/brand vary by query so each caches).
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        products: [{ product_name: "P", brands: "B", image_front_small_url: "https://img/p.jpg" }],
+      }),
+    }) as unknown as typeof fetch;
+
+    for (let i = 0; i < __MAX_CACHE_ENTRIES + 25; i++) {
+      await searchProducts(`query-${i}`);
+    }
+    expect(__cacheSize()).toBeLessThanOrEqual(__MAX_CACHE_ENTRIES);
+  });
+
+  it("evicts an expired entry (not the fresh insert) when over capacity", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        products: [{ product_name: "P", brands: "B", image_front_small_url: "https://img/p.jpg" }],
+      }),
+    });
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    // Fill exactly to the cap at t=0; all these entries expire at CACHE_TTL_MS.
+    for (let i = 0; i < __MAX_CACHE_ENTRIES; i++) {
+      await searchProducts(`old-${i}`);
+    }
+    expect(__cacheSize()).toBe(__MAX_CACHE_ENTRIES);
+    expect(fetchMock).toHaveBeenCalledTimes(__MAX_CACHE_ENTRIES);
+
+    // Jump far past the TTL so every existing entry is expired, then insert one
+    // more. The over-capacity path evicts an expired entry to make room, keeping
+    // the map at the cap and preserving the fresh insert.
+    vi.setSystemTime(10 ** 9);
+    await searchProducts("fresh"); // fetch #501
+    expect(__cacheSize()).toBe(__MAX_CACHE_ENTRIES);
+
+    // "fresh" survived eviction: re-searching it hits the cache, no new fetch.
+    await searchProducts("fresh");
+    expect(fetchMock).toHaveBeenCalledTimes(__MAX_CACHE_ENTRIES + 1);
+
+    vi.useRealTimers();
   });
 
   it("does not cache empty results", async () => {

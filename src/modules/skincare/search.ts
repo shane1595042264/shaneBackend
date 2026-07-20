@@ -29,11 +29,38 @@ const OBF_SEARCH_URL = "https://world.openbeautyfacts.org/cgi/search.pl";
 const TIMEOUT_MS = 5000;
 const MAX_RESULTS = 8;
 const CACHE_TTL_MS = 10 * 60_000;
+// Hard cap on cached queries. Expiry is only checked on read, so without a cap
+// a distinct query that is never searched again lingers forever — an unbounded
+// leak on a long-running Railway instance. 500 distinct autofill terms is far
+// more than this personal site ever holds live yet keeps the map tiny.
+const MAX_CACHE_ENTRIES = 500;
 
 // Normalized-query -> { results, expiresAt }. In-memory only (single Railway
 // instance); a restart drops the cache, which is fine — it's a latency
 // optimization, not a correctness requirement.
 const cache = new Map<string, { results: ProductSuggestion[]; expiresAt: number }>();
+
+/**
+ * Insert a cache entry while keeping the map bounded. delete-then-set refreshes
+ * insertion order so it tracks write-recency (a re-cached query moves to the
+ * back). When over capacity, sweep expired entries first, then FIFO-evict the
+ * oldest-inserted keys until back under the cap.
+ */
+function cacheSet(query: string, results: ProductSuggestion[], now: number): void {
+  cache.delete(query);
+  cache.set(query, { results, expiresAt: now + CACHE_TTL_MS });
+  if (cache.size <= MAX_CACHE_ENTRIES) return;
+
+  for (const [key, entry] of cache) {
+    if (cache.size <= MAX_CACHE_ENTRIES) break;
+    if (entry.expiresAt <= now) cache.delete(key);
+  }
+  while (cache.size > MAX_CACHE_ENTRIES) {
+    const oldest = cache.keys().next().value as string | undefined;
+    if (oldest === undefined) break;
+    cache.delete(oldest);
+  }
+}
 
 function normalizeQuery(q: string): string {
   return q.trim().toLowerCase().replace(/\s+/g, " ");
@@ -102,7 +129,7 @@ export async function searchProducts(rawQuery: string): Promise<ProductSuggestio
   // Only cache non-empty results: a transient upstream blip shouldn't pin an
   // empty list for 10 minutes when the next keystroke might succeed.
   if (results.length > 0) {
-    cache.set(query, { results, expiresAt: now + CACHE_TTL_MS });
+    cacheSet(query, results, now);
   }
   return results;
 }
@@ -111,3 +138,11 @@ export async function searchProducts(rawQuery: string): Promise<ProductSuggestio
 export function __resetSearchCache() {
   cache.clear();
 }
+
+/** Test-only: current number of cached entries (for bound assertions). */
+export function __cacheSize() {
+  return cache.size;
+}
+
+/** Test-only: expose the cap so tests don't hardcode the magic number. */
+export const __MAX_CACHE_ENTRIES = MAX_CACHE_ENTRIES;
