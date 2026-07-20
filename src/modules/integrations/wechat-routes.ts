@@ -5,16 +5,20 @@ import { processWeChatMessages } from "./wechat";
 
 export const wechatRoutes = new Hono();
 
-const wechatMessageSchema = z.object({
-  content: z.string(),
-  sender: z.string(),
-  chat: z.string(),
-  timestamp: z.string(),
-  messageType: z.string().optional(),
-  url: z.string().optional(),
+// Upper bounds only — no new .min() — so every currently-valid payload still
+// passes while oversized input is rejected with a clean 400 instead of silently
+// blowing the activities(date,source,type,data) unique-index row-size limit and
+// being dropped inside processWeChatMessages' per-message try/catch.
+export const wechatMessageSchema = z.object({
+  content: z.string().max(10_000),
+  sender: z.string().max(255),
+  chat: z.string().max(255),
+  timestamp: z.string().max(64),
+  messageType: z.string().max(50).optional(),
+  url: z.string().max(2048).optional(),
 });
 
-const wechatBatchSchema = z.object({
+export const wechatBatchSchema = z.object({
   messages: z.array(wechatMessageSchema).min(1).max(500),
 });
 
