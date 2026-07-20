@@ -288,9 +288,15 @@ export const vocabWords = pgTable(
       .defaultNow(),
   },
   (t) => [
-    index("vocab_words_language_idx").on(t.language),
+    // SHAN-410: composite (filter, created_at) indexes so the knowledge browse
+    // query (GET /entries) — WHERE language|category = ? ORDER BY created_at DESC —
+    // filters and returns rows in sort order via one index scan, no separate Sort.
+    // Leading-column prefix still covers equality-only lookups, so these replace
+    // the old standalone (language)/(category) indexes rather than adding to them.
+    index("vocab_words_language_created_idx").on(t.language, t.createdAt),
+    index("vocab_words_category_created_idx").on(t.category, t.createdAt),
+    // Kept for the no-filter default browse (ORDER BY created_at with no WHERE).
     index("vocab_words_created_at_idx").on(t.createdAt),
-    index("vocab_words_category_idx").on(t.category),
     index("vocab_words_created_by_idx").on(t.createdBy),
   ]
 );
