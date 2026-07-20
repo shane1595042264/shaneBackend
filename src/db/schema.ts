@@ -244,7 +244,15 @@ export const rngDecisions = pgTable(
     result: varchar("result", { length: 20 }).notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
   },
-  (t) => [index("rng_decisions_created_at_idx").on(t.createdAt)]
+  (t) => [
+    // Composite (user_id, created_at) serves the only read query —
+    // keyset-paginated GET /api/rng/history: WHERE user_id = ? [AND created_at <
+    // cursor] ORDER BY created_at DESC. Mirrors loan_entries_user_created_idx /
+    // tea_entries_author_created_idx. Replaces the old created_at-alone index,
+    // which backed no query (all rng_decisions reads are user-scoped) and left
+    // user_id unindexed.
+    index("rng_decisions_user_created_idx").on(t.userId, t.createdAt),
+  ]
 );
 
 // ------------------------------------------------------------------
