@@ -21,9 +21,13 @@ export interface GeneratedItem {
 
 /**
  * Single raw SQL — drizzle's relational query builder can't express the
- * CTEs cleanly. Returns picked items in least-recently-practiced order
- * with random tiebreak, skipping solidified items by default. Empty
- * array if nothing matches.
+ * CTEs cleanly. Returns picked items ordered by ascending "familiarity"
+ * (SHAN-409): fewest loaded locations first — an item memorized at 0
+ * locations is the least familiar and gets top priority — then least
+ * recently practiced, then random tiebreak. Skips solidified items by
+ * default. Time-mode (dance) prescriptions are excluded entirely: they're
+ * practiced against a timer, not by repetition, so they don't belong in
+ * the vocabulary repetition selection. Empty array if nothing matches.
  */
 export async function generateSessionItems(input: GeneratorInput): Promise<GeneratedItem[]> {
   const n = Math.max(1, Math.min(50, input.n));
@@ -40,7 +44,9 @@ export async function generateSessionItems(input: GeneratorInput): Promise<Gener
       WHERE ps.user_id = ${input.userId}
         AND psi.sets_completed >= t.sets_per_strike
         AND psi.location_id IS NOT NULL
-      GROUP BY psi.item_id, psi.location_id
+      -- t.strikes_per_loaded_location must be grouped to be referenced in HAVING;
+      -- thresholds is a single constant row so this doesn't change the grouping.
+      GROUP BY psi.item_id, psi.location_id, t.strikes_per_loaded_location
       HAVING COUNT(*) >= t.strikes_per_loaded_location
     ),
     my_loaded_per_item AS (
@@ -64,10 +70,11 @@ export async function generateSessionItems(input: GeneratorInput): Promise<Gener
     LEFT JOIN my_loaded_per_item mlpi ON mlpi.item_id = v.id
     LEFT JOIN my_last_practiced mlp ON mlp.item_id = v.id
     CROSS JOIN thresholds t
-    WHERE (${input.categoryFilter}::text IS NULL OR v.category = ${input.categoryFilter})
+    WHERE p.set_mode = 'reps'
+      AND (${input.categoryFilter}::text IS NULL OR v.category = ${input.categoryFilter})
       AND (${input.includeSolidified} = true
            OR COALESCE(mlpi.loaded_locations, 0) < t.locations_to_solidify)
-    ORDER BY mlp.last_at NULLS FIRST, random()
+    ORDER BY COALESCE(mlpi.loaded_locations, 0) ASC, mlp.last_at NULLS FIRST, random()
     LIMIT ${n}
   `);
 
