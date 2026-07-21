@@ -211,6 +211,25 @@ describe("POST /api/loans", () => {
     expect(res.status).toBe(400);
   });
 
+  it("rejects an oversized integer part that would lose precision on Number() conversion", async () => {
+    const res = await app.request("/api/loans", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Test-User": USER_A },
+      body: JSON.stringify({ borrowerName: "Bob", amount: "12345678901234567890" }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it("accepts an amount at the 13-integer-digit boundary", async () => {
+    insertReturning([makeRow({ amount: "9999999999999.99" })]);
+    const res = await app.request("/api/loans", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Test-User": USER_A },
+      body: JSON.stringify({ borrowerName: "Bob", amount: "9999999999999.99" }),
+    });
+    expect(res.status).toBe(201);
+  });
+
   it("rejects empty borrowerName", async () => {
     const res = await app.request("/api/loans", {
       method: "POST",

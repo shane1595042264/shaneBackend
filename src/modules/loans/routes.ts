@@ -17,11 +17,17 @@ const idParamSchema = z.object({
 
 // Amount accepted as string OR number on input; persisted as text to preserve
 // decimal precision (same approach as rng_decisions.price). Reject negatives
-// and require ≤ 2 decimal places to keep currency math sane.
+// and require ≤ 2 decimal places to keep currency math sane. Cap the integer
+// part at 13 digits (up to ~10 trillion): the value is stored as text but
+// serialize() returns Number(row.amount) and the frontend who-owes totals run
+// Number() math, so anything past Number.MAX_SAFE_INTEGER (~9e15) would be
+// silently rounded. 13 digits keeps every amount (and their sums) exact to the
+// cent while staying far above any real personal loan — oversized input 400s
+// instead of corrupting the ledger.
 const amountSchema = z
   .union([z.string(), z.number()])
   .transform((v) => (typeof v === "number" ? v.toString() : v.trim()))
-  .refine((s) => /^\d+(\.\d{1,2})?$/.test(s), { message: "amount must be a non-negative decimal with up to 2 fractional digits" });
+  .refine((s) => /^\d{1,13}(\.\d{1,2})?$/.test(s), { message: "amount must be a non-negative decimal with up to 13 integer digits and up to 2 fractional digits" });
 
 // "owed_to_me" = someone borrowed from Shane (default/legacy); "i_owe" = Shane
 // owes someone else.
