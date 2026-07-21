@@ -153,3 +153,28 @@ describe("POST /api/knowledge/connections — existence gating", () => {
     expect((await res.json()).error).toBe("This connection already exists");
   });
 });
+
+describe("POST /api/knowledge/connections — note bound (SHAN-412)", () => {
+  it("rejects a note longer than 1000 chars with 400 and never hits the DB", async () => {
+    const res = await app.request("/api/knowledge/connections", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...validBody, note: "x".repeat(1001) }),
+    });
+    expect(res.status).toBe(400);
+    expect(mockSelect).not.toHaveBeenCalled();
+    expect(mockInsert).not.toHaveBeenCalled();
+  });
+
+  it("accepts a note at exactly 1000 chars", async () => {
+    mockSelect.mockReturnValue(selectChain([{ id: FROM_ID }, { id: TO_ID }]));
+    insertReturning([{ id: "c1", ...validBody }]);
+    const res = await app.request("/api/knowledge/connections", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...validBody, note: "x".repeat(1000) }),
+    });
+    expect(res.status).toBe(201);
+    expect(mockInsert).toHaveBeenCalled();
+  });
+});

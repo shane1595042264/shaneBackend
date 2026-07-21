@@ -612,7 +612,10 @@ const createConnectionSchema = z.object({
   fromWordId: z.string().uuid(),
   toWordId: z.string().uuid(),
   connectionType: z.enum(["synonym", "antonym", "related", "translation", "root"]),
-  note: z.string().optional(),
+  // SHAN-412: short free-text annotation on a connection, inserted into the
+  // shared vocab_connections.note text column. Bound it to match vocabulary
+  // (SHAN-401) so a knowledge:write PAT can't push a runaway payload.
+  note: z.string().max(1000).optional(),
 });
 
 knowledgeRoutes.get("/connections", zValidator("query", wordIdQuerySchema), async (c) => {
