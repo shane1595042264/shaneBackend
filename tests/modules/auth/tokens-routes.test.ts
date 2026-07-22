@@ -71,6 +71,17 @@ describe("POST /api/auth/tokens", () => {
     expect(res.status).toBe(400);
   });
 
+  it("rejects an over-long scopes array with 400", async () => {
+    const tok = await jwt("user-1");
+    const res = await app.request("/api/auth/tokens", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${tok}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ name: "flood", scopes: Array(1000).fill("entries:write") }),
+    });
+    expect(res.status).toBe(400);
+    expect(mockMint).not.toHaveBeenCalled();
+  });
+
   it("defaults scopes to [] when not provided", async () => {
     mockMint.mockResolvedValue({ raw: "pat_xyz", id: "tok-2" });
     const tok = await jwt("user-1");

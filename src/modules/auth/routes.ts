@@ -14,7 +14,10 @@ const GOOGLE_JWKS = createRemoteJWKSet(
 );
 
 const googleAuthSchema = z.object({
-  credential: z.string(),
+  // Real Google ID tokens (JWTs) are ~1-2KB; 8KB is a generous cap that still
+  // rejects multi-MB payloads before they reach zod + jwtVerify on this public,
+  // unauthenticated endpoint (memory-pressure/DoS guard).
+  credential: z.string().max(8192),
 });
 
 type AuthEnv = { Variables: { userId: string | null; tokenScopes: string[] | null } };
@@ -172,7 +175,9 @@ const ALLOWED_SCOPES = [
 
 const mintTokenSchema = z.object({
   name: z.string().min(1).max(80),
-  scopes: z.array(z.enum(ALLOWED_SCOPES)).default([]),
+  // Only a handful of valid scopes exist; cap array length so a huge array
+  // can't spike memory during validation (parity with name's .max(80)).
+  scopes: z.array(z.enum(ALLOWED_SCOPES)).max(20).default([]),
 });
 
 authRoutes.post("/tokens", requireAuth, zValidator("json", mintTokenSchema), async (c) => {
