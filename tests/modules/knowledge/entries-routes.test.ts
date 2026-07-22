@@ -660,3 +660,59 @@ describe("PUT /api/knowledge/entries/:id — payload length bounds (SHAN-396)", 
     expect(mockUpdate).not.toHaveBeenCalled();
   });
 });
+
+// SHAN-415: the GET /entries filter params (search/label/language/category) were
+// unbounded z.string(). `search` fans out into ~7 ILIKE %pattern% scans and
+// `label` into a jsonb containment check, so a multi-MB value was an
+// economic-DoS surface on this public endpoint. Bounds now reject oversized
+// filters with 400 before any query runs; realistic filters still pass.
+describe("GET /api/knowledge/entries — filter param length bounds (SHAN-415)", () => {
+  function selectChain(rows: unknown[]) {
+    const c: Record<string, unknown> = {};
+    const t = Promise.resolve(rows);
+    for (const m of ["from", "where", "orderBy", "limit", "offset"]) {
+      c[m] = vi.fn(() => c);
+    }
+    Object.assign(c, { then: (r: any, j: any) => t.then(r, j) });
+    return c;
+  }
+
+  it("rejects an over-cap search (256 chars) with 400 before querying", async () => {
+    const res = await app.request(`/api/knowledge/entries?search=${"a".repeat(256)}`);
+    expect(res.status).toBe(400);
+    expect(mockSelect).not.toHaveBeenCalled();
+  });
+
+  it("rejects an over-cap label (101 chars) with 400", async () => {
+    const res = await app.request(`/api/knowledge/entries?label=${"b".repeat(101)}`);
+    expect(res.status).toBe(400);
+    expect(mockSelect).not.toHaveBeenCalled();
+  });
+
+  it("rejects an over-cap language (101 chars) with 400", async () => {
+    const res = await app.request(`/api/knowledge/entries?language=${"c".repeat(101)}`);
+    expect(res.status).toBe(400);
+    expect(mockSelect).not.toHaveBeenCalled();
+  });
+
+  it("rejects an over-cap category (101 chars) with 400", async () => {
+    const res = await app.request(`/api/knowledge/entries?category=${"d".repeat(101)}`);
+    expect(res.status).toBe(400);
+    expect(mockSelect).not.toHaveBeenCalled();
+  });
+
+  it("accepts filters at the boundary (search 255, label/language/category 100)", async () => {
+    mockSelect
+      .mockReturnValueOnce(selectChain([{ id: "u1", word: "build" }]))
+      .mockReturnValueOnce(selectChain([{ count: 1 }]));
+
+    const qs = new URLSearchParams({
+      search: "a".repeat(255),
+      label: "b".repeat(100),
+      language: "c".repeat(100),
+      category: "d".repeat(100),
+    });
+    const res = await app.request(`/api/knowledge/entries?${qs.toString()}`);
+    expect(res.status).toBe(200);
+  });
+});

@@ -521,3 +521,37 @@ describe("vocabulary write rate limits (per PAT)", () => {
     expect(stillOk.status).toBe(201);
   });
 });
+
+// SHAN-415: the public GET /words filter params (search/label/language) were
+// unbounded z.string(). `search` drives an ILIKE %pattern% and `label` a jsonb
+// containment check, so a multi-MB value was an economic-DoS surface. Bounds
+// now reject oversized filters with 400 before the query runs; the mocked
+// db.select is left unconfigured so any 200 would mean validation was bypassed.
+describe("GET /api/vocabulary/words — filter param length bounds (SHAN-415)", () => {
+  it.each([
+    ["search", "search", 256],
+    ["label", "label", 101],
+    ["language", "language", 101],
+  ])("rejects an over-cap %s with 400 before querying", async (_name, param, len) => {
+    const res = await app.request(`/api/vocabulary/words?${param}=${"a".repeat(len)}`);
+    expect(res.status).toBe(400);
+    expect(mockSelect).not.toHaveBeenCalled();
+  });
+
+  it("accepts filters at the boundary (search 255, label/language 100)", async () => {
+    mockSelect.mockImplementation(() => ({
+      from: () => ({
+        where: () => ({
+          orderBy: () => ({ limit: () => ({ offset: () => Promise.resolve([]) }) }),
+        }),
+      }),
+    }));
+    const qs = new URLSearchParams({
+      search: "a".repeat(255),
+      label: "b".repeat(100),
+      language: "c".repeat(100),
+    });
+    const res = await app.request(`/api/vocabulary/words?${qs.toString()}`);
+    expect(res.status).toBe(200);
+  });
+});

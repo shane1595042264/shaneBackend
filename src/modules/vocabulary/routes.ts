@@ -26,10 +26,15 @@ const uuidParamSchema = z.object({
   id: z.string().uuid("Invalid UUID"),
 });
 
+// SHAN-415: bound filter params (mirrors the knowledge module's wordsQuerySchema
+// exactly — both query the same vocabWords table). `search` drives an ILIKE
+// %pattern% and `label` a jsonb containment check, so an unbounded value is a
+// wildcard-scan / large-blob DoS surface. Additive: no .min(), realistic
+// filters are well under the caps; oversized values 400 before touching the DB.
 const wordsQuerySchema = z.object({
-  language: z.string().optional(),
-  label: z.string().optional(),
-  search: z.string().optional(),
+  language: z.string().max(100).optional(),
+  label: z.string().max(100).optional(),
+  search: z.string().max(255).optional(),
   limit: z.coerce.number().int().min(1).max(500).default(100),
   offset: z.coerce.number().int().min(0).default(0),
 });

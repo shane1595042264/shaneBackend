@@ -23,11 +23,17 @@ const uuidParamSchema = z.object({
   id: z.string().uuid("Invalid UUID"),
 });
 
+// SHAN-415: filter params are bounded (read-side counterpart to SHAN-396's
+// write-payload bounds). `search` fans out into ~7 ILIKE %pattern% scans and
+// `label` into a jsonb containment check, so an unbounded multi-MB value on
+// these public GETs is an economic-DoS surface. Bounds are additive — no .min()
+// so empty/ignored params keep current behavior; every realistic filter is far
+// under the cap. Oversized values now 400 at zod before hitting Postgres.
 const wordsQuerySchema = z.object({
-  language: z.string().optional(),
-  label: z.string().optional(),
-  search: z.string().optional(),
-  category: z.string().optional(),
+  language: z.string().max(100).optional(),
+  label: z.string().max(100).optional(),
+  search: z.string().max(255).optional(),
+  category: z.string().max(100).optional(),
   // Filter by source.app — case-insensitive match against the jsonb source column.
   // Lets clients browse "all entries from <app>" (e.g. ?app=nibbler).
   app: z.string().min(1).max(100).optional(),
