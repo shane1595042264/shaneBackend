@@ -225,7 +225,7 @@ rngRoutes.post("/plaid/link-token", plaidRateLimit, async (c) => {
   return c.json({ link_token: linkToken });
 });
 
-const exchangeSchema = z.object({ public_token: z.string() });
+export const exchangeSchema = z.object({ public_token: z.string().max(500) });
 rngRoutes.post("/plaid/exchange", plaidRateLimit, zValidator("json", exchangeSchema), async (c) => {
   const userId = c.get("userId");
   const { public_token } = c.req.valid("json");

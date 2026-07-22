@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { evaluateSchema, historyQuerySchema } from "@/modules/rng-capitalist/routes";
+import { evaluateSchema, historyQuerySchema, exchangeSchema } from "@/modules/rng-capitalist/routes";
 
 describe("evaluateSchema URL validation", () => {
   it("accepts a valid https URL", () => {
@@ -64,6 +64,23 @@ describe("evaluateSchema body shape", () => {
 
   it("accepts a product_name at the 500-char boundary", () => {
     const r = evaluateSchema.safeParse({ product_name: "x".repeat(500), price: 10 });
+    expect(r.success).toBe(true);
+  });
+});
+
+describe("exchangeSchema public_token bound (SHAN-414)", () => {
+  it("accepts a normal Plaid public_token", () => {
+    const r = exchangeSchema.safeParse({ public_token: "public-sandbox-abc123" });
+    expect(r.success).toBe(true);
+  });
+
+  it("rejects a public_token longer than 500 chars", () => {
+    const r = exchangeSchema.safeParse({ public_token: "x".repeat(501) });
+    expect(r.success).toBe(false);
+  });
+
+  it("accepts a public_token at the 500-char boundary", () => {
+    const r = exchangeSchema.safeParse({ public_token: "x".repeat(500) });
     expect(r.success).toBe(true);
   });
 });

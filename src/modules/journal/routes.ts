@@ -534,7 +534,7 @@ journalRoutes.delete(
   }
 );
 
-const reactionBody = z.object({ emoji: z.string() });
+const reactionBody = z.object({ emoji: z.string().max(32) });
 
 journalRoutes.post(
   "/entries/:date/reactions",

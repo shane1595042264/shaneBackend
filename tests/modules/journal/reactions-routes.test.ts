@@ -129,6 +129,16 @@ describe("POST /api/journal/entries/:date/reactions", () => {
     expect(res.status).toBe(400);
   });
 
+  it("400 on oversized emoji (zod .max(32) bound)", async () => {
+    mockGetByDate.mockResolvedValue({ entry: { id: "e1" }, currentVersion: {} });
+    const res = await app.request("/api/journal/entries/2026-05-03/reactions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Test-User": "u1" },
+      body: JSON.stringify({ emoji: "x".repeat(1000) }),
+    });
+    expect(res.status).toBe(400);
+  });
+
   it("404 when entry missing", async () => {
     mockGetByDate.mockResolvedValue(null);
     const res = await app.request("/api/journal/entries/2026-05-03/reactions", {
