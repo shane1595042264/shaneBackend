@@ -2,7 +2,7 @@ import { and, desc, eq, isNotNull, sql } from "drizzle-orm";
 import { db } from "@/db/client";
 import { vocabWords, practicePrescriptions, practiceSessionItems, practiceSessions } from "@/db/schema";
 import { computeProgress, type Thresholds } from "./strikes";
-import { listItemRowsForProgress } from "./session-items-repo";
+import { listItemRowsForProgress, listItemRowsForProgressByItems } from "./session-items-repo";
 import { getSettings } from "./settings-repo";
 
 export interface PracticeableItemSummary {
@@ -20,7 +20,9 @@ export interface PracticeableItemSummary {
 /**
  * List all practice-able knowledge items (those with a prescription) joined
  * with the calling user's progress. Optional category filter + skip-solidified
- * toggle. N+1 by design — bounded by number of practice-able items (dozens).
+ * toggle. Progress rows for all items are fetched in one batched query
+ * (listItemRowsForProgressByItems), so the query count is constant regardless
+ * of how many practice-able items the user has.
  */
 export async function listPracticeableItems(opts: {
   userId: string;
@@ -74,9 +76,14 @@ export async function listPracticeableItems(opts: {
     }
   }
 
+  const progressByItem = await listItemRowsForProgressByItems(
+    opts.userId,
+    items.map((it) => it.itemId),
+  );
+
   const summaries: PracticeableItemSummary[] = [];
   for (const it of items) {
-    const rows = await listItemRowsForProgress(opts.userId, it.itemId);
+    const rows = progressByItem.get(it.itemId) ?? [];
     const p = computeProgress(rows, t);
     const summary: PracticeableItemSummary = {
       itemId: it.itemId,

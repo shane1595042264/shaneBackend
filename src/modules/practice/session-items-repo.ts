@@ -1,4 +1,4 @@
-import { and, asc, eq, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import { db } from "@/db/client";
 import { practiceSessionItems, practiceSessions, vocabWords, practicePrescriptions } from "@/db/schema";
 import type { SessionItemRow } from "./strikes";
@@ -161,4 +161,43 @@ export async function listItemRowsForProgress(
       ),
     );
   return rows as SessionItemRow[];
+}
+
+/**
+ * Batched sibling of listItemRowsForProgress: fetch progress rows for MANY
+ * items belonging to one user in a single query, grouped by itemId. Lets the
+ * item list avoid an N+1 (one query per item). Items with no rows are simply
+ * absent from the map — callers should treat a missing key as an empty array.
+ * Excludes rows with sets_completed=0, same as the single-item variant.
+ */
+export async function listItemRowsForProgressByItems(
+  userId: string,
+  itemIds: string[],
+): Promise<Map<string, SessionItemRow[]>> {
+  const map = new Map<string, SessionItemRow[]>();
+  if (itemIds.length === 0) return map;
+
+  const rows = (await db
+    .select({
+      itemId: practiceSessionItems.itemId,
+      locationId: practiceSessionItems.locationId,
+      setsCompleted: practiceSessionItems.setsCompleted,
+      completedAt: practiceSessionItems.completedAt,
+    })
+    .from(practiceSessionItems)
+    .innerJoin(practiceSessions, eq(practiceSessions.id, practiceSessionItems.sessionId))
+    .where(
+      and(
+        eq(practiceSessions.userId, userId),
+        inArray(practiceSessionItems.itemId, itemIds),
+        sql`${practiceSessionItems.setsCompleted} > 0`,
+      ),
+    )) as SessionItemRow[];
+
+  for (const r of rows) {
+    const list = map.get(r.itemId);
+    if (list) list.push(r);
+    else map.set(r.itemId, [r]);
+  }
+  return map;
 }

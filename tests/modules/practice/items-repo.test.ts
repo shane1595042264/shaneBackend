@@ -30,6 +30,7 @@ vi.mock("@/modules/practice/settings-repo", () => ({
 }));
 vi.mock("@/modules/practice/session-items-repo", () => ({
   listItemRowsForProgress: vi.fn(async () => []),
+  listItemRowsForProgressByItems: vi.fn(async () => new Map()),
 }));
 vi.mock("@/modules/practice/strikes", () => ({
   computeProgress: vi.fn(() => ({
