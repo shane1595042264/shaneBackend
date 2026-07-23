@@ -67,7 +67,10 @@ calendarConnectRoutes.get("/status", async (c) => {
   return c.json({ connected: !!conn, clientId: clientId() });
 });
 
-const connectBody = z.object({ code: z.string().min(1) });
+// Real GIS popup auth codes are ~1-2KB; cap at 8192 (parity with the auth
+// /google credential bound in SHAN-417) so an oversized body can't spike
+// memory during zod validation before the token exchange runs.
+const connectBody = z.object({ code: z.string().min(1).max(8192) });
 
 calendarConnectRoutes.post("/connect", zValidator("json", connectBody), async (c) => {
   const userId = c.get("userId");
