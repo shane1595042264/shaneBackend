@@ -1,0 +1,1 @@
+CREATE INDEX "rng_ban_list_user_expires_idx" ON "rng_ban_list" USING btree ("user_id","expires_at");

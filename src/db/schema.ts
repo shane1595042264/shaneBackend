@@ -370,7 +370,14 @@ export const rngBanList = pgTable(
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
     sourceDecisionId: uuid("source_decision_id").references(() => rngDecisions.id),
   },
-  (t) => [index("rng_ban_list_expires_at_idx").on(t.expiresAt)]
+  (t) => [
+    index("rng_ban_list_expires_at_idx").on(t.expiresAt),
+    // Hot path: POST /api/rng/evaluate and GET /api/rng/bans filter
+    // WHERE user_id = ? AND expires_at > now() on every request. The
+    // expires_at-only index forces a global-active-ban scan then a
+    // user_id heap filter; this composite serves the WHERE clause directly.
+    index("rng_ban_list_user_expires_idx").on(t.userId, t.expiresAt),
+  ]
 );
 
 // ───────────────────────────────────────────────────────────────────
