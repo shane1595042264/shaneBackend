@@ -105,6 +105,12 @@ export async function listEntries(opts: {
   const excerptStart = opts.q
     ? sql`greatest(1, position(lower(${opts.q}) in lower(${sourceText})) - ${SNIPPET_CONTEXT_BEFORE})`
     : sql`1`;
+  // When the excerpt is trimmed at the front (search match sits deep in the body,
+  // so excerptStart > 1) prepend a leading ellipsis so the snippet reads as a
+  // fragment instead of starting abruptly mid-word. Non-search listings start at
+  // position 1, so this is constant-false there. The trailing ellipsis is handled
+  // client-side by toPlainExcerpt when it re-truncates the end.
+  const leadingEllipsis = sql`case when ${excerptStart} > 1 then '…' else '' end`;
   const rows = await db
     .select({
       id: journalEntries.id,
@@ -117,7 +123,7 @@ export async function listEntries(opts: {
       pendingSuggestionCount: journalEntries.pendingSuggestionCount,
       createdAt: journalEntries.createdAt,
       updatedAt: journalEntries.updatedAt,
-      contentExcerpt: sql<string | null>`substring(${sourceText} from ${excerptStart} for ${EXCERPT_SOURCE_LEN})`,
+      contentExcerpt: sql<string | null>`${leadingEllipsis} || substring(${sourceText} from ${excerptStart} for ${EXCERPT_SOURCE_LEN})`,
       commentCount: sql<number>`(SELECT COUNT(*)::int FROM ${journalComments} WHERE ${journalComments.entryId} = ${journalEntries.id})`,
       appendCount: sql<number>`(SELECT COUNT(*)::int FROM ${journalAppends} WHERE ${journalAppends.entryId} = ${journalEntries.id})`,
       authorName: users.name,
