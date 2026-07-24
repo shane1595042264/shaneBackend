@@ -23,6 +23,18 @@ async function slugIsTaken(slug: string): Promise<boolean> {
   return !!row;
 }
 
+/**
+ * Resolve the display name for a trip's owner. Read paths (listTrips,
+ * getTripBySlug) get this via a LEFT JOIN; the write paths below can't join
+ * on `.returning()`, so they call this to honor the TripFull contract instead
+ * of hardcoding null. Anonymous trips (no ownerId) short-circuit with no query.
+ */
+async function ownerNameFor(ownerId: string | null): Promise<string | null> {
+  if (!ownerId) return null;
+  const [row] = await db.select({ name: users.name }).from(users).where(eq(users.id, ownerId)).limit(1);
+  return row?.name ?? null;
+}
+
 export async function createTrip(input: {
   ownerId: string | null;
   title: string | null;
@@ -40,7 +52,7 @@ export async function createTrip(input: {
       sourceFilename: input.sourceFilename,
     })
     .returning();
-  return { ...row, ownerName: null };
+  return { ...row, ownerName: await ownerNameFor(row.ownerId) };
 }
 
 /**
@@ -122,7 +134,7 @@ export async function updateTripBySlug(
     .where(eq(trips.slug, slug))
     .returning();
   if (!row) return null;
-  return { ...row, ownerName: null };
+  return { ...row, ownerName: await ownerNameFor(row.ownerId) };
 }
 
 /** Delete by slug — no ownership check. Anyone can nuke any trip. */
