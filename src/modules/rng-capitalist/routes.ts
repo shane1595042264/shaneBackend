@@ -52,12 +52,21 @@ const evaluateUrlSchema = z
     { message: "URL must use http or https" },
   );
 
+// SHAN-423: bare z.number() only rejects NaN — it accepts Infinity and
+// arbitrarily large finite values. These fields flow into .toFixed(2) and are
+// persisted to the TEXT columns rng_decisions.price / balance_at_time /
+// remaining_budget, so an Infinity (JSON 1e309 parses to Infinity) or huge
+// finite value silently corrupts the ledger and returns price: null. Cap them:
+// .finite() rejects Infinity; $1B ceiling is generous for a personal
+// purchase-decision tool while preventing precision/overflow abuse. price and
+// last_month_spend can't be negative; balance can (overdraft).
+const MONEY_MAX = 1_000_000_000;
 export const evaluateSchema = z.object({
   url: evaluateUrlSchema.optional(),
   product_name: z.string().max(500).optional(),
-  price: z.number().optional(),
-  override_balance: z.number().optional(),
-  override_last_month_spend: z.number().optional(),
+  price: z.number().finite().nonnegative().max(MONEY_MAX).optional(),
+  override_balance: z.number().finite().min(-MONEY_MAX).max(MONEY_MAX).optional(),
+  override_last_month_spend: z.number().finite().nonnegative().max(MONEY_MAX).optional(),
 }).refine((d) => d.url || (d.product_name && d.price), {
   message: "Provide either a URL or product_name + price",
 });

@@ -68,6 +68,59 @@ describe("evaluateSchema body shape", () => {
   });
 });
 
+// SHAN-423: price/override_balance/override_last_month_spend were bare
+// z.number() (only NaN rejected). A JSON body {"price":1e309} parses to
+// Infinity, passed zod, then .toFixed(2) = "Infinity" was persisted to the
+// TEXT ledger columns — silent corruption. Bound them with .finite() + $1B cap.
+describe("evaluateSchema numeric bounds (SHAN-423)", () => {
+  const MONEY_MAX = 1_000_000_000;
+
+  it("rejects an Infinity price (1e309 parses to Infinity in JS)", () => {
+    const r = evaluateSchema.safeParse({ product_name: "Steam Deck", price: Infinity });
+    expect(r.success).toBe(false);
+  });
+
+  it("rejects a price above the $1B cap", () => {
+    const r = evaluateSchema.safeParse({ product_name: "Yacht", price: MONEY_MAX + 1 });
+    expect(r.success).toBe(false);
+  });
+
+  it("rejects a negative price", () => {
+    const r = evaluateSchema.safeParse({ product_name: "Refund", price: -10 });
+    expect(r.success).toBe(false);
+  });
+
+  it("accepts a price at the $1B boundary", () => {
+    const r = evaluateSchema.safeParse({ product_name: "Yacht", price: MONEY_MAX });
+    expect(r.success).toBe(true);
+  });
+
+  it("rejects an Infinity override_balance", () => {
+    const r = evaluateSchema.safeParse({ product_name: "x", price: 10, override_balance: Infinity });
+    expect(r.success).toBe(false);
+  });
+
+  it("accepts a negative override_balance (overdraft)", () => {
+    const r = evaluateSchema.safeParse({ product_name: "x", price: 10, override_balance: -500 });
+    expect(r.success).toBe(true);
+  });
+
+  it("rejects an override_balance beyond the ±$1B cap", () => {
+    const r = evaluateSchema.safeParse({ product_name: "x", price: 10, override_balance: -(MONEY_MAX + 1) });
+    expect(r.success).toBe(false);
+  });
+
+  it("rejects a negative override_last_month_spend", () => {
+    const r = evaluateSchema.safeParse({ product_name: "x", price: 10, override_last_month_spend: -1 });
+    expect(r.success).toBe(false);
+  });
+
+  it("rejects an override_last_month_spend above the $1B cap", () => {
+    const r = evaluateSchema.safeParse({ product_name: "x", price: 10, override_last_month_spend: MONEY_MAX + 1 });
+    expect(r.success).toBe(false);
+  });
+});
+
 describe("exchangeSchema public_token bound (SHAN-414)", () => {
   it("accepts a normal Plaid public_token", () => {
     const r = exchangeSchema.safeParse({ public_token: "public-sandbox-abc123" });
