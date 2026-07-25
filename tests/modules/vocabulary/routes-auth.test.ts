@@ -539,13 +539,10 @@ describe("GET /api/vocabulary/words — filter param length bounds (SHAN-415)", 
   });
 
   it("accepts filters at the boundary (search 255, label/language 100)", async () => {
-    mockSelect.mockImplementation(() => ({
-      from: () => ({
-        where: () => ({
-          orderBy: () => ({ limit: () => ({ offset: () => Promise.resolve([]) }) }),
-        }),
-      }),
-    }));
+    // Dual query since SHAN-425: list chain + parallel count.
+    mockSelect
+      .mockReturnValueOnce(wordsChain([]))
+      .mockReturnValueOnce(wordsChain([{ count: 0 }]));
     const qs = new URLSearchParams({
       search: "a".repeat(255),
       label: "b".repeat(100),
@@ -553,5 +550,68 @@ describe("GET /api/vocabulary/words — filter param length bounds (SHAN-415)", 
     });
     const res = await app.request(`/api/vocabulary/words?${qs.toString()}`);
     expect(res.status).toBe(200);
+  });
+});
+
+// SHAN-425: GET /words now returns { words, total, limit, offset } (parity with
+// the knowledge module's GET /entries over the same vocabWords table). It runs
+// the filtered list query and a parallel count(*)::int over the same WHERE.
+// wordsChain is a thenable that answers both the list chain (from/where/orderBy/
+// limit/offset) and the count chain (from/where), so a single mock serves both
+// db.select() calls in the Promise.all.
+function wordsChain(rows: unknown[]) {
+  const chain: Record<string, unknown> = {};
+  const settled = Promise.resolve(rows);
+  for (const m of ["from", "where", "orderBy", "limit", "offset"]) {
+    chain[m] = vi.fn(() => chain);
+  }
+  Object.assign(chain, { then: (r: any, j: any) => settled.then(r, j) });
+  return chain;
+}
+
+describe("GET /api/vocabulary/words — paginated response includes total (SHAN-425)", () => {
+  it("returns { words, total, limit, offset } with the count from the parallel query", async () => {
+    const rows = [
+      { id: validId, word: "hello", language: "en" },
+      { id: otherWordId, word: "world", language: "en" },
+    ];
+    mockSelect
+      .mockReturnValueOnce(wordsChain(rows)) // list page
+      .mockReturnValueOnce(wordsChain([{ count: 42 }])); // parallel count
+
+    const res = await app.request("/api/vocabulary/words?limit=2&offset=0");
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.words).toHaveLength(2);
+    expect(body.total).toBe(42);
+    expect(body.limit).toBe(2);
+    expect(body.offset).toBe(0);
+  });
+
+  it("defaults total to 0 when the count query returns no rows", async () => {
+    mockSelect
+      .mockReturnValueOnce(wordsChain([]))
+      .mockReturnValueOnce(wordsChain([]));
+
+    const res = await app.request("/api/vocabulary/words");
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.words).toEqual([]);
+    expect(body.total).toBe(0);
+    // Zod defaults surface in the response envelope.
+    expect(body.limit).toBe(100);
+    expect(body.offset).toBe(0);
+  });
+
+  it("reflects the applied filter's count, not the unfiltered table size", async () => {
+    // total mirrors whatever the count query returns for the filtered WHERE.
+    mockSelect
+      .mockReturnValueOnce(wordsChain([{ id: validId, word: "gym", language: "en" }]))
+      .mockReturnValueOnce(wordsChain([{ count: 1 }]));
+
+    const res = await app.request("/api/vocabulary/words?search=gym");
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.total).toBe(1);
   });
 });

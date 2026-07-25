@@ -78,15 +78,27 @@ vocabularyRoutes.get("/words", zValidator("query", wordsQuerySchema), async (c) 
 
     const where = conditions.length > 0 ? and(...conditions) : undefined;
 
-    const words = await db
-      .select()
-      .from(vocabWords)
-      .where(where)
-      .orderBy(desc(vocabWords.createdAt))
-      .limit(limit)
-      .offset(offset);
+    // SHAN-425: return `total` alongside the page so clients can render
+    // "showing N of M" / compute page count. Mirrors the knowledge module's
+    // GET /entries exactly (same vocabWords table) — the two CRUD paths had
+    // disagreed on response shape. Parallel count query over the same WHERE.
+    const [words, countResult] = await Promise.all([
+      db
+        .select()
+        .from(vocabWords)
+        .where(where)
+        .orderBy(desc(vocabWords.createdAt))
+        .limit(limit)
+        .offset(offset),
+      db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(vocabWords)
+        .where(where),
+    ]);
 
-    return c.json({ words });
+    const total = countResult[0]?.count ?? 0;
+
+    return c.json({ words, total, limit, offset });
   } catch (err: any) {
     console.error("[vocabulary] GET /words error:", err.message, err.stack);
     // Don't leak raw DB/driver error text to callers — log it, return generic.
