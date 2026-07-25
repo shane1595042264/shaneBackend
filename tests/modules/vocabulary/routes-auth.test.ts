@@ -29,7 +29,11 @@ vi.mock("@/db/client", () => ({
 
 vi.mock("@/db/schema", () => ({
   vocabWords: { id: "vocabWords.id", createdBy: "vocabWords.createdBy" },
-  vocabConnections: { id: "vocabConnections.id" },
+  vocabConnections: {
+    id: "vocabConnections.id",
+    fromWordId: "vocabConnections.fromWordId",
+    toWordId: "vocabConnections.toWordId",
+  },
 }));
 
 vi.mock("drizzle-orm", () => ({
@@ -97,6 +101,17 @@ function selectRows(rows: unknown[]) {
   mockSelect.mockImplementation(() => ({
     from: () => ({ where: () => Promise.resolve(rows) }),
   }));
+}
+
+// Feeds each db.select() call a different result in order — needed for the
+// DELETE /connections/:id path, which selects the connection and then its two
+// words in two separate queries.
+function selectRowsSeq(...rowsList: unknown[][]) {
+  for (const rows of rowsList) {
+    mockSelect.mockImplementationOnce(() => ({
+      from: () => ({ where: () => Promise.resolve(rows) }),
+    }));
+  }
 }
 
 function insertReturning(row: unknown) {
@@ -353,6 +368,112 @@ describe("DELETE /api/vocabulary/connections/:id — auth gate", () => {
       method: "DELETE",
     });
     expect(res.status).toBe(401);
+  });
+});
+
+// SHAN-426: connection writes must enforce the same word-ownership rule as
+// PUT/DELETE /words. A caller may only connect/disconnect words they created;
+// legacy rows (createdBy IS NULL) stay editable by any authed user.
+describe("POST /api/vocabulary/connections — ownership (SHAN-426)", () => {
+  const body = JSON.stringify({
+    fromWordId: validId,
+    toWordId: otherWordId,
+    connectionType: "synonym",
+  });
+
+  it("returns 403 when the caller does not own one of the words", async () => {
+    selectRows([
+      { id: validId, createdBy: "u-someone-else" },
+      { id: otherWordId, createdBy: "u-shane" },
+    ]);
+    const res = await app.request("/api/vocabulary/connections", {
+      method: "POST",
+      headers: jwtHeaders("u-shane"),
+      body,
+    });
+    expect(res.status).toBe(403);
+    // The connection must not be inserted when ownership fails.
+    expect(mockInsert).not.toHaveBeenCalled();
+  });
+
+  it("creates the connection when the caller owns both words (201)", async () => {
+    selectRows([
+      { id: validId, createdBy: "u-shane" },
+      { id: otherWordId, createdBy: "u-shane" },
+    ]);
+    insertReturning({ id: validId, fromWordId: validId, toWordId: otherWordId });
+    const res = await app.request("/api/vocabulary/connections", {
+      method: "POST",
+      headers: jwtHeaders("u-shane"),
+      body,
+    });
+    expect(res.status).toBe(201);
+  });
+
+  it("allows connecting legacy words (createdBy IS NULL) as any authed user", async () => {
+    selectRows([
+      { id: validId, createdBy: null },
+      { id: otherWordId, createdBy: null },
+    ]);
+    insertReturning({ id: validId, fromWordId: validId, toWordId: otherWordId });
+    const res = await app.request("/api/vocabulary/connections", {
+      method: "POST",
+      headers: jwtHeaders("u-shane"),
+      body,
+    });
+    expect(res.status).toBe(201);
+  });
+});
+
+describe("DELETE /api/vocabulary/connections/:id — ownership (SHAN-426)", () => {
+  it("returns 404 when the connection does not exist", async () => {
+    selectRowsSeq([]); // connection lookup empty
+    const res = await app.request(`/api/vocabulary/connections/${validId}`, {
+      method: "DELETE",
+      headers: jwtHeaders("u-shane"),
+    });
+    expect(res.status).toBe(404);
+    expect(mockDelete).not.toHaveBeenCalled();
+  });
+
+  it("returns 403 when the caller does not own the connected words", async () => {
+    selectRowsSeq(
+      [{ fromWordId: validId, toWordId: otherWordId }], // connection
+      [{ createdBy: "u-someone-else" }, { createdBy: "u-shane" }] // words
+    );
+    const res = await app.request(`/api/vocabulary/connections/${validId}`, {
+      method: "DELETE",
+      headers: jwtHeaders("u-shane"),
+    });
+    expect(res.status).toBe(403);
+    expect(mockDelete).not.toHaveBeenCalled();
+  });
+
+  it("deletes the connection when the caller owns both words (ok)", async () => {
+    selectRowsSeq(
+      [{ fromWordId: validId, toWordId: otherWordId }],
+      [{ createdBy: "u-shane" }, { createdBy: "u-shane" }]
+    );
+    deleteReturning({ id: validId });
+    const res = await app.request(`/api/vocabulary/connections/${validId}`, {
+      method: "DELETE",
+      headers: jwtHeaders("u-shane"),
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true });
+  });
+
+  it("allows deleting a connection between legacy words (createdBy IS NULL)", async () => {
+    selectRowsSeq(
+      [{ fromWordId: validId, toWordId: otherWordId }],
+      [{ createdBy: null }, { createdBy: null }]
+    );
+    deleteReturning({ id: validId });
+    const res = await app.request(`/api/vocabulary/connections/${validId}`, {
+      method: "DELETE",
+      headers: jwtHeaders("u-shane"),
+    });
+    expect(res.status).toBe(200);
   });
 });
 

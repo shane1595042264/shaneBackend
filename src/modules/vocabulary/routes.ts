@@ -341,13 +341,14 @@ vocabularyRoutes.post(
   zValidator("json", createConnectionSchema),
   async (c) => {
     const body = c.req.valid("json");
+    const userId = c.get("userId") as string;
 
     if (body.fromWordId === body.toWordId) {
       return c.json({ error: "Cannot connect a word to itself" }, 400);
     }
 
     const existing = await db
-      .select({ id: vocabWords.id })
+      .select({ id: vocabWords.id, createdBy: vocabWords.createdBy })
       .from(vocabWords)
       .where(inArray(vocabWords.id, [body.fromWordId, body.toWordId]));
     const foundIds = new Set(existing.map((r) => r.id));
@@ -356,6 +357,15 @@ vocabularyRoutes.post(
     }
     if (!foundIds.has(body.toWordId)) {
       return c.json({ error: `Word not found: ${body.toWordId}` }, 404);
+    }
+
+    // Ownership: mirror PUT/DELETE /words — the caller must own both words
+    // being connected, but legacy rows (createdBy IS NULL) are connectable by
+    // any authed user.
+    for (const row of existing) {
+      if (row.createdBy !== null && row.createdBy !== userId) {
+        return c.json({ error: "You can only connect words you created" }, 403);
+      }
     }
 
     try {
@@ -382,6 +392,30 @@ vocabularyRoutes.delete(
   zValidator("param", uuidParamSchema),
   async (c) => {
     const { id } = c.req.valid("param");
+    const userId = c.get("userId") as string;
+
+    // Load the edge first so we can enforce word-ownership before deleting.
+    // A connection has no createdBy of its own — ownership derives from the
+    // two words it links (same rule as POST /connections).
+    const [connection] = await db
+      .select({ fromWordId: vocabConnections.fromWordId, toWordId: vocabConnections.toWordId })
+      .from(vocabConnections)
+      .where(eq(vocabConnections.id, id));
+    if (!connection) return c.json({ error: "Connection not found" }, 404);
+
+    const words = await db
+      .select({ createdBy: vocabWords.createdBy })
+      .from(vocabWords)
+      .where(inArray(vocabWords.id, [connection.fromWordId, connection.toWordId]));
+    for (const word of words) {
+      if (word.createdBy !== null && word.createdBy !== userId) {
+        return c.json(
+          { error: "You can only delete connections between words you created" },
+          403
+        );
+      }
+    }
+
     const [deleted] = await db.delete(vocabConnections).where(eq(vocabConnections.id, id)).returning();
     if (!deleted) return c.json({ error: "Connection not found" }, 404);
     return c.json({ ok: true });
