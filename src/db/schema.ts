@@ -938,6 +938,14 @@ export const practiceSessions = pgTable(
     completedAt: timestamp("completed_at", { withTimezone: true }),
     categoryFilter: varchar("category_filter", { length: 100 }),
     nItemsRequested: integer("n_items_requested").notNull(),
+    // Vocab practice mode (2026-07-24). 'workout' = the timed Fitbod runner (default,
+    // existing behavior); 'vocab' = the Shanbay-style flashcard SRS. Vocab sessions
+    // declare their location once up front (these three columns); workout sessions
+    // leave them null and prompt per item.
+    mode: varchar("mode", { length: 10 }).notNull().default("workout"),
+    locationId: uuid("location_id").references(() => practiceLocations.id, { onDelete: "set null" }),
+    locationName: varchar("location_name", { length: 120 }),
+    locationNormalized: varchar("location_normalized", { length: 120 }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [index("practice_sessions_user_started_idx").on(t.userId, t.startedAt)],
@@ -972,9 +980,74 @@ export const practiceSettings = pgTable("practice_settings", {
   setsPerStrike: integer("sets_per_strike").notNull().default(5),
   strikesPerLoadedLocation: integer("strikes_per_loaded_location").notNull().default(5),
   locationsToSolidify: integer("locations_to_solidify").notNull().default(7),
+  // Vocab SRS interval ladder (2026-07-24), admin-editable. Days added to due_at when
+  // a word climbs to level 1 / level 2, and after a lapse (forget). vocabLevelToMemorize
+  // is the level (default 3) that marks a word memorized at a location.
+  vocabIntervalL1Days: integer("vocab_interval_l1_days").notNull().default(1),
+  vocabIntervalL2Days: integer("vocab_interval_l2_days").notNull().default(3),
+  vocabLapseIntervalDays: integer("vocab_lapse_interval_days").notNull().default(1),
+  vocabLevelToMemorize: integer("vocab_level_to_memorize").notNull().default(3),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   updatedBy: uuid("updated_by").references(() => users.id, { onDelete: "set null" }),
 });
+
+// ------------------------------------------------------------------
+// vocab_srs — Shanbay-style flashcard SRS state, one row per
+// (user, word, location). See docs/superpowers/specs/
+// 2026-07-24-vocab-practice-mode-design.md.
+// ------------------------------------------------------------------
+export const vocabSrs = pgTable(
+  "vocab_srs",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    itemId: uuid("item_id")
+      .notNull()
+      .references(() => vocabWords.id, { onDelete: "cascade" }),
+    locationId: uuid("location_id").references(() => practiceLocations.id, { onDelete: "set null" }),
+    locationName: varchar("location_name", { length: 120 }).notNull(),
+    locationNormalized: varchar("location_normalized", { length: 120 }).notNull(),
+    level: integer("level").notNull().default(0),
+    dueAt: timestamp("due_at", { withTimezone: true }),
+    memorizedAt: timestamp("memorized_at", { withTimezone: true }),
+    lastReviewedAt: timestamp("last_reviewed_at", { withTimezone: true }),
+    reps: integer("reps").notNull().default(0),
+    lapses: integer("lapses").notNull().default(0),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    unique("vocab_srs_user_item_loc_unique").on(t.userId, t.itemId, t.locationNormalized),
+    index("vocab_srs_due_idx").on(t.userId, t.locationNormalized, t.dueAt),
+    index("vocab_srs_item_idx").on(t.userId, t.itemId),
+  ],
+);
+
+// ------------------------------------------------------------------
+// vocab_reviews — append-only grade log for vocab practice sessions.
+// ------------------------------------------------------------------
+export const vocabReviews = pgTable(
+  "vocab_reviews",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    sessionId: uuid("session_id")
+      .notNull()
+      .references(() => practiceSessions.id, { onDelete: "cascade" }),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    itemId: uuid("item_id")
+      .notNull()
+      .references(() => vocabWords.id, { onDelete: "cascade" }),
+    grade: varchar("grade", { length: 10 }).notNull(),
+    levelBefore: integer("level_before").notNull(),
+    levelAfter: integer("level_after").notNull(),
+    reviewedAt: timestamp("reviewed_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("vocab_reviews_session_idx").on(t.sessionId)],
+);
 
 // ------------------------------------------------------------------
 // skincare_products — "Skincare" element (SHAN-364 Phase 1, SHAN-365)
