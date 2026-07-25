@@ -9,6 +9,12 @@ export interface Session {
   completedAt: Date | null;
   categoryFilter: string | null;
   nItemsRequested: number;
+  // Vocab practice mode (2026-07-24). 'workout' | 'vocab'; location columns set
+  // for vocab sessions (declared once up front), null for workout sessions.
+  mode: "workout" | "vocab";
+  locationId: string | null;
+  locationName: string | null;
+  locationNormalized: string | null;
   createdAt: Date;
 }
 
