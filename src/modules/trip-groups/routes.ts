@@ -712,8 +712,15 @@ tripGroupsRoutes.post(
 const noteBody = z.object({
   anchorType: z.enum(["group", "day", "activity"]),
   anchorDay: z.number().int().min(1).nullable().optional().default(null),
-  anchorActivity: z.string().max(300).nullable().optional().default(null),
-  body: z.string().min(1).max(1000),
+  // Trim before validating so a whitespace-only anchorActivity collapses to ""
+  // and trips the "required for activity notes" guard below instead of being
+  // stored as a blank anchor. Order matters in zod: .trim() must precede any
+  // length check (SHAN-427).
+  anchorActivity: z.string().trim().max(300).nullable().optional().default(null),
+  // .trim().min(1) rejects a whitespace-only body up front. Previously
+  // z.string().min(1) passed "   ", which the handler then trimmed to "" and
+  // persisted as an empty margin note (SHAN-427).
+  body: z.string().trim().min(1).max(1000),
 });
 
 function noteJson(n: TripGroupNote) {
@@ -766,7 +773,7 @@ tripGroupsRoutes.post(
       anchorType: input.anchorType,
       anchorDay: input.anchorType === "group" ? null : input.anchorDay,
       anchorActivity: input.anchorType === "activity" ? input.anchorActivity : null,
-      body: input.body.trim(),
+      body: input.body,
     });
     return c.json({ note: noteJson(note) }, 201);
   },
@@ -797,18 +804,33 @@ tripGroupsRoutes.delete(
 
 const sectionItemSchema = z.object({
   id: z.string().min(1).max(64),
-  text: z.string().min(1).max(500),
+  // .trim().min(1) rejects whitespace-only to-do text. The PUT /sections
+  // handler passes the parsed patch straight to updateSection without trimming,
+  // so before SHAN-427 a "   " item text persisted verbatim and rendered as a
+  // blank checkbox row shared across the group.
+  text: z.string().trim().min(1).max(500),
   done: z.boolean(),
-  addedBy: z.string().max(120).nullable().optional().default(null),
+  // Trim attribution; collapse a blank/whitespace name to null rather than
+  // storing padded or empty text (SHAN-427).
+  addedBy: z
+    .string()
+    .max(120)
+    .nullable()
+    .optional()
+    .default(null)
+    .transform((v) => {
+      const t = v?.trim() ?? "";
+      return t.length ? t : null;
+    }),
 });
 
 const createSectionBody = z.object({
-  title: z.string().min(1).max(200),
+  title: z.string().trim().min(1).max(200),
   kind: z.enum(["todo"]).optional().default("todo"),
 });
 
 const updateSectionBody = z.object({
-  title: z.string().min(1).max(200).optional(),
+  title: z.string().trim().min(1).max(200).optional(),
   items: z.array(sectionItemSchema).max(200).optional(),
 });
 
@@ -852,7 +874,7 @@ tripGroupsRoutes.post(
     const section = await createSection({
       groupId: group.id,
       createdBy: userId,
-      title: title.trim(),
+      title,
       kind,
     });
     return c.json({ section: sectionJson(section) }, 201);

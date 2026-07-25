@@ -1310,6 +1310,91 @@ describe("notes + sections (SHAN-283)", () => {
     });
     expect(asCreator.status).toBe(204);
   });
+
+  // SHAN-427: whitespace-only collaborative text must be rejected (or trimmed),
+  // never persisted as a blank note/title/to-do row.
+  it("rejects a whitespace-only note body with 400 (was silently stored empty)", async () => {
+    mockGetGroupBySlug.mockResolvedValue(groupRow);
+    mockIsMember.mockResolvedValue(true);
+    const res = await app.request(`/api/trip-groups/${SLUG}/notes`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Test-User": USER_B },
+      body: JSON.stringify({ anchorType: "group", body: "   " }),
+    });
+    expect(res.status).toBe(400);
+    expect(mockCreateNote).not.toHaveBeenCalled();
+  });
+
+  it("stores a padded note body trimmed", async () => {
+    mockGetGroupBySlug.mockResolvedValue(groupRow);
+    mockIsMember.mockResolvedValue(true);
+    mockCreateNote.mockResolvedValue(noteRow);
+    const res = await app.request(`/api/trip-groups/${SLUG}/notes`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Test-User": USER_B },
+      body: JSON.stringify({ anchorType: "group", body: "  hi there  " }),
+    });
+    expect(res.status).toBe(201);
+    expect(mockCreateNote).toHaveBeenCalledWith(
+      expect.objectContaining({ body: "hi there" }),
+    );
+  });
+
+  it("rejects an activity note whose anchorActivity is whitespace-only", async () => {
+    mockGetGroupBySlug.mockResolvedValue(groupRow);
+    mockIsMember.mockResolvedValue(true);
+    const res = await app.request(`/api/trip-groups/${SLUG}/notes`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Test-User": USER_B },
+      body: JSON.stringify({ anchorType: "activity", anchorDay: 1, anchorActivity: "   ", body: "x" }),
+    });
+    expect(res.status).toBe(400);
+    expect(mockCreateNote).not.toHaveBeenCalled();
+  });
+
+  it("rejects a whitespace-only section title with 400", async () => {
+    mockGetGroupBySlug.mockResolvedValue(groupRow);
+    mockIsMember.mockResolvedValue(true);
+    const res = await app.request(`/api/trip-groups/${SLUG}/sections`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Test-User": USER_B },
+      body: JSON.stringify({ title: "   " }),
+    });
+    expect(res.status).toBe(400);
+    expect(mockCreateSection).not.toHaveBeenCalled();
+  });
+
+  it("rejects a whitespace-only to-do item text on section update (was stored verbatim)", async () => {
+    mockGetGroupBySlug.mockResolvedValue(groupRow);
+    mockIsMember.mockResolvedValue(true);
+    mockGetSectionById.mockResolvedValue(sectionRow);
+    const res = await app.request(`/api/trip-groups/${SLUG}/sections/${SECTION_ID}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", "X-Test-User": USER_A },
+      body: JSON.stringify({ items: [{ id: "i1", text: "   ", done: false, addedBy: "Ben" }] }),
+    });
+    expect(res.status).toBe(400);
+    expect(mockUpdateSection).not.toHaveBeenCalled();
+  });
+
+  it("trims item text and collapses a whitespace addedBy to null on section update", async () => {
+    mockGetGroupBySlug.mockResolvedValue(groupRow);
+    mockIsMember.mockResolvedValue(true);
+    mockGetSectionById.mockResolvedValue(sectionRow);
+    mockUpdateSection.mockResolvedValue(sectionRow);
+    const res = await app.request(`/api/trip-groups/${SLUG}/sections/${SECTION_ID}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", "X-Test-User": USER_A },
+      body: JSON.stringify({ items: [{ id: "i1", text: "  adapter  ", done: false, addedBy: "   " }] }),
+    });
+    expect(res.status).toBe(200);
+    expect(mockUpdateSection).toHaveBeenCalledWith(
+      SECTION_ID,
+      expect.objectContaining({
+        items: [expect.objectContaining({ text: "adapter", addedBy: null })],
+      }),
+    );
+  });
 });
 
 describe("DELETE /api/trip-groups/:slug/itinerary (SHAN-286 reset)", () => {
