@@ -56,4 +56,16 @@ describe("PATCH /api/practice/settings", () => {
     const res = await app.request("/api/practice/settings", { method: "PATCH", headers: { "Content-Type": "application/json", "X-Test-User": "u1", "X-Test-Admin": "1" }, body: JSON.stringify({}) });
     expect(res.status).toBe(400);
   });
+  it("accepts vocab interval/level fields", async () => {
+    mockUpdateSettings.mockResolvedValue({ setsPerStrike: 5, strikesPerLoadedLocation: 5, locationsToSolidify: 7, vocabIntervalL1Days: 2, vocabIntervalL2Days: 3, vocabLapseIntervalDays: 1, vocabLevelToMemorize: 3, updatedAt: new Date(), updatedBy: "u1" });
+    const res = await app.request("/api/practice/settings", { method: "PATCH", headers: { "Content-Type": "application/json", "X-Test-User": "u1", "X-Test-Admin": "1" }, body: JSON.stringify({ vocabIntervalL1Days: 2, vocabLevelToMemorize: 3 }) });
+    expect(res.status).toBe(200);
+    expect(mockUpdateSettings).toHaveBeenCalledWith("u1", { vocabIntervalL1Days: 2, vocabLevelToMemorize: 3 });
+    expect((await res.json()).settings.vocabIntervalL1Days).toBe(2);
+  });
+  it("rejects vocabLevelToMemorize outside 1..3", async () => {
+    const res = await app.request("/api/practice/settings", { method: "PATCH", headers: { "Content-Type": "application/json", "X-Test-User": "u1", "X-Test-Admin": "1" }, body: JSON.stringify({ vocabLevelToMemorize: 4 }) });
+    expect(res.status).toBe(400);
+    expect(mockUpdateSettings).not.toHaveBeenCalled();
+  });
 });

@@ -52,6 +52,10 @@ const settingsPatchSchema = z
     setsPerStrike: z.number().int().min(1).max(50).optional(),
     strikesPerLoadedLocation: z.number().int().min(1).max(50).optional(),
     locationsToSolidify: z.number().int().min(1).max(50).optional(),
+    vocabIntervalL1Days: z.number().int().min(0).max(365).optional(),
+    vocabIntervalL2Days: z.number().int().min(0).max(365).optional(),
+    vocabLapseIntervalDays: z.number().int().min(0).max(365).optional(),
+    vocabLevelToMemorize: z.number().int().min(1).max(3).optional(),
   })
   .refine((v) => Object.keys(v).length > 0, { message: "Nothing to update" });
 
