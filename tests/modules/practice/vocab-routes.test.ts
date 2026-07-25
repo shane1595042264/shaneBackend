@@ -9,6 +9,7 @@ const m = vi.hoisted(() => ({
   vocabSessionSummary: vi.fn(),
   generateVocabSession: vi.fn(),
   vocabPreviewCounts: vi.fn(),
+  isVocabCard: vi.fn(),
   applyReview: vi.fn(),
 }));
 
@@ -21,7 +22,7 @@ vi.mock("@/modules/practice/generator", () => ({ generateSessionItems: vi.fn() }
 vi.mock("@/modules/practice/items-repo", () => ({ listPracticeableItems: vi.fn(), getItemProgressDetail: vi.fn() }));
 vi.mock("@/modules/practice/settings-repo", () => ({ getSettings: vi.fn(), updateSettings: vi.fn() }));
 vi.mock("@/modules/practice/vocab-sessions-repo", () => ({ createVocabSession: m.createVocabSession, getVocabSession: m.getVocabSession, vocabSessionSummary: m.vocabSessionSummary }));
-vi.mock("@/modules/practice/vocab-generator", () => ({ generateVocabSession: m.generateVocabSession, vocabPreviewCounts: m.vocabPreviewCounts }));
+vi.mock("@/modules/practice/vocab-generator", () => ({ generateVocabSession: m.generateVocabSession, vocabPreviewCounts: m.vocabPreviewCounts, isVocabCard: m.isVocabCard }));
 vi.mock("@/modules/practice/vocab-srs-repo", () => ({ applyReview: m.applyReview }));
 
 vi.mock("@/modules/auth/middleware", () => ({
@@ -69,6 +70,7 @@ describe("POST /vocab/sessions", () => {
 describe("POST /vocab/reviews", () => {
   it("grades a card in an owned vocab session", async () => {
     m.getSessionById.mockResolvedValue({ id: SID, userId: "u1", mode: "vocab", locationId: "loc1", locationName: "Home", locationNormalized: "home" });
+    m.isVocabCard.mockResolvedValue(true);
     m.applyReview.mockResolvedValue({ level: 1, dueAt: null, memorized: false, longTermMemorized: false });
     const res = await app.request("/api/practice/vocab/reviews", { method: "POST", headers: { "Content-Type": "application/json", "X-Test-User": "u1" }, body: JSON.stringify({ sessionId: SID, itemId: WID, grade: "remember" }) });
     expect(res.status).toBe(200);
@@ -79,6 +81,15 @@ describe("POST /vocab/reviews", () => {
     m.getSessionById.mockResolvedValue(null);
     const res = await app.request("/api/practice/vocab/reviews", { method: "POST", headers: { "Content-Type": "application/json", "X-Test-User": "u1" }, body: JSON.stringify({ sessionId: SID, itemId: WID, grade: "remember" }) });
     expect(res.status).toBe(404);
+    expect(m.applyReview).not.toHaveBeenCalled();
+  });
+
+  it("404 'Item not in session' when itemId is not a vocabulary card", async () => {
+    m.getSessionById.mockResolvedValue({ id: SID, userId: "u1", mode: "vocab", locationId: "loc1", locationName: "Home", locationNormalized: "home" });
+    m.isVocabCard.mockResolvedValue(false);
+    const res = await app.request("/api/practice/vocab/reviews", { method: "POST", headers: { "Content-Type": "application/json", "X-Test-User": "u1" }, body: JSON.stringify({ sessionId: SID, itemId: WID, grade: "remember" }) });
+    expect(res.status).toBe(404);
+    expect((await res.json()).error).toBe("Item not in session");
     expect(m.applyReview).not.toHaveBeenCalled();
   });
 

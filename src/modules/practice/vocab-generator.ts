@@ -83,6 +83,21 @@ export async function generateVocabSession(input: VocabGenInput): Promise<VocabC
   return [...dueRows, ...newRows].map(mapCard);
 }
 
+/**
+ * True if itemId resolves to a real vocabulary card — a vocab_words row with
+ * category='vocabulary'. The vocab session queue is drawn exclusively from these
+ * (see generateVocabSession), so this is the eligibility gate for POST
+ * /vocab/reviews: it rejects a bogus UUID (which would otherwise hit the
+ * vocab_srs FK and surface as an unhandled 500) and a real word of a different
+ * category (which is not a flashcard and must not gain SRS/memorization state).
+ */
+export async function isVocabCard(itemId: string): Promise<boolean> {
+  const res = await db.execute(sql`
+    SELECT 1 FROM vocab_words WHERE id = ${itemId} AND category = 'vocabulary' LIMIT 1
+  `);
+  return ((res as { rows: any[] }).rows?.length ?? 0) > 0;
+}
+
 /** Counts for the /practice/new preview: how many due + new cards are available at a location. */
 export async function vocabPreviewCounts(
   input: VocabGenInput,

@@ -17,7 +17,7 @@ import { generateSessionItems } from "./generator";
 import { listPracticeableItems, getItemProgressDetail } from "./items-repo";
 import { getSettings, updateSettings } from "./settings-repo";
 import { createVocabSession, getVocabSession, vocabSessionSummary } from "./vocab-sessions-repo";
-import { generateVocabSession, vocabPreviewCounts } from "./vocab-generator";
+import { generateVocabSession, vocabPreviewCounts, isVocabCard } from "./vocab-generator";
 import { applyReview } from "./vocab-srs-repo";
 
 // Per-PAT rolling-60s rate limits on the practice write surface. JWTs bypass
@@ -424,6 +424,13 @@ practiceRoutes.post(
     const session = await getSessionById(sessionId, userId);
     if (!session || session.mode !== "vocab" || !session.locationNormalized) {
       return c.json({ error: "Not found" }, 404);
+    }
+    // Guard the itemId against the vocab-card universe the session draws from:
+    // a bogus UUID would otherwise trip the vocab_srs FK (unhandled 500), and a
+    // real word of another category would gain SRS/memorization state it should
+    // never have. Reject anything that isn't a category='vocabulary' word.
+    if (!(await isVocabCard(itemId))) {
+      return c.json({ error: "Item not in session" }, 404);
     }
     const result = await applyReview({
       userId,
