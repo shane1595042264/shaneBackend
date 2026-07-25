@@ -4,7 +4,7 @@ import { z } from "zod";
 import { requireAuth, requireScope, requireAdmin } from "@/modules/auth/middleware";
 import { createPATRateLimit } from "@/modules/shared/rate-limit";
 import { getPrescription, upsertPrescription, deletePrescription } from "./prescription-repo";
-import { listLocations, upsertLocation, deleteLocation } from "./locations-repo";
+import { listLocations, upsertLocation, deleteLocation, normalizeLocationName } from "./locations-repo";
 import {
   createSession,
   getSessionById,
@@ -16,6 +16,9 @@ import { listItemsForSession, syncSessionItem } from "./session-items-repo";
 import { generateSessionItems } from "./generator";
 import { listPracticeableItems, getItemProgressDetail } from "./items-repo";
 import { getSettings, updateSettings } from "./settings-repo";
+import { createVocabSession, getVocabSession, vocabSessionSummary } from "./vocab-sessions-repo";
+import { generateVocabSession, vocabPreviewCounts } from "./vocab-generator";
+import { applyReview } from "./vocab-srs-repo";
 
 // Per-PAT rolling-60s rate limits on the practice write surface. JWTs bypass
 // (tokenId is null for browser sessions). Sync runs at runner-tick speed —
@@ -35,6 +38,10 @@ const sessionsWriteLimit = createPATRateLimit({
 });
 const sessionItemsSyncLimit = createPATRateLimit({
   bucket: "practice-session-items-sync",
+  limitPerMinute: 120,
+});
+const vocabReviewsLimit = createPATRateLimit({
+  bucket: "practice-vocab-reviews",
   limitPerMinute: 120,
 });
 
@@ -337,5 +344,115 @@ practiceRoutes.get(
     const detail = await getItemProgressDetail(userId, c.req.valid("param").itemId);
     if (!detail) return c.json({ error: "Not found" }, 404);
     return c.json({ detail });
+  },
+);
+
+// ----- Vocab mode (Shanbay-style flashcard SRS) -----
+
+const vocabSessionBody = z.object({
+  locationName: z.string().min(1).max(120),
+  n: z.number().int().min(1).max(50),
+});
+
+practiceRoutes.post(
+  "/vocab/sessions",
+  requireAuth,
+  requireScope("practice:write"),
+  sessionsWriteLimit,
+  zValidator("json", vocabSessionBody),
+  async (c) => {
+    const userId = c.get("userId") as string;
+    const { locationName, n } = c.req.valid("json");
+    const loc = await upsertLocation(userId, locationName);
+    if (!loc) return c.json({ error: "Location is blank after normalization" }, 400);
+
+    const cards = await generateVocabSession({ userId, locationNormalized: loc.normalized, n });
+    if (cards.length === 0) {
+      const counts = await vocabPreviewCounts({ userId, locationNormalized: loc.normalized, n });
+      return c.json({ error: "no_vocab_items", ...counts }, 422);
+    }
+    const session = await createVocabSession({
+      userId,
+      locationId: loc.id,
+      locationName: loc.name,
+      locationNormalized: loc.normalized,
+      nItemsRequested: n,
+    });
+    return c.json({ session, cards }, 201);
+  },
+);
+
+practiceRoutes.get(
+  "/vocab/sessions/:id",
+  requireAuth,
+  zValidator("param", z.object({ id: z.string().uuid() })),
+  async (c) => {
+    const userId = c.get("userId") as string;
+    const result = await getVocabSession(c.req.valid("param").id, userId);
+    if (!result) return c.json({ error: "Not found" }, 404);
+    return c.json(result);
+  },
+);
+
+practiceRoutes.get(
+  "/vocab/sessions/:id/summary",
+  requireAuth,
+  zValidator("param", z.object({ id: z.string().uuid() })),
+  async (c) => {
+    const userId = c.get("userId") as string;
+    const summary = await vocabSessionSummary(c.req.valid("param").id, userId);
+    if (!summary) return c.json({ error: "Not found" }, 404);
+    return c.json({ summary });
+  },
+);
+
+const vocabReviewBody = z.object({
+  sessionId: z.string().uuid(),
+  itemId: z.string().uuid(),
+  grade: z.enum(["remember", "forget"]),
+});
+
+practiceRoutes.post(
+  "/vocab/reviews",
+  requireAuth,
+  requireScope("practice:write"),
+  vocabReviewsLimit,
+  zValidator("json", vocabReviewBody),
+  async (c) => {
+    const userId = c.get("userId") as string;
+    const { sessionId, itemId, grade } = c.req.valid("json");
+    const session = await getSessionById(sessionId, userId);
+    if (!session || session.mode !== "vocab" || !session.locationNormalized) {
+      return c.json({ error: "Not found" }, 404);
+    }
+    const result = await applyReview({
+      userId,
+      sessionId,
+      itemId,
+      grade,
+      locationId: session.locationId,
+      locationName: session.locationName as string,
+      locationNormalized: session.locationNormalized,
+    });
+    return c.json(result);
+  },
+);
+
+const vocabPreviewQuery = z.object({
+  locationName: z.string().min(1).max(120),
+  n: z.coerce.number().int().min(1).max(50).optional(),
+});
+
+practiceRoutes.get(
+  "/vocab/preview",
+  requireAuth,
+  zValidator("query", vocabPreviewQuery),
+  async (c) => {
+    const userId = c.get("userId") as string;
+    const { locationName, n } = c.req.valid("query");
+    const normalized = normalizeLocationName(locationName);
+    if (!normalized) return c.json({ dueAvailable: 0, newAvailable: 0 });
+    const counts = await vocabPreviewCounts({ userId, locationNormalized: normalized, n: n ?? 5 });
+    return c.json(counts);
   },
 );
