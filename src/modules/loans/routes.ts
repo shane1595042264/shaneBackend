@@ -42,11 +42,17 @@ const currencySchema = z
   .regex(/^[A-Za-z]{3}$/, "currency must be a 3-letter ISO 4217 code")
   .transform((s) => s.toUpperCase());
 
+// borrowerName is the person's identity rendered in the who-owes ledger
+// (SHAN-422), so a whitespace-only value must not slip through as a blank row.
+// .trim() BEFORE .min(1) rejects "   " up front AND strips incidental padding
+// from a real name before persisting — same ordering documented in
+// trip-groups/routes.ts (SHAN-427). description is trimmed for the same reason
+// (leading/trailing whitespace stored as noise); it stays optional/nullable.
 const createSchema = z.object({
-  borrowerName: z.string().min(1).max(255),
+  borrowerName: z.string().trim().min(1).max(255),
   amount: amountSchema,
   currency: currencySchema.optional(),
-  description: z.string().max(2000).optional().nullable(),
+  description: z.string().trim().max(2000).optional().nullable(),
   direction: directionSchema.optional(),
 });
 
@@ -64,10 +70,10 @@ const listQuery = z.object({
 
 const patchSchema = z
   .object({
-    borrowerName: z.string().min(1).max(255).optional(),
+    borrowerName: z.string().trim().min(1).max(255).optional(),
     amount: amountSchema.optional(),
     currency: currencySchema.optional(),
-    description: z.string().max(2000).optional().nullable(),
+    description: z.string().trim().max(2000).optional().nullable(),
     status: z.enum(["outstanding", "repaid"]).optional(),
     direction: directionSchema.optional(),
   })

@@ -239,6 +239,32 @@ describe("POST /api/loans", () => {
     expect(res.status).toBe(400);
   });
 
+  it("rejects a whitespace-only borrowerName instead of storing a blank who-owes row", async () => {
+    const res = await app.request("/api/loans", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Test-User": USER_A },
+      body: JSON.stringify({ borrowerName: "   ", amount: "10" }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it("trims incidental padding from borrowerName before persisting", async () => {
+    let inserted: Record<string, unknown> | undefined;
+    mockInsert.mockImplementation(() => ({
+      values: (v: Record<string, unknown>) => {
+        inserted = v;
+        return { returning: () => Promise.resolve([makeRow({ borrowerName: v.borrowerName })]) };
+      },
+    }));
+    const res = await app.request("/api/loans", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Test-User": USER_A },
+      body: JSON.stringify({ borrowerName: "  Bob  ", amount: "10" }),
+    });
+    expect(res.status).toBe(201);
+    expect(inserted?.borrowerName).toBe("Bob");
+  });
+
   it("creates an entry and returns 201", async () => {
     insertReturning([makeRow({ borrowerName: "Bob", amount: "10.00" })]);
     const res = await app.request("/api/loans", {
@@ -371,6 +397,15 @@ describe("PATCH /api/loans/:id — ownership + status", () => {
       method: "PATCH",
       headers: { "Content-Type": "application/json", "X-Test-User": USER_A },
       body: JSON.stringify({}),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it("rejects a whitespace-only borrowerName on patch", async () => {
+    const res = await app.request(`/api/loans/${ENTRY_ID}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", "X-Test-User": USER_A },
+      body: JSON.stringify({ borrowerName: "   " }),
     });
     expect(res.status).toBe(400);
   });
