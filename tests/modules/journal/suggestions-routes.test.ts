@@ -277,6 +277,36 @@ describe("PATCH /api/journal/suggestions/:id/reject", () => {
     });
     expect(res.status).toBe(403);
   });
+
+  // SHAN-430: a whitespace-only reason must not persist as blank/padded noise in
+  // rejection_reason. The schema trims and collapses it to undefined so the repo
+  // stores NULL ("no reason given") — same class as loans.description (SHAN-428).
+  it("collapses a whitespace-only reason to undefined (SHAN-430)", async () => {
+    mockGetSug.mockResolvedValue({ id: "s1", entryId: "e1", status: "pending" });
+    mockSelect.mockReturnValue(chain([{ authorId: "owner" }]));
+    mockReject.mockResolvedValue({ id: "s1", entryId: "e1", status: "pending" });
+    const res = await app.request(`/api/journal/suggestions/${SID}/reject`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", "X-Test-User": "owner" },
+      body: JSON.stringify({ reason: "   " }),
+    });
+    expect(res.status).toBe(200);
+    expect(mockReject).toHaveBeenCalledWith(SID, "owner", undefined);
+  });
+
+  // SHAN-430: a genuine reason is trimmed of incidental padding before persisting.
+  it("trims incidental padding on a real reason (SHAN-430)", async () => {
+    mockGetSug.mockResolvedValue({ id: "s1", entryId: "e1", status: "pending" });
+    mockSelect.mockReturnValue(chain([{ authorId: "owner" }]));
+    mockReject.mockResolvedValue({ id: "s1", entryId: "e1", status: "pending" });
+    const res = await app.request(`/api/journal/suggestions/${SID}/reject`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", "X-Test-User": "owner" },
+      body: JSON.stringify({ reason: "  not for me  " }),
+    });
+    expect(res.status).toBe(200);
+    expect(mockReject).toHaveBeenCalledWith(SID, "owner", "not for me");
+  });
 });
 
 describe("PATCH /api/journal/suggestions/:id/withdraw", () => {

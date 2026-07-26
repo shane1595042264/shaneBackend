@@ -312,7 +312,19 @@ const suggestBody = z.object({
     .max(MAX_MARKDOWN_BODY, { message: MAX_MARKDOWN_BODY_MESSAGE })
     .refine(noInFlightUpload, { message: IN_FLIGHT_UPLOAD_MESSAGE }),
 });
-const rejectBody = z.object({ reason: z.string().max(2000).optional() });
+// reason is optional audit metadata persisted to journal_suggestions.rejection_reason
+// and surfaced in suggestion history. .trim() strips incidental padding; collapsing
+// an empty/whitespace-only value to undefined keeps the column NULL ("no reason given")
+// instead of storing blank "" or padded whitespace as noise — same whitespace-hardening
+// intent as loans.description (SHAN-428) and trip-groups collaborative text (SHAN-427).
+const rejectBody = z.object({
+  reason: z
+    .string()
+    .trim()
+    .max(2000)
+    .optional()
+    .transform((v) => (v ? v : undefined)),
+});
 const suggestionListQuery = z.object({
   status: z.enum(["pending", "approved", "rejected", "withdrawn"]).optional(),
 });
