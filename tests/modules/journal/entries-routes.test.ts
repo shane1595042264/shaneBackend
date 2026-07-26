@@ -249,6 +249,34 @@ describe("POST /api/journal/entries", () => {
     expect(res.status).toBe(201);
     expect(mockCreateEntry).toHaveBeenCalled();
   });
+
+  // SHAN-431: whitespace-only content 400s instead of claiming the date with a
+  // blank entry (whitespace-only hardening class, cf. loans SHAN-428).
+  it("rejects a whitespace-only content with 400 instead of storing a blank entry (SHAN-431)", async () => {
+    const res = await app.request("/api/journal/entries", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Test-User": "u1" },
+      body: JSON.stringify({ date: "2026-04-29", content: "   \n\t  " }),
+    });
+    expect(res.status).toBe(400);
+    expect(mockCreateEntry).not.toHaveBeenCalled();
+  });
+
+  it("trims incidental leading/trailing whitespace before persisting (SHAN-431)", async () => {
+    mockCreateEntry.mockResolvedValue({
+      entry: { id: "e1", date: "2026-04-29", authorId: "u1" },
+      version: { id: "v1", versionNum: 1 },
+    });
+    const res = await app.request("/api/journal/entries", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Test-User": "u1" },
+      body: JSON.stringify({ date: "2026-04-29", content: "  hello world  " }),
+    });
+    expect(res.status).toBe(201);
+    expect(mockCreateEntry).toHaveBeenCalledWith(
+      expect.objectContaining({ content: "hello world" })
+    );
+  });
 });
 
 describe("DELETE /api/journal/entries/:date", () => {

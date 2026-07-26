@@ -97,8 +97,13 @@ const listQuery = z.object({
 
 const createBody = z.object({
   date: isoDate,
+  // .trim() strips incidental leading/trailing whitespace (internal markdown
+  // whitespace is preserved) so a whitespace-only body 400s instead of storing
+  // a blank entry — same hardening as suggestion reason (below), loans
+  // (SHAN-428) and trip-groups collaborative text (SHAN-427).
   content: z
     .string()
+    .trim()
     .min(1)
     .max(MAX_MARKDOWN_BODY, { message: MAX_MARKDOWN_BODY_MESSAGE })
     .refine(noInFlightUpload, { message: IN_FLIGHT_UPLOAD_MESSAGE }),
@@ -182,6 +187,7 @@ journalRoutes.patch("/entries/:date", zValidator("param", dateParam), async (c) 
 const appendBody = z.object({
   content: z
     .string()
+    .trim()
     .min(1)
     .max(MAX_MARKDOWN_BODY, { message: MAX_MARKDOWN_BODY_MESSAGE })
     .refine(noInFlightUpload, { message: IN_FLIGHT_UPLOAD_MESSAGE }),
@@ -308,6 +314,7 @@ const suggestBody = z.object({
   base_version_num: z.number().int().positive(),
   proposed_content: z
     .string()
+    .trim()
     .min(1)
     .max(MAX_MARKDOWN_BODY, { message: MAX_MARKDOWN_BODY_MESSAGE })
     .refine(noInFlightUpload, { message: IN_FLIGHT_UPLOAD_MESSAGE }),
@@ -469,6 +476,7 @@ journalRoutes.get("/inbox", requireAuth, async (c) => {
 const commentBody = z.object({
   content: z
     .string()
+    .trim()
     .min(1)
     .max(10_000)
     .refine(noInFlightUpload, { message: IN_FLIGHT_UPLOAD_MESSAGE }),
@@ -477,6 +485,7 @@ const commentBody = z.object({
 const commentEditBody = z.object({
   content: z
     .string()
+    .trim()
     .min(1)
     .max(10_000)
     .refine(noInFlightUpload, { message: IN_FLIGHT_UPLOAD_MESSAGE }),

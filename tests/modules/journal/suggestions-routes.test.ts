@@ -159,6 +159,17 @@ describe("POST /api/journal/entries/:date/suggestions", () => {
     expect(res.status).toBe(400);
     expect(mockCreateSug).not.toHaveBeenCalled();
   });
+
+  // SHAN-431: whitespace-only proposed_content 400s instead of creating a blank suggestion.
+  it("returns 400 on whitespace-only proposed_content (SHAN-431)", async () => {
+    const res = await app.request("/api/journal/entries/2026-05-03/suggestions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Test-User": "stranger" },
+      body: JSON.stringify({ base_version_num: 1, proposed_content: "   \n\t " }),
+    });
+    expect(res.status).toBe(400);
+    expect(mockCreateSug).not.toHaveBeenCalled();
+  });
 });
 
 describe("GET /api/journal/entries/:date/suggestions", () => {

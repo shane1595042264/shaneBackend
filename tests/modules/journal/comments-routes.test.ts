@@ -134,6 +134,30 @@ describe("POST /api/journal/entries/:date/comments", () => {
     });
     expect(res.status).toBe(401);
   });
+
+  // SHAN-431: whitespace-only comment 400s instead of posting a blank comment.
+  it("returns 400 on whitespace-only comment content (SHAN-431)", async () => {
+    mockGetByDate.mockResolvedValue({ entry: { id: "e1" }, currentVersion: {} });
+    const res = await app.request("/api/journal/entries/2026-05-03/comments", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Test-User": "u1" },
+      body: JSON.stringify({ content: "   \n  " }),
+    });
+    expect(res.status).toBe(400);
+    expect(mockCreateComment).not.toHaveBeenCalled();
+  });
+
+  it("trims incidental padding from comment content before persisting (SHAN-431)", async () => {
+    mockGetByDate.mockResolvedValue({ entry: { id: "e1" }, currentVersion: {} });
+    mockCreateComment.mockResolvedValue({ id: "c1", content: "nice" });
+    const res = await app.request("/api/journal/entries/2026-05-03/comments", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Test-User": "u1" },
+      body: JSON.stringify({ content: "  nice  " }),
+    });
+    expect(res.status).toBe(201);
+    expect(mockCreateComment).toHaveBeenCalledWith(expect.objectContaining({ content: "nice" }));
+  });
 });
 
 describe("PATCH /api/journal/comments/:id", () => {
@@ -155,6 +179,17 @@ describe("PATCH /api/journal/comments/:id", () => {
       body: JSON.stringify({ content: "x" }),
     });
     expect(res.status).toBe(404);
+  });
+
+  // SHAN-431: whitespace-only edit 400s instead of blanking the comment.
+  it("returns 400 on whitespace-only edit content (SHAN-431)", async () => {
+    const res = await app.request(`/api/journal/comments/${CID}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", "X-Test-User": "u1" },
+      body: JSON.stringify({ content: "   " }),
+    });
+    expect(res.status).toBe(400);
+    expect(mockUpdateComment).not.toHaveBeenCalled();
   });
 });
 

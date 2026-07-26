@@ -105,6 +105,30 @@ describe("POST /api/journal/entries/:date/appends", () => {
     });
     expect(res.status).toBe(400);
   });
+
+  // SHAN-431: whitespace-only append 400s instead of persisting a blank append.
+  it("rejects a whitespace-only content with 400 (SHAN-431)", async () => {
+    mockGetByDate.mockResolvedValue({ entry: { id: "e1", authorId: "u1" } });
+    const res = await app.request("/api/journal/entries/2026-05-11/appends", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Test-User": "u1" },
+      body: JSON.stringify({ content: "   \n  " }),
+    });
+    expect(res.status).toBe(400);
+    expect(mockCreateAppend).not.toHaveBeenCalled();
+  });
+
+  it("trims incidental padding from append content before persisting (SHAN-431)", async () => {
+    mockGetByDate.mockResolvedValue({ entry: { id: "e1", authorId: "u1" } });
+    mockCreateAppend.mockResolvedValue({ id: "a1", entryId: "e1", authorId: "u1", content: "more", createdAt: new Date().toISOString() });
+    const res = await app.request("/api/journal/entries/2026-05-11/appends", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Test-User": "u1" },
+      body: JSON.stringify({ content: "  more  " }),
+    });
+    expect(res.status).toBe(201);
+    expect(mockCreateAppend).toHaveBeenCalledWith(expect.objectContaining({ content: "more" }));
+  });
 });
 
 describe("GET /api/journal/entries/:date/appends", () => {
