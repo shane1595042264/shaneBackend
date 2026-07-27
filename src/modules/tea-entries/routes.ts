@@ -41,10 +41,31 @@ export const teaEntriesRoutes = new Hono<Vars>();
 // so an attacker can't expand the keyspace by submitting longer/alpha PINs.
 const pinSchema = z.string().regex(/^\d{4}$/, "PIN must be 4 digits");
 
+// Titles are optional. Trim incidental leading/trailing whitespace and collapse
+// a whitespace-only (or empty) title to null so we never persist blank padding
+// as a "title" — same whitespace-only hardening as journal (SHAN-431), loans
+// (SHAN-428) and trip-groups collaborative text (SHAN-427). An absent title
+// stays `undefined` (transform returns early) so the PATCH no-op guard below
+// still fires on a bare {} body rather than seeing a spurious null.
+const teaTitle = z
+  .string()
+  .max(255)
+  .nullable()
+  .optional()
+  .transform((v) => {
+    if (v === undefined) return undefined;
+    const t = (v ?? "").trim();
+    return t.length ? t : null;
+  });
+
 const createBody = z.object({
-  title: z.string().max(255).optional().nullable(),
+  title: teaTitle,
   content: z
     .string()
+    // .trim() before .min(1) rejects a whitespace-only body up front (SHAN-431).
+    // Internal markdown whitespace is preserved; only incidental leading/trailing
+    // padding is stripped.
+    .trim()
     .min(1)
     .max(MAX_MARKDOWN_BODY, { message: MAX_MARKDOWN_BODY_MESSAGE })
     .refine(noInFlightUpload, { message: IN_FLIGHT_UPLOAD_MESSAGE }),
@@ -214,9 +235,10 @@ teaEntriesRoutes.get(
 // mismatch — same response as a missing id, so we don't leak existence.
 const patchBody = z
   .object({
-    title: z.string().max(255).optional().nullable(),
+    title: teaTitle,
     content: z
       .string()
+      .trim()
       .min(1)
       .max(MAX_MARKDOWN_BODY, { message: MAX_MARKDOWN_BODY_MESSAGE })
       .refine(noInFlightUpload, { message: IN_FLIGHT_UPLOAD_MESSAGE })

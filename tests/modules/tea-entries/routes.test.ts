@@ -111,6 +111,63 @@ describe("POST /api/tea-entries", () => {
     expect(mockCreate).not.toHaveBeenCalled();
   });
 
+  // SHAN-432: whitespace-only content passed .min(1) before the .trim() fix,
+  // persisting a blank entry. .trim() now rejects it up front with 400.
+  it("rejects whitespace-only content (SHAN-432)", async () => {
+    const res = await app.request("/api/tea-entries", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Test-User": "u1" },
+      body: JSON.stringify({ content: "   \n\t  ", pin: "1234" }),
+    });
+    expect(res.status).toBe(400);
+    expect(mockCreate).not.toHaveBeenCalled();
+  });
+
+  // SHAN-432: a whitespace-only title is collapsed to null rather than stored
+  // as blank padding.
+  it("collapses a whitespace-only title to null (SHAN-432)", async () => {
+    mockCreate.mockResolvedValue({
+      id: VALID_UUID,
+      authorId: "u1",
+      authorTimezone: "America/Chicago",
+      title: null,
+      content: "hello",
+      pin: "1234",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
+    const res = await app.request("/api/tea-entries", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Test-User": "u1" },
+      body: JSON.stringify({ title: "   ", content: "hello", pin: "1234" }),
+    });
+    expect(res.status).toBe(201);
+    expect(mockCreate).toHaveBeenCalledWith(expect.objectContaining({ title: null }));
+  });
+
+  // SHAN-432: incidental leading/trailing padding on a real title is stripped.
+  it("trims leading/trailing whitespace from a title (SHAN-432)", async () => {
+    mockCreate.mockResolvedValue({
+      id: VALID_UUID,
+      authorId: "u1",
+      authorTimezone: "America/Chicago",
+      title: "Morning Tea",
+      content: "hello",
+      pin: "1234",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
+    const res = await app.request("/api/tea-entries", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Test-User": "u1" },
+      body: JSON.stringify({ title: "  Morning Tea  ", content: "hello", pin: "1234" }),
+    });
+    expect(res.status).toBe(201);
+    expect(mockCreate).toHaveBeenCalledWith(
+      expect.objectContaining({ title: "Morning Tea" }),
+    );
+  });
+
   it("creates and returns 201 with the entry (no PIN echoed in response)", async () => {
     mockCreate.mockResolvedValue({
       id: VALID_UUID,
@@ -515,6 +572,40 @@ describe("PATCH /api/tea-entries/:id", () => {
       body: JSON.stringify({ pin: "abcd" }),
     });
     expect(res.status).toBe(400);
+  });
+
+  // SHAN-432: whitespace-only content is rejected on PATCH too (mirrors POST).
+  it("rejects whitespace-only content (SHAN-432)", async () => {
+    const res = await app.request(`/api/tea-entries/${VALID_UUID}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", "X-Test-User": "u1" },
+      body: JSON.stringify({ content: "   \n  " }),
+    });
+    expect(res.status).toBe(400);
+    expect(mockUpdate).not.toHaveBeenCalled();
+  });
+
+  // SHAN-432: a whitespace-only title on PATCH collapses to null (clears the
+  // title) rather than storing blank padding. The transform keeps title
+  // defined (null), so the no-op-PATCH guard is satisfied.
+  it("collapses a whitespace-only title to null on PATCH (SHAN-432)", async () => {
+    mockUpdate.mockResolvedValue({
+      id: VALID_UUID,
+      authorId: "u1",
+      authorTimezone: "America/Chicago",
+      title: null,
+      content: "existing",
+      pin: "1234",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
+    const res = await app.request(`/api/tea-entries/${VALID_UUID}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", "X-Test-User": "u1" },
+      body: JSON.stringify({ title: "   " }),
+    });
+    expect(res.status).toBe(200);
+    expect(mockUpdate).toHaveBeenCalledWith(VALID_UUID, "u1", { title: null });
   });
 
   it("rejects content with in-flight upload placeholder", async () => {
