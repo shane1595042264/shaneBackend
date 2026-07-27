@@ -7,6 +7,11 @@ import { desc, eq, and, or, ilike, sql, inArray } from "drizzle-orm";
 import { enrichWord } from "./ai-enricher";
 import { requireAuth, requireScope } from "@/modules/auth/middleware";
 import { createPATRateLimit } from "@/modules/shared/rate-limit";
+import {
+  trimmedRequired,
+  trimmedOptional,
+  trimmedLabels,
+} from "@/modules/shared/validators";
 
 export const vocabularyRoutes = new Hono();
 
@@ -54,13 +59,13 @@ const wordIdQuerySchema = z.object({
 // payload-DoS) that today land as silent DB writes or 500s instead of a 400.
 // Additive: every previously-valid word is well under these limits.
 const createWordSchema = z.object({
-  word: z.string().min(1).max(255),
-  language: z.string().min(1).max(50),
-  definition: z.string().max(20000).optional(),
-  pronunciation: z.string().max(255).optional(),
-  partOfSpeech: z.string().max(50).optional(),
-  exampleSentence: z.string().max(2000).optional(),
-  labels: z.array(z.string().max(100)).max(50).optional(),
+  word: trimmedRequired(255),
+  language: trimmedRequired(50),
+  definition: trimmedOptional(20000),
+  pronunciation: trimmedOptional(255),
+  partOfSpeech: trimmedOptional(50),
+  exampleSentence: trimmedOptional(2000),
+  labels: trimmedLabels(100, 50),
   autoEnrich: z.boolean().optional(),
 });
 
@@ -191,13 +196,13 @@ vocabularyRoutes.post(
 // Update a word
 // SHAN-401: same bounds as createWordSchema above (knowledge-module parity).
 const updateWordSchema = z.object({
-  word: z.string().min(1).max(255).optional(),
-  language: z.string().min(1).max(50).optional(),
-  definition: z.string().max(20000).optional(),
-  pronunciation: z.string().max(255).optional(),
-  partOfSpeech: z.string().max(50).optional(),
-  exampleSentence: z.string().max(2000).optional(),
-  labels: z.array(z.string().max(100)).max(50).optional(),
+  word: trimmedRequired(255).optional(),
+  language: trimmedRequired(50).optional(),
+  definition: trimmedOptional(20000),
+  pronunciation: trimmedOptional(255),
+  partOfSpeech: trimmedOptional(50),
+  exampleSentence: trimmedOptional(2000),
+  labels: trimmedLabels(100, 50),
 });
 
 // Ownership rule mirrors knowledge module's PUT /entries/:id: caller must be
@@ -319,7 +324,8 @@ const createConnectionSchema = z.object({
   connectionType: z.enum(["synonym", "antonym", "related", "translation", "root"]),
   // SHAN-401: short free-text annotation on a connection — bound it so an
   // unbounded text column can't be filled with a runaway payload.
-  note: z.string().max(1000).optional(),
+  // SHAN-433: trim + drop a whitespace-only note so it inserts as absent.
+  note: trimmedOptional(1000),
 });
 
 vocabularyRoutes.get("/connections", zValidator("query", wordIdQuerySchema), async (c) => {

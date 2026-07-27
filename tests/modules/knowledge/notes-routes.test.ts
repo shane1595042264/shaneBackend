@@ -246,6 +246,53 @@ describe("POST /api/knowledge/notes — single", () => {
   });
 });
 
+// SHAN-433: note `text` used a bare .min(1), so "   " (length 3) passed and was
+// shipped to the LLM classifier — wasted tokens on blank input. Trim-before-min
+// now rejects it with 400 before classifyNote runs.
+describe("POST /api/knowledge/notes — whitespace-only hardening (SHAN-433)", () => {
+  it("rejects a whitespace-only single note with 400 before classifying", async () => {
+    const res = await app.request("/api/knowledge/notes", {
+      method: "POST",
+      headers: patHeaders(),
+      body: JSON.stringify({ text: "   " }),
+    });
+    expect(res.status).toBe(400);
+    expect(mockClassify).not.toHaveBeenCalled();
+    expect(mockInsert).not.toHaveBeenCalled();
+  });
+
+  it("rejects a batch containing a whitespace-only note with 400", async () => {
+    const res = await app.request("/api/knowledge/notes", {
+      method: "POST",
+      headers: patHeaders(),
+      body: JSON.stringify({ notes: [{ text: "real" }, { text: "  " }] }),
+    });
+    expect(res.status).toBe(400);
+    expect(mockClassify).not.toHaveBeenCalled();
+  });
+
+  it("rejects a whitespace-only string source with 400", async () => {
+    const res = await app.request("/api/knowledge/notes", {
+      method: "POST",
+      headers: patHeaders(),
+      body: JSON.stringify({ text: "hello", source: "   " }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it("trims incidental padding off the text before classifying", async () => {
+    mockClassify.mockResolvedValue(baseClassified);
+    insertReturning([{ id: "u1", word: "hello" }]);
+    const res = await app.request("/api/knowledge/notes", {
+      method: "POST",
+      headers: patHeaders(),
+      body: JSON.stringify({ text: "  hello = greeting  " }),
+    });
+    expect(res.status).toBe(201);
+    expect(mockClassify).toHaveBeenCalledWith("hello = greeting");
+  });
+});
+
 describe("POST /api/knowledge/notes — batch", () => {
   it("returns parallel entries for a 2-note batch", async () => {
     mockClassify

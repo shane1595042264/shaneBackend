@@ -666,6 +666,126 @@ describe("PUT /api/knowledge/entries/:id — payload length bounds (SHAN-396)", 
 // `label` into a jsonb containment check, so a multi-MB value was an
 // economic-DoS surface on this public endpoint. Bounds now reject oversized
 // filters with 400 before any query runs; realistic filters still pass.
+// SHAN-433: createWordSchema/updateWordSchema used bare .min(1), so a
+// whitespace-only value ("   ", length 3) slipped past and persisted as blank
+// padding — and worse, a whitespace-only `word` would be sent to the LLM
+// enricher. Trim-before-min now rejects those with 400; optional text is
+// trimmed and empty-after-trim collapses to "not provided".
+describe("POST /api/knowledge/entries — whitespace-only hardening (SHAN-433)", () => {
+  const jsonHeaders = { "Content-Type": "application/json" };
+  const authHeaders = { ...jsonHeaders, "X-Test-User": "user-1" };
+
+  it("rejects a whitespace-only word with 400 before any DB/LLM work", async () => {
+    const res = await app.request("/api/knowledge/entries", {
+      method: "POST",
+      headers: authHeaders,
+      body: JSON.stringify({ word: "   ", language: "en", autoEnrich: false }),
+    });
+    expect(res.status).toBe(400);
+    expect(mockInsert).not.toHaveBeenCalled();
+    expect(enrichWord).not.toHaveBeenCalled();
+  });
+
+  it("rejects a whitespace-only language with 400", async () => {
+    const res = await app.request("/api/knowledge/entries", {
+      method: "POST",
+      headers: authHeaders,
+      body: JSON.stringify({ word: "hello", language: "  ", autoEnrich: false }),
+    });
+    expect(res.status).toBe(400);
+    expect(mockInsert).not.toHaveBeenCalled();
+  });
+
+  it("trims incidental padding off word/language before insert", async () => {
+    selectReturning([]); // no duplicate
+    const valuesFn = insertReturning({ id: "11111111-1111-1111-1111-111111111111" });
+
+    const res = await app.request("/api/knowledge/entries", {
+      method: "POST",
+      headers: authHeaders,
+      body: JSON.stringify({ word: "  hello  ", language: "  en  ", autoEnrich: false }),
+    });
+    expect(res.status).toBe(201);
+    const values = valuesFn.mock.calls[0]![0] as Record<string, unknown>;
+    expect(values.word).toBe("hello");
+    expect(values.language).toBe("en");
+  });
+
+  it("collapses a whitespace-only optional field so it stores null", async () => {
+    selectReturning([]);
+    const valuesFn = insertReturning({ id: "11111111-1111-1111-1111-111111111111" });
+
+    const res = await app.request("/api/knowledge/entries", {
+      method: "POST",
+      headers: authHeaders,
+      body: JSON.stringify({
+        word: "hello",
+        language: "en",
+        definition: "   ",
+        pronunciation: "  həˈləʊ  ",
+        autoEnrich: false,
+      }),
+    });
+    expect(res.status).toBe(201);
+    const values = valuesFn.mock.calls[0]![0] as Record<string, unknown>;
+    expect(values.definition).toBeNull();
+    expect(values.pronunciation).toBe("həˈləʊ");
+  });
+
+  it("drops whitespace-only labels", async () => {
+    selectReturning([]);
+    const valuesFn = insertReturning({ id: "11111111-1111-1111-1111-111111111111" });
+
+    const res = await app.request("/api/knowledge/entries", {
+      method: "POST",
+      headers: authHeaders,
+      body: JSON.stringify({
+        word: "hello",
+        language: "en",
+        labels: [" greeting ", "   ", "common"],
+        autoEnrich: false,
+      }),
+    });
+    expect(res.status).toBe(201);
+    const values = valuesFn.mock.calls[0]![0] as Record<string, unknown>;
+    expect(values.labels).toEqual(["greeting", "common"]);
+  });
+});
+
+describe("PUT /api/knowledge/entries/:id — whitespace-only hardening (SHAN-433)", () => {
+  const validId = "11111111-1111-1111-1111-111111111111";
+  const jsonHeaders = { "Content-Type": "application/json" };
+  const authHeaders = { ...jsonHeaders, "X-Test-User": "user-1" };
+
+  it("rejects a whitespace-only word with 400 before touching the DB", async () => {
+    const res = await app.request(`/api/knowledge/entries/${validId}`, {
+      method: "PUT",
+      headers: authHeaders,
+      body: JSON.stringify({ word: "   " }),
+    });
+    expect(res.status).toBe(400);
+    expect(mockUpdate).not.toHaveBeenCalled();
+  });
+
+  it("skips an empty-after-trim optional field instead of clearing it", async () => {
+    selectReturning([{ createdBy: "user-1" }]);
+    const setFn = vi.fn(() => ({
+      where: () => ({ returning: () => Promise.resolve([{ id: validId }]) }),
+    }));
+    mockUpdate.mockImplementation(() => ({ set: setFn }));
+
+    const res = await app.request(`/api/knowledge/entries/${validId}`, {
+      method: "PUT",
+      headers: authHeaders,
+      body: JSON.stringify({ definition: "   " }),
+    });
+    expect(res.status).toBe(200);
+    const patch = setFn.mock.calls[0]![0] as Record<string, unknown>;
+    // undefined -> Drizzle omits it from the SET clause (no accidental clear).
+    expect(patch.definition).toBeUndefined();
+  });
+});
+
 describe("GET /api/knowledge/entries — filter param length bounds (SHAN-415)", () => {
   function selectChain(rows: unknown[]) {
     const c: Record<string, unknown> = {};

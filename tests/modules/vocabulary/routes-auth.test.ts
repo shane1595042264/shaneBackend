@@ -736,3 +736,79 @@ describe("GET /api/vocabulary/words — paginated response includes total (SHAN-
     expect(body.total).toBe(1);
   });
 });
+
+// SHAN-433: the vocabulary write path shares the vocabWords table with the
+// knowledge module, so it gets the same trim/reject-whitespace-only treatment
+// (SHAN-401 pinned their length-bound parity; this extends it to trimming).
+describe("POST /api/vocabulary/words — whitespace-only hardening (SHAN-433)", () => {
+  it("rejects a whitespace-only word with 400 before any DB/LLM work", async () => {
+    const res = await app.request("/api/vocabulary/words", {
+      method: "POST",
+      headers: patHeaders(),
+      body: JSON.stringify({ word: "   ", language: "en", autoEnrich: false }),
+    });
+    expect(res.status).toBe(400);
+    expect(mockInsert).not.toHaveBeenCalled();
+    expect(enrichWord).not.toHaveBeenCalled();
+  });
+
+  it("trims incidental padding off word/language before insert", async () => {
+    selectRows([]); // no duplicate
+    const valuesFn = insertReturning({ id: validId });
+    const res = await app.request("/api/vocabulary/words", {
+      method: "POST",
+      headers: patHeaders(),
+      body: JSON.stringify({ word: "  hola  ", language: "  es  ", autoEnrich: false }),
+    });
+    expect(res.status).toBe(201);
+    const values = valuesFn.mock.calls[0]![0] as Record<string, unknown>;
+    expect(values.word).toBe("hola");
+    expect(values.language).toBe("es");
+  });
+
+  it("collapses a whitespace-only optional field so it stores null", async () => {
+    selectRows([]);
+    const valuesFn = insertReturning({ id: validId });
+    const res = await app.request("/api/vocabulary/words", {
+      method: "POST",
+      headers: patHeaders(),
+      body: JSON.stringify({
+        word: "hola",
+        language: "es",
+        definition: "   ",
+        autoEnrich: false,
+      }),
+    });
+    expect(res.status).toBe(201);
+    const values = valuesFn.mock.calls[0]![0] as Record<string, unknown>;
+    expect(values.definition).toBeNull();
+  });
+
+  it("drops whitespace-only labels", async () => {
+    selectRows([]);
+    const valuesFn = insertReturning({ id: validId });
+    const res = await app.request("/api/vocabulary/words", {
+      method: "POST",
+      headers: patHeaders(),
+      body: JSON.stringify({
+        word: "hola",
+        language: "es",
+        labels: [" greeting ", "  ", "common"],
+        autoEnrich: false,
+      }),
+    });
+    expect(res.status).toBe(201);
+    const values = valuesFn.mock.calls[0]![0] as Record<string, unknown>;
+    expect(values.labels).toEqual(["greeting", "common"]);
+  });
+
+  it("rejects a whitespace-only word on PUT with 400 before touching the DB", async () => {
+    const res = await app.request(`/api/vocabulary/words/${validId}`, {
+      method: "PUT",
+      headers: patHeaders(),
+      body: JSON.stringify({ word: "   " }),
+    });
+    expect(res.status).toBe(400);
+    expect(mockUpdate).not.toHaveBeenCalled();
+  });
+});

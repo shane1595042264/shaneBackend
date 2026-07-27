@@ -43,3 +43,57 @@ export function containsInFlightUpload(content: string): boolean {
 export const MAX_MARKDOWN_BODY = 100_000;
 export const MAX_MARKDOWN_BODY_MESSAGE =
   "Content is too long (max 100,000 characters).";
+
+// SHAN-433: a whitespace-only string ("   ") has non-zero length, so a bare
+// `.min(1)` lets it through and it persists as blank padding — or, on the
+// knowledge/vocabulary ingest paths, gets shipped to the LLM classifier and
+// burns tokens on garbage. Trimming BEFORE the min check rejects it with a 400,
+// the same posture as journal (SHAN-431), tea (SHAN-432), loans (SHAN-428) and
+// trip-groups (SHAN-427). These helpers live here so the knowledge and
+// vocabulary write paths — which persist the same vocabWords columns — stay in
+// lockstep, extending the length-bound parity SHAN-401 pinned to trimming too.
+
+// Required free-text: strip incidental leading/trailing whitespace, then reject
+// an empty / whitespace-only value. `max` is applied to the trimmed length.
+export const trimmedRequired = (max: number) => z.string().trim().min(1).max(max);
+
+// Optional free-text: strip padding; a value that is empty after trimming is
+// treated as "not provided" (-> undefined) so we never persist blank padding
+// and a PATCH of "   " is a no-op for that column rather than clearing it. The
+// `max` bound is applied to the raw value first (bounds-first, matching
+// SHAN-396) so an oversized blob is still a 400 regardless of surrounding ws.
+export const trimmedOptional = (max: number) =>
+  z
+    .string()
+    .max(max)
+    .optional()
+    .transform((v) => {
+      if (v === undefined) return undefined;
+      const t = v.trim();
+      return t.length ? t : undefined;
+    });
+
+// Optional-nullable provenance string: trim, and collapse an empty (or
+// whitespace-only) value to null so an all-blank hint isn't persisted. Distinct
+// from trimmedOptional in that an explicit null survives as null (the field is
+// nullish, e.g. a source object whose caller cleared one attribute).
+export const trimmedNullish = (max: number) =>
+  z
+    .string()
+    .max(max)
+    .nullish()
+    .transform((v) => {
+      if (v === undefined || v === null) return v;
+      const t = v.trim();
+      return t.length ? t : null;
+    });
+
+// Optional array of short labels: trim each entry and drop any that are empty
+// after trimming, so whitespace-only labels never persist. `maxLen` bounds each
+// entry and `maxItems` the array size (SHAN-401 caps preserved).
+export const trimmedLabels = (maxLen: number, maxItems: number) =>
+  z
+    .array(z.string().max(maxLen))
+    .max(maxItems)
+    .optional()
+    .transform((v) => v?.map((s) => s.trim()).filter((s) => s.length > 0));

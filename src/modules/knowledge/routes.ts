@@ -11,6 +11,12 @@ import { normalizeLocations, computeLongTermMemorized } from "./memorization";
 import { optionalAuth, requireAuth, requireScope } from "@/modules/auth/middleware";
 import { createPATRateLimit } from "@/modules/shared/rate-limit";
 import {
+  trimmedRequired,
+  trimmedOptional,
+  trimmedNullish,
+  trimmedLabels,
+} from "@/modules/shared/validators";
+import {
   createComment as createKnowledgeComment,
   listForEntry as listKnowledgeComments,
   updateComment as updateKnowledgeComment,
@@ -53,19 +59,19 @@ const wordIdQuerySchema = z.object({
 
 const sourceObjectSchema = z
   .object({
-    app: z.string().min(1).max(100).nullish(),
-    book: z.string().min(1).max(255).nullish(),
-    author: z.string().min(1).max(255).nullish(),
-    location: z.string().min(1).max(255).nullish(),
-    rawContext: z.string().min(1).max(5000).nullish(),
+    app: trimmedNullish(100),
+    book: trimmedNullish(255),
+    author: trimmedNullish(255),
+    location: trimmedNullish(255),
+    rawContext: trimmedNullish(5000),
   })
   .strict();
 
-const sourceInputSchema = z.union([z.string().min(1).max(100), sourceObjectSchema]);
+const sourceInputSchema = z.union([trimmedRequired(100), sourceObjectSchema]);
 
 const singleNoteSchema = z
   .object({
-    text: z.string().min(1).max(5000),
+    text: trimmedRequired(5000),
     source: sourceInputSchema.optional(),
   })
   .strict();
@@ -296,14 +302,14 @@ knowledgeRoutes.get("/categories", async (c) => {
 // columns have no DB limit, so we cap them here to keep a single request from
 // storing a multi-megabyte blob (same posture as POST /notes: text 5000, array 50).
 const createWordSchema = z.object({
-  word: z.string().min(1).max(255),
-  language: z.string().min(1).max(50),
-  category: z.string().max(100).optional().default("vocabulary"),
-  definition: z.string().max(20000).optional(),
-  pronunciation: z.string().max(255).optional(),
-  partOfSpeech: z.string().max(50).optional(),
-  exampleSentence: z.string().max(2000).optional(),
-  labels: z.array(z.string().max(100)).max(50).optional(),
+  word: trimmedRequired(255),
+  language: trimmedRequired(50),
+  category: trimmedRequired(100).optional().default("vocabulary"),
+  definition: trimmedOptional(20000),
+  pronunciation: trimmedOptional(255),
+  partOfSpeech: trimmedOptional(50),
+  exampleSentence: trimmedOptional(2000),
+  labels: trimmedLabels(100, 50),
   autoEnrich: z.boolean().optional(),
 });
 
@@ -459,14 +465,14 @@ knowledgeRoutes.post(
 // Same length bounds as createWordSchema (see note there) so the manual
 // editor's write-back can't slip an oversized value past zod into a Postgres 500.
 const updateWordSchema = z.object({
-  word: z.string().min(1).max(255).optional(),
-  language: z.string().min(1).max(50).optional(),
-  category: z.string().max(100).optional(),
-  definition: z.string().max(20000).optional(),
-  pronunciation: z.string().max(255).optional(),
-  partOfSpeech: z.string().max(50).optional(),
-  exampleSentence: z.string().max(2000).optional(),
-  labels: z.array(z.string().max(100)).max(50).optional(),
+  word: trimmedRequired(255).optional(),
+  language: trimmedRequired(50).optional(),
+  category: trimmedRequired(100).optional(),
+  definition: trimmedOptional(20000),
+  pronunciation: trimmedOptional(255),
+  partOfSpeech: trimmedOptional(50),
+  exampleSentence: trimmedOptional(2000),
+  labels: trimmedLabels(100, 50),
   // Location-memorization technique (SHAN-339): the distinct places this card has
   // been practiced. long_term_memorized is derived server-side, never trusted from
   // the client.
@@ -621,7 +627,8 @@ const createConnectionSchema = z.object({
   // SHAN-412: short free-text annotation on a connection, inserted into the
   // shared vocab_connections.note text column. Bound it to match vocabulary
   // (SHAN-401) so a knowledge:write PAT can't push a runaway payload.
-  note: z.string().max(1000).optional(),
+  // SHAN-433: trim + drop a whitespace-only note so it inserts as absent.
+  note: trimmedOptional(1000),
 });
 
 knowledgeRoutes.get("/connections", zValidator("query", wordIdQuerySchema), async (c) => {
@@ -701,10 +708,12 @@ knowledgeRoutes.get("/languages", async (c) => {
 // ---------------------------------------------------------------------------
 
 const commentBody = z.object({
-  content: z.string().min(1).max(10_000),
+  // SHAN-433: trim before min(1) so a whitespace-only comment is a 400 rather
+  // than a blank thread post.
+  content: trimmedRequired(10_000),
   parent_comment_id: z.string().uuid().optional(),
 });
-const commentEditBody = z.object({ content: z.string().min(1).max(10_000) });
+const commentEditBody = z.object({ content: trimmedRequired(10_000) });
 
 knowledgeRoutes.get(
   "/entries/:id/comments",
