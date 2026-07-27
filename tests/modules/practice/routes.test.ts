@@ -68,6 +68,21 @@ describe("POST /sessions (explicit mode)", () => {
   });
 });
 
+describe("POST /locations", () => {
+  // SHAN-434: name is trimmed at the validator.
+  it("400 on a whitespace-only name without hitting the repo", async () => {
+    const res = await app.request("/api/practice/locations", { method: "POST", headers: { "Content-Type": "application/json", "X-Test-User": "u1" }, body: JSON.stringify({ name: "   " }) });
+    expect(res.status).toBe(400);
+    expect(mocks.locations.upsert).not.toHaveBeenCalled();
+  });
+  it("trims surrounding whitespace before upserting", async () => {
+    mocks.locations.upsert.mockResolvedValue({ id: "loc1", name: "Gym", normalized: "gym" });
+    const res = await app.request("/api/practice/locations", { method: "POST", headers: { "Content-Type": "application/json", "X-Test-User": "u1" }, body: JSON.stringify({ name: "  Gym  " }) });
+    expect(res.status).toBe(201);
+    expect(mocks.locations.upsert).toHaveBeenCalledWith("u1", "Gym");
+  });
+});
+
 describe("POST /session-items/:id/sync", () => {
   it("accepts a sendBeacon-shaped body", async () => {
     mocks.sessionItems.sync.mockResolvedValue({ id: "si1", setsCompleted: 3 });
@@ -78,6 +93,14 @@ describe("POST /session-items/:id/sync", () => {
     mocks.sessionItems.sync.mockResolvedValue(null);
     const res = await app.request(`/api/practice/session-items/${UUID}/sync`, { method: "POST", headers: { "Content-Type": "application/json", "X-Test-User": "u1" }, body: JSON.stringify({ setsCompleted: 1 }) });
     expect(res.status).toBe(404);
+  });
+  // SHAN-434: a whitespace-only locationName collapses to null (no location)
+  // rather than persisting blank padding on the session item.
+  it("collapses a whitespace-only locationName to null in the patch", async () => {
+    mocks.sessionItems.sync.mockResolvedValue({ id: "si1" });
+    const res = await app.request(`/api/practice/session-items/${UUID}/sync`, { method: "POST", headers: { "Content-Type": "application/json", "X-Test-User": "u1" }, body: JSON.stringify({ locationName: "   " }) });
+    expect(res.status).toBe(200);
+    expect(mocks.sessionItems.sync).toHaveBeenCalledWith(UUID, "u1", expect.objectContaining({ locationName: null }));
   });
 });
 

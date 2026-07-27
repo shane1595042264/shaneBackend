@@ -131,4 +131,24 @@ describe("PUT /api/slot-assignments", () => {
     expect(res.status).toBe(400);
     expect(mockInsert).not.toHaveBeenCalled();
   });
+
+  // SHAN-434: app id values are now trimmed at the validator.
+  it("rejects a whitespace-only app id with 400", async () => {
+    const res = await put({ assignments: { "1": "   " } });
+    expect(res.status).toBe(400);
+    expect(mockInsert).not.toHaveBeenCalled();
+  });
+
+  it("trims surrounding whitespace and persists the trimmed app id", async () => {
+    mockInsert.mockReturnValue(insertChain());
+    const res = await put({ assignments: { "1": "  app-h  " } });
+    expect(res.status).toBe(200);
+    expect((await res.json()).assignments).toEqual({ "1": "app-h" });
+  });
+
+  it("treats ' app-h' and 'app-h ' as duplicates after trimming (400)", async () => {
+    const res = await put({ assignments: { "1": " app-h", "2": "app-h " } });
+    expect(res.status).toBe(400);
+    expect(mockInsert).not.toHaveBeenCalled();
+  });
 });

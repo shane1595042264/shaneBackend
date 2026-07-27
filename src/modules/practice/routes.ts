@@ -19,6 +19,7 @@ import { getSettings, updateSettings } from "./settings-repo";
 import { createVocabSession, getVocabSession, vocabSessionSummary } from "./vocab-sessions-repo";
 import { generateVocabSession, vocabPreviewCounts, isVocabCard } from "./vocab-generator";
 import { applyReview } from "./vocab-srs-repo";
+import { trimmedRequired, trimmedNullish } from "@/modules/shared/validators";
 
 // Per-PAT rolling-60s rate limits on the practice write surface. JWTs bypass
 // (tokenId is null for browser sessions). Sync runs at runner-tick speed —
@@ -135,7 +136,9 @@ practiceRoutes.post(
   requireAuth,
   requireScope("practice:write"),
   locationsWriteLimit,
-  zValidator("json", z.object({ name: z.string().min(1).max(120) })),
+  // SHAN-434: trim so a whitespace-only name is a clean 400 up front rather
+  // than reaching upsertLocation and returning "blank after normalization".
+  zValidator("json", z.object({ name: trimmedRequired(120) })),
   async (c) => {
     const userId = c.get("userId") as string;
     const { name } = c.req.valid("json");
@@ -288,7 +291,9 @@ const syncBody = z.object({
   timerState: z.unknown().optional(),
   setsCompleted: z.number().int().min(0).max(500).optional(),
   locationId: z.string().uuid().nullable().optional(),
-  locationName: z.string().min(1).max(120).nullable().optional(),
+  // SHAN-434: trim; a whitespace-only locationName collapses to null (no
+  // location) rather than persisting blank padding on the session item.
+  locationName: trimmedNullish(120),
   completedAt: z.string().datetime().nullable().optional(),
   startedAt: z.string().datetime().nullable().optional(),
 });
@@ -350,7 +355,9 @@ practiceRoutes.get(
 // ----- Vocab mode (Shanbay-style flashcard SRS) -----
 
 const vocabSessionBody = z.object({
-  locationName: z.string().min(1).max(120),
+  // SHAN-434: trim to match the preview query below — both feed the same
+  // location-normalized SRS lookup, so they must strip whitespace identically.
+  locationName: trimmedRequired(120),
   n: z.number().int().min(1).max(50),
 });
 
@@ -446,7 +453,8 @@ practiceRoutes.post(
 );
 
 const vocabPreviewQuery = z.object({
-  locationName: z.string().min(1).max(120),
+  // Trimmed to match vocabSessionBody (SHAN-434).
+  locationName: trimmedRequired(120),
   n: z.coerce.number().int().min(1).max(50).optional(),
 });
 

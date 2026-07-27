@@ -38,7 +38,10 @@ const putSchema = z.object({
   assignments: z
     .record(
       z.string().regex(/^\d+$/, "Keys must be atomic numbers"),
-      z.string().min(1, "App ID required").max(128, "App ID too long")
+      // SHAN-434: trim first so a whitespace-only app id is rejected and
+      // " journal" / "journal " normalize to one value — this also tightens
+      // the duplicate-app-id guard below (it compares the trimmed values).
+      z.string().trim().min(1, "App ID required").max(128, "App ID too long")
     )
     .refine((a) => Object.keys(a).length <= MAX_SLOTS, {
       message: `At most ${MAX_SLOTS} assignments allowed`,

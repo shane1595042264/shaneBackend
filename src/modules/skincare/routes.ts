@@ -12,6 +12,11 @@ import {
   type SkincareProductRow,
 } from "./repo";
 import { searchProducts } from "./search";
+import {
+  trimmedRequired,
+  trimmedOptional,
+  trimmedNullish,
+} from "@/modules/shared/validators";
 
 // Per-PAT 60s rolling write limit. JWT browser sessions bypass. Distinct
 // bucket so a busy skincare updater doesn't lock out their journal/tea writes.
@@ -28,16 +33,21 @@ const idParam = z.object({ id: z.string().uuid() });
 
 const createBody = z.object({
   timeOfDay: timeOfDaySchema,
-  name: z.string().min(1).max(255),
-  brand: z.string().max(255).optional().nullable(),
+  // SHAN-434: trim before the min/length check so a whitespace-only name is a
+  // 400 rather than blank padding, and a blank brand collapses to null rather
+  // than persisting "   ". Mirrors the SHAN-433 knowledge/vocab hardening.
+  name: trimmedRequired(255),
+  brand: trimmedNullish(255),
   imageUrl: z.string().url().max(2048).optional().nullable(),
 });
 
 const patchBody = z
   .object({
     timeOfDay: timeOfDaySchema.optional(),
-    name: z.string().min(1).max(255).optional(),
-    brand: z.string().max(255).optional().nullable(),
+    // A PATCH of "   " for name is a no-op (undefined) rather than blanking the
+    // stored name; a blank brand clears it (-> null) instead of persisting pad.
+    name: trimmedOptional(255),
+    brand: trimmedNullish(255),
     imageUrl: z.string().url().max(2048).optional().nullable(),
   })
   .refine(

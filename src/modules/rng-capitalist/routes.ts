@@ -11,6 +11,7 @@ import { calculateThreshold, rollD20, determineVerdict } from "./engine";
 import { createLinkToken, exchangePublicToken, getCurrentBalance, getLastMonthSpend, isPlaidConfigured } from "./plaid";
 import { requireAuth } from "@/modules/auth/middleware";
 import { createPATRateLimit } from "@/modules/shared/rate-limit";
+import { trimmedOptional } from "@/modules/shared/validators";
 
 type AuthEnv = { Variables: { userId: string } };
 export const rngRoutes = new Hono<AuthEnv>();
@@ -63,7 +64,10 @@ const evaluateUrlSchema = z
 const MONEY_MAX = 1_000_000_000;
 export const evaluateSchema = z.object({
   url: evaluateUrlSchema.optional(),
-  product_name: z.string().max(500).optional(),
+  // SHAN-434: trim so a whitespace-only product_name reads as "not provided"
+  // (undefined) — it then fails the url-or-name+price refine below instead of
+  // being persisted / shipped to the LLM classifier as blank garbage.
+  product_name: trimmedOptional(500),
   price: z.number().finite().nonnegative().max(MONEY_MAX).optional(),
   override_balance: z.number().finite().min(-MONEY_MAX).max(MONEY_MAX).optional(),
   override_last_month_spend: z.number().finite().nonnegative().max(MONEY_MAX).optional(),

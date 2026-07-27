@@ -66,6 +66,21 @@ describe("evaluateSchema body shape", () => {
     const r = evaluateSchema.safeParse({ product_name: "x".repeat(500), price: 10 });
     expect(r.success).toBe(true);
   });
+
+  // SHAN-434: a whitespace-only product_name has non-zero length, so a bare
+  // .optional() let it through and it reached the LLM classifier / ledger as
+  // blank garbage. trimmedOptional collapses it to undefined, which then fails
+  // the url-or-name+price refine.
+  it("rejects a whitespace-only product_name (reads as not provided)", () => {
+    const r = evaluateSchema.safeParse({ product_name: "   ", price: 10 });
+    expect(r.success).toBe(false);
+  });
+
+  it("trims surrounding whitespace on product_name", () => {
+    const r = evaluateSchema.safeParse({ product_name: "  Steam Deck  ", price: 10 });
+    expect(r.success).toBe(true);
+    if (r.success) expect(r.data.product_name).toBe("Steam Deck");
+  });
 });
 
 // SHAN-423: price/override_balance/override_last_month_spend were bare

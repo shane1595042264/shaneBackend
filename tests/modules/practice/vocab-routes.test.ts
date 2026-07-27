@@ -65,6 +65,23 @@ describe("POST /vocab/sessions", () => {
     expect((await res.json()).error).toBe("no_vocab_items");
     expect(m.createVocabSession).not.toHaveBeenCalled();
   });
+
+  // SHAN-434: locationName is trimmed at the validator so it stays aligned
+  // with the /vocab/preview query (both feed the same normalized SRS lookup).
+  it("400 on a whitespace-only locationName", async () => {
+    const res = await app.request("/api/practice/vocab/sessions", { method: "POST", headers: { "Content-Type": "application/json", "X-Test-User": "u1" }, body: JSON.stringify({ locationName: "   ", n: 5 }) });
+    expect(res.status).toBe(400);
+    expect(m.upsertLocation).not.toHaveBeenCalled();
+  });
+
+  it("trims surrounding whitespace before the location lookup", async () => {
+    m.upsertLocation.mockResolvedValue({ id: "loc1", name: "Home", normalized: "home" });
+    m.generateVocabSession.mockResolvedValue([{ itemId: WID, word: "ephemeral", level: 0, dueAt: null }]);
+    m.createVocabSession.mockResolvedValue({ id: SID, mode: "vocab", locationName: "Home", nItemsRequested: 5 });
+    const res = await app.request("/api/practice/vocab/sessions", { method: "POST", headers: { "Content-Type": "application/json", "X-Test-User": "u1" }, body: JSON.stringify({ locationName: "  Home  ", n: 5 }) });
+    expect(res.status).toBe(201);
+    expect(m.upsertLocation).toHaveBeenCalledWith("u1", "Home");
+  });
 });
 
 describe("POST /vocab/reviews", () => {
