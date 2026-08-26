@@ -218,6 +218,13 @@
       "when": 1784943734407,
       "tag": "0030_adorable_jane_foster",
       "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "7",
+      "when": 1787714180508,
+      "tag": "0031_daily_sentry",
+      "breakpoints": true
     }
   ]
 }

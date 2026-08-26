@@ -1080,3 +1080,82 @@ export const skincareProducts = pgTable(
     index("skincare_products_user_time_pos_idx").on(t.userId, t.timeOfDay, t.position),
   ],
 );
+
+// ------------------------------------------------------------------
+// scoreboard_* - "Supermassive Scoreboard" element (SHAN-435)
+// Public arcade-hall scoreboard for friendly IRL games. Games carry
+// SVG path data fetched from game-icons.net (CC BY 3.0) at creation,
+// stored as text so the frontend renders a plain <svg><path> with no
+// third-party markup injection. Reads are public; writes are owner
+// (Shane) only. Players are plain name records, not site accounts.
+// ------------------------------------------------------------------
+export const scoreboardGames = pgTable("scoreboard_games", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  userId: uuid("user_id")
+    .notNull()
+    .references(() => users.id, { onDelete: "cascade" }),
+  name: varchar("name", { length: 120 }).notNull(),
+  description: text("description"),
+  rules: text("rules"),
+  // The concatenated <path d> data of the chosen game-icons.net icon,
+  // background path stripped. Rendered inline with fill=currentColor.
+  iconPath: text("icon_path").notNull(),
+  iconViewBox: varchar("icon_view_box", { length: 64 })
+    .notNull()
+    .default("0 0 512 512"),
+  // e.g. "delapouite/8-ball" - attribution + re-fetch handle.
+  iconSlug: varchar("icon_slug", { length: 160 }).notNull(),
+  // Palette token ("amber", "sky", ...) validated by zod in routes.ts.
+  color: varchar("color", { length: 32 }).notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const scoreboardPlayers = pgTable("scoreboard_players", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  userId: uuid("user_id")
+    .notNull()
+    .references(() => users.id, { onDelete: "cascade" }),
+  name: varchar("name", { length: 80 }).notNull(),
+  color: varchar("color", { length: 32 }).notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const scoreboardMatches = pgTable(
+  "scoreboard_matches",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    gameId: uuid("game_id")
+      .notNull()
+      .references(() => scoreboardGames.id, { onDelete: "cascade" }),
+    location: varchar("location", { length: 160 }),
+    // "live" | "final" - enforced by the zod schema in routes.ts.
+    status: varchar("status", { length: 16 }).notNull().default("live"),
+    winnerPlayerId: uuid("winner_player_id").references(() => scoreboardPlayers.id, {
+      onDelete: "set null",
+    }),
+    playedAt: timestamp("played_at", { withTimezone: true }).notNull().defaultNow(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("scoreboard_matches_game_created_idx").on(t.gameId, t.createdAt)],
+);
+
+export const scoreboardMatchPlayers = pgTable(
+  "scoreboard_match_players",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    matchId: uuid("match_id")
+      .notNull()
+      .references(() => scoreboardMatches.id, { onDelete: "cascade" }),
+    playerId: uuid("player_id")
+      .notNull()
+      .references(() => scoreboardPlayers.id, { onDelete: "cascade" }),
+    score: integer("score").notNull().default(0),
+    position: integer("position").notNull(),
+  },
+  (t) => [unique("scoreboard_match_players_match_player_uq").on(t.matchId, t.playerId)],
+);
