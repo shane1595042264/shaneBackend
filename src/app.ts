@@ -19,6 +19,7 @@ import { loansRoutes } from "@/modules/loans/routes";
 import { practiceRoutes } from "@/modules/practice/routes";
 import { teaEntriesRoutes } from "@/modules/tea-entries/routes";
 import { skincareRoutes } from "@/modules/skincare/routes";
+import { scoreboardRoutes } from "@/modules/scoreboard/routes";
 import { isoDate } from "@/modules/shared/validators";
 import { notFoundHandler, errorHandler } from "@/modules/shared/http-errors";
 import { getVersionInfo } from "@/modules/shared/version";
@@ -73,6 +74,7 @@ app.route("/api/loans", loansRoutes);
 app.route("/api/practice", practiceRoutes);
 app.route("/api/tea-entries", teaEntriesRoutes);
 app.route("/api/skincare", skincareRoutes);
+app.route("/api/scoreboard", scoreboardRoutes);
 app.route("/api/integrations/wechat", wechatRoutes);
 app.route("/api/integrations/calendar", calendarConnectRoutes);
 
