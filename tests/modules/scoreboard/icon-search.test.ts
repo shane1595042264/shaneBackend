@@ -42,10 +42,10 @@ describe("searchIcons", () => {
     expect(mockFetch).not.toHaveBeenCalled();
   });
 
-  it("finds 8-ball for 'pool' via the synonym map", async () => {
-    __setTreeCache(["delapouite/8-ball", "lorc/swimming-pool", "lorc/dart"]);
+  it("ranks eight-ball first for 'pool' via the synonym map", async () => {
+    __setTreeCache(["delapouite/eight-ball", "lorc/swimming-pool", "lorc/dart"]);
     const out = await searchIcons("pool");
-    expect(out.map((r) => r.slug)).toContain("delapouite/8-ball");
+    expect(out[0].slug).toBe("delapouite/eight-ball");
   });
 
   it("caps results at 12", async () => {

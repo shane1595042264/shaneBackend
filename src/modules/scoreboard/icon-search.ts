@@ -33,9 +33,10 @@ let treeCache: { slugs: string[]; expiresAt: number } | null = null;
 // Query-token expansions for games whose obvious name doesn't match the
 // icon's filename. Values are extra tokens scored alongside the originals.
 const SYNONYMS: Record<string, string[]> = {
-  pool: ["8-ball", "billiard", "cue"],
-  billiards: ["8-ball", "cue"],
-  snooker: ["8-ball", "cue"],
+  // game-icons names the ball icon "eight-ball", not "8-ball".
+  pool: ["eight-ball", "billiard", "cue"],
+  billiards: ["eight-ball", "cue"],
+  snooker: ["eight-ball", "cue"],
   pingpong: ["ping-pong"],
   foosball: ["soccer", "table"],
   darts: ["dart"],
