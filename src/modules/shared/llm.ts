@@ -49,7 +49,9 @@ async function generateWithGemini(
     throw new Error("GOOGLE_AI_API_KEY not set — cannot use Gemini fallback");
   }
 
-  const models = ["gemini-2.0-flash", "gemini-2.0-flash-lite"];
+  // gemini-2.0-flash / -lite were retired by Google (404 as of 2026-08,
+  // SHAN-437). gemini-3.6-flash is the replacement the retirement error names.
+  const models = ["gemini-3.6-flash"];
 
   for (const model of models) {
     try {
@@ -79,7 +81,11 @@ async function callGeminiModel(
     body: JSON.stringify({
       systemInstruction: { parts: [{ text: options.system }] },
       contents: [{ role: "user", parts: [{ text: options.prompt }] }],
-      generationConfig: { maxOutputTokens: options.maxTokens },
+      // Gemini 3.x thinking models spend hidden reasoning tokens from
+      // maxOutputTokens (candidatesTokenCount excludes them), so a tight
+      // caller budget like 512 truncates the visible answer mid-JSON.
+      // Give thinking headroom on top of the caller's budget (SHAN-437).
+      generationConfig: { maxOutputTokens: options.maxTokens + 4096 },
     }),
   });
 
@@ -89,10 +95,20 @@ async function callGeminiModel(
   }
 
   const data = (await response.json()) as {
-    candidates?: { content?: { parts?: { text?: string }[] } }[];
+    candidates?: { content?: { parts?: { text?: string; thought?: boolean }[] } }[];
     usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number };
   };
-  const text = data.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
+  // Gemini 3.x is a thinking model: join every non-thought text part instead
+  // of assuming parts[0], and treat an empty answer (e.g. the whole token
+  // budget spent on thinking) as a failure so the chain falls through to Groq
+  // rather than returning "" to a classifier.
+  const text = (data.candidates?.[0]?.content?.parts ?? [])
+    .filter((p) => !p.thought && typeof p.text === "string")
+    .map((p) => p.text)
+    .join("");
+  if (!text) {
+    throw new Error(`Gemini ${model} returned no text`);
+  }
   const usageMetadata = data.usageMetadata ?? {};
 
   return {
@@ -156,7 +172,9 @@ async function generateWithGroq(
     throw new Error("GROQ_API_KEY not set — cannot use Groq fallback");
   }
 
-  const models = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"];
+  // llama-3.3-70b-versatile / llama-3.1-8b-instant were retired by Groq
+  // (404 as of 2026-08, SHAN-437). gpt-oss is Groq's current free chat tier.
+  const models = ["openai/gpt-oss-120b", "openai/gpt-oss-20b"];
 
   for (const model of models) {
     try {

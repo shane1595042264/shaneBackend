@@ -7,8 +7,8 @@ Cross-cutting utilities. Each file should have one well-defined contract and no 
 The single chokepoint for every LLM call in the backend. Provider fallback chain (in order):
 
 1. **Anthropic** — passed `model` (callers pin to Haiku 4.5 for cheap classification or Sonnet 4 for richer prompts). Default model is `claude-sonnet-4-20250514`.
-2. **Google Gemini** — `gemini-2.0-flash` → `gemini-2.0-flash-lite`. Requires `GOOGLE_AI_API_KEY`. Free tier with daily quota.
-3. **Groq Llama** — `llama-3.3-70b-versatile` → `llama-3.1-8b-instant`. Requires `GROQ_API_KEY`. Free tier with per-minute rate limits and retry-after handling baked in.
+2. **Google Gemini** — `gemini-3.6-flash` (the 2.0 models were retired by Google in 2026-08, SHAN-437). Requires `GOOGLE_AI_API_KEY`. Free tier with daily quota. Thinking model: llm.ts joins non-thought parts and treats an empty answer as a failure so the chain continues.
+3. **Groq** — `openai/gpt-oss-120b` → `openai/gpt-oss-20b` (the llama models were retired by Groq in 2026-08, SHAN-437). Requires `GROQ_API_KEY`. Free tier with per-minute rate limits and retry-after handling baked in.
 
 If every provider in the chain fails, throws:
 
