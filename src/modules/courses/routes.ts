@@ -387,3 +387,111 @@ coursesRoutes.delete(
     return c.body(null, 204);
   },
 );
+
+// ---- Ratings (any signed-in user) ----------------------------------------
+
+coursesRoutes.put(
+  "/:id/rating",
+  requireAuth,
+  requireScope("reactions:write"),
+  coursesWriteLimit,
+  zValidator("param", idParam),
+  zValidator("json", ratingBody),
+  async (c) => {
+    const userId = c.get("userId") as string;
+    const { id } = c.req.valid("param");
+    const { stars } = c.req.valid("json");
+    const course = await getCourseById(id);
+    if (!course) return c.json({ error: "Not found" }, 404);
+    await upsertRating(id, userId, stars);
+    const summary = await ratingSummaryFor(id);
+    return c.json({ rating: { ...summary, mine: stars } });
+  },
+);
+
+coursesRoutes.delete(
+  "/:id/rating",
+  requireAuth,
+  requireScope("reactions:write"),
+  coursesWriteLimit,
+  zValidator("param", idParam),
+  async (c) => {
+    const userId = c.get("userId") as string;
+    const { id } = c.req.valid("param");
+    const course = await getCourseById(id);
+    if (!course) return c.json({ error: "Not found" }, 404);
+    await deleteRating(id, userId);
+    const summary = await ratingSummaryFor(id);
+    return c.json({ rating: { ...summary, mine: null } });
+  },
+);
+
+// ---- Comments (any signed-in user) ---------------------------------------
+
+coursesRoutes.get(
+  "/:id/comments",
+  optionalAuth,
+  zValidator("param", idParam),
+  async (c) => {
+    const { id } = c.req.valid("param");
+    const course = await getCourseById(id);
+    if (!course) return c.json({ error: "Not found" }, 404);
+    const comments = await listCourseComments(id);
+    return c.json({ comments });
+  },
+);
+
+coursesRoutes.post(
+  "/:id/comments",
+  requireAuth,
+  requireScope("comments:write"),
+  coursesWriteLimit,
+  zValidator("param", idParam),
+  zValidator("json", commentBody),
+  async (c) => {
+    const userId = c.get("userId") as string;
+    const { id } = c.req.valid("param");
+    const body = c.req.valid("json");
+    const course = await getCourseById(id);
+    if (!course) return c.json({ error: "Not found" }, 404);
+    const comment = await createCourseComment({
+      courseId: id,
+      authorId: userId,
+      content: body.content,
+      parentCommentId: body.parent_comment_id ?? null,
+    });
+    return c.json({ comment }, 201);
+  },
+);
+
+coursesRoutes.patch(
+  "/comments/:id",
+  requireAuth,
+  requireScope("comments:write"),
+  coursesWriteLimit,
+  zValidator("param", idParam),
+  zValidator("json", z.object({ content: z.string().trim().min(1).max(10_000) })),
+  async (c) => {
+    const userId = c.get("userId") as string;
+    const { id } = c.req.valid("param");
+    const { content } = c.req.valid("json");
+    const comment = await updateCourseComment(id, userId, content);
+    if (!comment) return c.json({ error: "Not found" }, 404);
+    return c.json({ comment });
+  },
+);
+
+coursesRoutes.delete(
+  "/comments/:id",
+  requireAuth,
+  requireScope("comments:write"),
+  coursesWriteLimit,
+  zValidator("param", idParam),
+  async (c) => {
+    const userId = c.get("userId") as string;
+    const { id } = c.req.valid("param");
+    const removed = await deleteCourseComment(id, userId);
+    if (!removed) return c.json({ error: "Not found" }, 404);
+    return c.body(null, 204);
+  },
+);

@@ -459,3 +459,144 @@ describe("DELETE /api/courses/:id/cover", () => {
     expect(m.deleteCoverRow).toHaveBeenCalledWith(courseRow.id);
   });
 });
+
+describe("PUT /api/courses/:id/rating", () => {
+  it("401s signed out", async () => {
+    const res = await app.request(`/api/courses/${courseRow.id}/rating`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ stars: 5 }),
+    });
+    expect(res.status).toBe(401);
+  });
+  it("400s out-of-range stars", async () => {
+    m.getCourseById.mockResolvedValue(courseRow);
+    const res = await app.request(`/api/courses/${courseRow.id}/rating`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", "X-Test-User": "viewer" },
+      body: JSON.stringify({ stars: 6 }),
+    });
+    expect(res.status).toBe(400);
+  });
+  it("404s an unknown course", async () => {
+    m.getCourseById.mockResolvedValue(null);
+    const res = await app.request(`/api/courses/${courseRow.id}/rating`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", "X-Test-User": "viewer" },
+      body: JSON.stringify({ stars: 5 }),
+    });
+    expect(res.status).toBe(404);
+  });
+  it("upserts and returns the fresh aggregate", async () => {
+    m.getCourseById.mockResolvedValue(courseRow);
+    m.ratingSummaryFor.mockResolvedValue({ average: 4.5, count: 2 });
+    const res = await app.request(`/api/courses/${courseRow.id}/rating`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", "X-Test-User": "viewer" },
+      body: JSON.stringify({ stars: 5 }),
+    });
+    expect(res.status).toBe(200);
+    expect(m.upsertRating).toHaveBeenCalledWith(courseRow.id, "viewer", 5);
+    expect(await res.json()).toEqual({ rating: { average: 4.5, count: 2, mine: 5 } });
+  });
+});
+
+describe("DELETE /api/courses/:id/rating", () => {
+  it("removes the caller's rating and returns the aggregate", async () => {
+    m.getCourseById.mockResolvedValue(courseRow);
+    m.ratingSummaryFor.mockResolvedValue({ average: null, count: 0 });
+    const res = await app.request(`/api/courses/${courseRow.id}/rating`, {
+      method: "DELETE",
+      headers: { "X-Test-User": "viewer" },
+    });
+    expect(res.status).toBe(200);
+    expect(m.deleteRating).toHaveBeenCalledWith(courseRow.id, "viewer");
+    expect(await res.json()).toEqual({ rating: { average: null, count: 0, mine: null } });
+  });
+});
+
+describe("course comments", () => {
+  const comment = {
+    id: "22222222-2222-4222-8222-222222222222",
+    courseId: courseRow.id,
+    parentCommentId: null,
+    authorId: "viewer",
+    author: { id: "viewer", name: "Ava", avatarUrl: null },
+    content: "Great lecture",
+    editedAt: null,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  };
+
+  it("GET lists publicly", async () => {
+    m.getCourseById.mockResolvedValue(courseRow);
+    m.listCourseComments.mockResolvedValue([comment]);
+    const res = await app.request(`/api/courses/${courseRow.id}/comments`);
+    expect(res.status).toBe(200);
+    expect((await res.json()).comments).toHaveLength(1);
+  });
+
+  it("POST 401s signed out", async () => {
+    const res = await app.request(`/api/courses/${courseRow.id}/comments`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content: "hi" }),
+    });
+    expect(res.status).toBe(401);
+  });
+
+  it("POST creates with parent_comment_id", async () => {
+    m.getCourseById.mockResolvedValue(courseRow);
+    m.createCourseComment.mockResolvedValue(comment);
+    const res = await app.request(`/api/courses/${courseRow.id}/comments`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Test-User": "viewer" },
+      body: JSON.stringify({ content: "Great lecture", parent_comment_id: comment.id }),
+    });
+    expect(res.status).toBe(201);
+    expect(m.createCourseComment).toHaveBeenCalledWith({
+      courseId: courseRow.id,
+      authorId: "viewer",
+      content: "Great lecture",
+      parentCommentId: comment.id,
+    });
+  });
+
+  it("POST 404s for an unknown course", async () => {
+    m.getCourseById.mockResolvedValue(null);
+    const res = await app.request(`/api/courses/${courseRow.id}/comments`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Test-User": "viewer" },
+      body: JSON.stringify({ content: "hi" }),
+    });
+    expect(res.status).toBe(404);
+  });
+
+  it("PATCH edits only the author's comment", async () => {
+    m.updateCourseComment.mockResolvedValue(null);
+    const res = await app.request(`/api/courses/comments/${comment.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", "X-Test-User": "stranger" },
+      body: JSON.stringify({ content: "edited" }),
+    });
+    expect(res.status).toBe(404);
+  });
+
+  it("DELETE 204s for author or course owner", async () => {
+    m.deleteCourseComment.mockResolvedValue(true);
+    const res = await app.request(`/api/courses/comments/${comment.id}`, {
+      method: "DELETE",
+      headers: { "X-Test-User": "u1" },
+    });
+    expect(res.status).toBe(204);
+  });
+
+  it("DELETE 404s otherwise", async () => {
+    m.deleteCourseComment.mockResolvedValue(false);
+    const res = await app.request(`/api/courses/comments/${comment.id}`, {
+      method: "DELETE",
+      headers: { "X-Test-User": "stranger" },
+    });
+    expect(res.status).toBe(404);
+  });
+});
