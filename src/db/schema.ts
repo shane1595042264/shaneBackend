@@ -1159,3 +1159,99 @@ export const scoreboardMatchPlayers = pgTable(
   },
   (t) => [unique("scoreboard_match_players_match_player_uq").on(t.matchId, t.playerId)],
 );
+
+// ------------------------------------------------------------------
+// courses / course_covers / course_ratings / course_comments -
+// "Courses" element (SHAN-437)
+// Public catalog of Shane's interactive lecture courses (hosted on
+// the supermassive-courses Railway service). Courses are registered
+// by URL and auto-classified by Claude Haiku (category, difficulty,
+// duration, tags, summary). Reads are public; course writes are
+// owner (Shane) only; any signed-in user can rate (1-5 stars, one
+// per user, upsert) and comment. Covers are uploaded images stored
+// as bytea in a side table so list queries never select image
+// bytes; when absent the frontend renders a generated cover.
+// ------------------------------------------------------------------
+export const courses = pgTable(
+  "courses",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    slug: varchar("slug", { length: 80 }).notNull().unique(),
+    url: text("url").notNull().unique(),
+    title: varchar("title", { length: 200 }).notNull(),
+    description: text("description"),
+    // zod-validated enum, see COURSE_CATEGORIES in modules/courses/repo.ts
+    category: varchar("category", { length: 40 }).notNull().default("other"),
+    // intro | intermediate | advanced (zod-validated)
+    difficulty: varchar("difficulty", { length: 20 }).notNull().default("intermediate"),
+    durationMinutes: integer("duration_minutes"),
+    tags: jsonb("tags").notNull().default([]),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("courses_created_idx").on(t.createdAt)],
+);
+
+export const courseCovers = pgTable(
+  "course_covers",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    courseId: uuid("course_id")
+      .notNull()
+      .unique()
+      .references(() => courses.id, { onDelete: "cascade" }),
+    // Magic-byte sniffed server-side, never client-supplied.
+    mimeType: varchar("mime_type", { length: 100 }).notNull(),
+    byteSize: integer("byte_size").notNull(),
+    data: bytea("data").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+);
+
+export const courseRatings = pgTable(
+  "course_ratings",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    courseId: uuid("course_id")
+      .notNull()
+      .references(() => courses.id, { onDelete: "cascade" }),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "restrict" }),
+    // 1-5, zod-validated in routes.ts
+    stars: integer("stars").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    unique("course_ratings_user_course_unique").on(t.userId, t.courseId),
+    // The composite unique leads with user_id and cannot serve the
+    // per-course aggregate query, so index course_id separately.
+    index("course_ratings_course_idx").on(t.courseId),
+  ],
+);
+
+export const courseComments = pgTable(
+  "course_comments",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    courseId: uuid("course_id")
+      .notNull()
+      .references(() => courses.id, { onDelete: "cascade" }),
+    // Self-reference, deliberately no FK constraint (house pattern,
+    // matches journal_comments / knowledge_comments).
+    parentCommentId: uuid("parent_comment_id"),
+    authorId: uuid("author_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "restrict" }),
+    content: text("content").notNull(),
+    editedAt: timestamp("edited_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("course_comments_course_idx").on(t.courseId)],
+);
