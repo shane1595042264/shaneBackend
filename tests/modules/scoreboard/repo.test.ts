@@ -69,6 +69,7 @@ import {
   createGame,
   updateGame,
   createMatch,
+  updateMatch,
   incrementScore,
   finishMatch,
   reopenMatch,
@@ -193,6 +194,42 @@ describe("incrementScore", () => {
     const ch = updateChain([]);
     mockUpdate.mockReturnValue(ch);
     expect(await incrementScore("m1", "p-x", 1)).toBeNull();
+  });
+});
+
+describe("updateMatch", () => {
+  it("sets the location and bumps updatedAt, scoped to the owner", async () => {
+    const ch = updateChain([{ id: "m1", userId: "u1", location: "Legacy West" }]);
+    mockUpdate.mockReturnValue(ch);
+    const out = await updateMatch("m1", "u1", { location: "Legacy West" });
+    expect(out?.location).toBe("Legacy West");
+    const setArg = ch.set.mock.calls[0][0] as Record<string, unknown>;
+    expect(setArg).toMatchObject({ location: "Legacy West" });
+    expect(setArg).toHaveProperty("updatedAt");
+    expect((eq as ReturnType<typeof vi.fn>).mock.calls.some(
+      (call) => call[1] === "u1",
+    )).toBe(true);
+    expect(and).toHaveBeenCalled();
+  });
+
+  it("clears the location when passed null", async () => {
+    const ch = updateChain([{ id: "m1", location: null }]);
+    mockUpdate.mockReturnValue(ch);
+    await updateMatch("m1", "u1", { location: null });
+    expect(ch.set.mock.calls[0][0]).toMatchObject({ location: null });
+  });
+
+  it("leaves location untouched when the patch omits it", async () => {
+    const ch = updateChain([{ id: "m1", location: "Frisco" }]);
+    mockUpdate.mockReturnValue(ch);
+    await updateMatch("m1", "u1", {});
+    expect(ch.set.mock.calls[0][0]).not.toHaveProperty("location");
+  });
+
+  it("returns null when the match is missing or owned by someone else", async () => {
+    const ch = updateChain([]);
+    mockUpdate.mockReturnValue(ch);
+    expect(await updateMatch("m1", "u2", { location: "x" })).toBeNull();
   });
 });
 

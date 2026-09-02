@@ -27,6 +27,7 @@ import {
   getMatchOwned,
   listMatches,
   listMatchPlayers,
+  updateMatch,
   incrementScore,
   finishMatch,
   reopenMatch,
@@ -95,6 +96,12 @@ const createMatchBody = z.object({
   playerIds: z.array(z.string().uuid()).min(2).max(8),
   location: trimmedNullish(160),
 });
+
+const patchMatchBody = z
+  .object({ location: trimmedNullish(160) })
+  .refine((b) => b.location !== undefined, {
+    message: "At least one field is required",
+  });
 
 const scoreBody = z.object({
   playerId: z.string().uuid(),
@@ -343,6 +350,22 @@ scoreboardRoutes.post(
     }
     const row = await createMatch({ userId, gameId, playerIds, location });
     return c.json({ match: await serializeMatchById(row) }, 201);
+  },
+);
+
+scoreboardRoutes.patch(
+  "/matches/:id",
+  requireAuth,
+  requireScope("entries:write"),
+  scoreboardWriteLimit,
+  zValidator("param", idParam),
+  zValidator("json", patchMatchBody),
+  async (c) => {
+    const userId = c.get("userId") as string;
+    const { id } = c.req.valid("param");
+    const row = await updateMatch(id, userId, c.req.valid("json"));
+    if (!row) return c.json({ error: "Not found or not owner" }, 404);
+    return c.json({ match: await serializeMatchById(row) });
   },
 );
 

@@ -18,6 +18,7 @@ const m = vi.hoisted(() => ({
   getMatchOwned: vi.fn(),
   listMatches: vi.fn(),
   listMatchPlayers: vi.fn(),
+  updateMatch: vi.fn(),
   incrementScore: vi.fn(),
   finishMatch: vi.fn(),
   reopenMatch: vi.fn(),
@@ -48,6 +49,7 @@ vi.mock("@/modules/scoreboard/repo", async () => {
     getMatchOwned: m.getMatchOwned,
     listMatches: m.listMatches,
     listMatchPlayers: m.listMatchPlayers,
+    updateMatch: m.updateMatch,
     incrementScore: m.incrementScore,
     finishMatch: m.finishMatch,
     reopenMatch: m.reopenMatch,
@@ -296,6 +298,68 @@ describe("match writes", () => {
     );
     expect(res.status).toBe(201);
     expect((await res.json()).match.players).toHaveLength(2);
+  });
+
+  it("PATCH /matches/:id 401s without auth", async () => {
+    const res = await req(`/matches/${MATCH_ID}`, "PATCH", { location: "Legacy West" });
+    expect(res.status).toBe(401);
+    expect(m.updateMatch).not.toHaveBeenCalled();
+  });
+
+  it("PATCH /matches/:id updates the location and returns the match", async () => {
+    m.updateMatch.mockResolvedValue({ ...MATCH_ROW, location: "Legacy West" });
+    m.listMatchPlayers.mockResolvedValue(MP_ROWS);
+    const res = await req(
+      `/matches/${MATCH_ID}`, "PATCH",
+      { location: "  Legacy West  " },
+      "u1",
+    );
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.match.location).toBe("Legacy West");
+    expect(data.match.players).toHaveLength(2);
+    // whitespace is trimmed before it reaches the repo
+    expect(m.updateMatch).toHaveBeenCalledWith(MATCH_ID, "u1", {
+      location: "Legacy West",
+    });
+  });
+
+  it("PATCH /matches/:id clears the location on an explicit null", async () => {
+    m.updateMatch.mockResolvedValue({ ...MATCH_ROW, location: null });
+    m.listMatchPlayers.mockResolvedValue(MP_ROWS);
+    const res = await req(`/matches/${MATCH_ID}`, "PATCH", { location: null }, "u1");
+    expect(res.status).toBe(200);
+    expect(m.updateMatch).toHaveBeenCalledWith(MATCH_ID, "u1", { location: null });
+  });
+
+  it("PATCH /matches/:id collapses a whitespace-only location to null", async () => {
+    m.updateMatch.mockResolvedValue({ ...MATCH_ROW, location: null });
+    m.listMatchPlayers.mockResolvedValue(MP_ROWS);
+    const res = await req(`/matches/${MATCH_ID}`, "PATCH", { location: "   " }, "u1");
+    expect(res.status).toBe(200);
+    expect(m.updateMatch).toHaveBeenCalledWith(MATCH_ID, "u1", { location: null });
+  });
+
+  it("PATCH /matches/:id 400s on an empty patch", async () => {
+    const res = await req(`/matches/${MATCH_ID}`, "PATCH", {}, "u1");
+    expect(res.status).toBe(400);
+    expect(m.updateMatch).not.toHaveBeenCalled();
+  });
+
+  it("PATCH /matches/:id 400s on an over-long location", async () => {
+    const res = await req(
+      `/matches/${MATCH_ID}`, "PATCH",
+      { location: "x".repeat(161) },
+      "u1",
+    );
+    expect(res.status).toBe(400);
+    expect(m.updateMatch).not.toHaveBeenCalled();
+  });
+
+  it("PATCH /matches/:id 404s when the match is not owned", async () => {
+    m.updateMatch.mockResolvedValue(null);
+    const res = await req(`/matches/${MATCH_ID}`, "PATCH", { location: "x" }, "u2");
+    expect(res.status).toBe(404);
   });
 
   it("score: 404 on unknown match", async () => {

@@ -245,6 +245,24 @@ export async function createMatch(input: {
   return matchRow;
 }
 
+// Location edit (SHAN-436). Deliberately allowed on final matches too: the
+// address is a record of where the game happened, and a typo is usually only
+// noticed once the match is on the record wall.
+export async function updateMatch(
+  id: string,
+  userId: string,
+  patch: { location?: string | null },
+): Promise<ScoreboardMatchRow | null> {
+  const set: Record<string, unknown> = { updatedAt: new Date() };
+  if (patch.location !== undefined) set.location = patch.location;
+  const [row] = await db
+    .update(scoreboardMatches)
+    .set(set)
+    .where(and(eq(scoreboardMatches.id, id), eq(scoreboardMatches.userId, userId)))
+    .returning();
+  return (row as ScoreboardMatchRow | undefined) ?? null;
+}
+
 export async function getMatch(id: string): Promise<ScoreboardMatchRow | null> {
   const rows = await db
     .select()
