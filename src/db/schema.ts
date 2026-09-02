@@ -1255,3 +1255,22 @@ export const courseComments = pgTable(
   },
   (t) => [index("course_comments_course_idx").on(t.courseId)],
 );
+
+// ---------------------------------------------------------------------------
+// Blitz (SHAN-443): one SuperSync account per shanejli.com user. The SuperSync
+// server lives in its own database (see modules/blitz/supersync-db.ts); this
+// table only maps our user to its integer id there and holds the per-user
+// encryption key, AES-256-GCM-wrapped with BLITZ_KEY_MASTER so a DB dump alone
+// cannot decrypt anyone tasks.
+// ---------------------------------------------------------------------------
+export const blitzSyncAccounts = pgTable("blitz_sync_accounts", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  userId: uuid("user_id")
+    .notNull()
+    .unique()
+    .references(() => users.id, { onDelete: "restrict" }),
+  supersyncUserId: integer("supersync_user_id").notNull(),
+  keyCiphertext: text("key_ciphertext").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});

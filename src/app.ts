@@ -21,6 +21,7 @@ import { teaEntriesRoutes } from "@/modules/tea-entries/routes";
 import { skincareRoutes } from "@/modules/skincare/routes";
 import { scoreboardRoutes } from "@/modules/scoreboard/routes";
 import { coursesRoutes } from "@/modules/courses/routes";
+import { blitzRoutes } from "@/modules/blitz/routes";
 import { isoDate } from "@/modules/shared/validators";
 import { notFoundHandler, errorHandler } from "@/modules/shared/http-errors";
 import { getVersionInfo } from "@/modules/shared/version";
@@ -77,6 +78,7 @@ app.route("/api/tea-entries", teaEntriesRoutes);
 app.route("/api/skincare", skincareRoutes);
 app.route("/api/scoreboard", scoreboardRoutes);
 app.route("/api/courses", coursesRoutes);
+app.route("/api/blitz", blitzRoutes);
 app.route("/api/integrations/wechat", wechatRoutes);
 app.route("/api/integrations/calendar", calendarConnectRoutes);
 
