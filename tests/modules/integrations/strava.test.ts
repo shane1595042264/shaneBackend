@@ -201,4 +201,65 @@ describe("StravaConnector", () => {
 
     await expect(connector.fetchActivities("2024-01-15")).rejects.toThrow();
   });
+
+  it("should skip ingest without throwing when the Strava app is Inactive", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    global.fetch = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ access_token: "new-access-token" }),
+      } as Response)
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 403,
+        statusText: "Forbidden",
+        text: async () =>
+          JSON.stringify({
+            message: "Forbidden",
+            errors: [
+              { resource: "Application", field: "Status", code: "Inactive" },
+            ],
+          }),
+      } as unknown as Response);
+
+    const activities = await connector.fetchActivities("2024-01-15");
+
+    expect(activities).toEqual([]);
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining("https://www.strava.com/settings/api")
+    );
+
+    warn.mockRestore();
+  });
+
+  it("should include the response body when the activities fetch fails", async () => {
+    global.fetch = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ access_token: "new-access-token" }),
+      } as Response)
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 403,
+        statusText: "Forbidden",
+        text: async () =>
+          JSON.stringify({
+            message: "Authorization Error",
+            errors: [
+              {
+                resource: "AccessToken",
+                field: "activity:read_permission",
+                code: "missing",
+              },
+            ],
+          }),
+      } as unknown as Response);
+
+    await expect(connector.fetchActivities("2024-01-15")).rejects.toThrow(
+      /activity:read_permission/
+    );
+  });
 });
