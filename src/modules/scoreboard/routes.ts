@@ -108,8 +108,6 @@ const scoreBody = z.object({
   delta: z.union([z.literal(1), z.literal(-1)]),
 });
 
-const finishBody = z.object({ winnerPlayerId: z.string().uuid() });
-
 const matchesQuery = z.object({
   gameId: z.string().uuid().optional(),
   status: z.enum(["live", "final"]).optional(),
@@ -137,24 +135,42 @@ function serializePlayer(row: ScoreboardPlayerRow) {
 }
 
 function serializeMatch(row: ScoreboardMatchRow, players: MatchPlayerJoinedRow[]) {
+  const roster = players.filter((p) => p.matchId === row.id);
+  const isFinal = row.status === "final";
+  // A final match with no winner is a tie (SHAN-446). Scores are frozen once
+  // final, so re-deriving the tied set here is stable, and it saves every
+  // consumer from reimplementing the top-score comparison.
+  const winnerPlayerIds = !isFinal
+    ? []
+    : row.winnerPlayerId
+      ? [row.winnerPlayerId]
+      : topScorers(roster);
   return {
     id: row.id,
     gameId: row.gameId,
     location: row.location,
     status: row.status,
     winnerPlayerId: row.winnerPlayerId,
+    winnerPlayerIds,
+    outcome: !isFinal ? null : row.winnerPlayerId ? "win" : "tie",
     playedAt: row.playedAt,
     createdAt: row.createdAt,
-    players: players
-      .filter((p) => p.matchId === row.id)
-      .map((p) => ({
-        playerId: p.playerId,
-        name: p.name,
-        color: p.color,
-        score: p.score,
-        position: p.position,
-      })),
+    players: roster.map((p) => ({
+      playerId: p.playerId,
+      name: p.name,
+      color: p.color,
+      score: p.score,
+      position: p.position,
+    })),
   };
+}
+
+// Every player level at the best score. A tied final stores no winner id, so
+// the tied set is recovered here from the frozen scores.
+function topScorers(roster: MatchPlayerJoinedRow[]): string[] {
+  if (roster.length === 0) return [];
+  const top = Math.max(...roster.map((p) => p.score));
+  return roster.filter((p) => p.score === top).map((p) => p.playerId);
 }
 
 async function serializeMatchById(row: ScoreboardMatchRow) {
@@ -397,16 +413,12 @@ scoreboardRoutes.post(
   requireScope("entries:write"),
   scoreboardWriteLimit,
   zValidator("param", idParam),
-  zValidator("json", finishBody),
   async (c) => {
     const userId = c.get("userId") as string;
     const { id } = c.req.valid("param");
-    const { winnerPlayerId } = c.req.valid("json");
-    const participants = await listMatchPlayers([id]);
-    if (!participants.some((p) => p.playerId === winnerPlayerId)) {
-      return c.json({ error: "Winner must be a player in this match" }, 400);
-    }
-    const row = await finishMatch(id, userId, winnerPlayerId);
+    // No body: the winner is the roster's top scorer, and a shared top score
+    // is a tie (SHAN-446). Any body sent by an older client is ignored.
+    const row = await finishMatch(id, userId);
     if (!row) {
       const existing = await getMatchOwned(id, userId);
       if (!existing) return c.json({ error: "Not found or not owner" }, 404);

@@ -64,9 +64,9 @@ export async function listGames(): Promise<ScoreboardGameRow[]> {
   return rows as ScoreboardGameRow[];
 }
 
-// Per-(game, winner) final-match counts. Finals always carry a winner
-// (finish requires one; player delete is blocked while matches exist),
-// so summing wins per game also yields the game's final-match count.
+// Per-(game, winner) final-match counts. Every final is counted exactly
+// once, so summing wins per game also yields the game's final-match count.
+// Tied finals carry no winner and group under `playerId: null` (SHAN-446).
 export async function gameWinStats(): Promise<
   { gameId: string; playerId: string | null; wins: number }[]
 > {
@@ -346,11 +346,31 @@ export async function incrementScore(
   return (row as { score: number } | undefined) ?? null;
 }
 
+// The winner is computed from the scores that were tapped in, never chosen
+// (SHAN-446): the roster's single top scorer wins, and two or more players
+// level at the top is a tie, recorded as a final match with no winner.
+// Exported for the route's serializer and unit-tested directly.
+export function decideWinner(
+  roster: { playerId: string; score: number }[],
+): string | null {
+  if (roster.length === 0) return null;
+  const top = Math.max(...roster.map((p) => p.score));
+  const leaders = roster.filter((p) => p.score === top);
+  return leaders.length === 1 ? leaders[0].playerId : null;
+}
+
 export async function finishMatch(
   id: string,
   userId: string,
-  winnerPlayerId: string,
 ): Promise<ScoreboardMatchRow | null> {
+  const roster = await db
+    .select({
+      playerId: scoreboardMatchPlayers.playerId,
+      score: scoreboardMatchPlayers.score,
+    })
+    .from(scoreboardMatchPlayers)
+    .where(eq(scoreboardMatchPlayers.matchId, id));
+  const winnerPlayerId = decideWinner(roster as { playerId: string; score: number }[]);
   const [row] = await db
     .update(scoreboardMatches)
     .set({ status: "final", winnerPlayerId, updatedAt: new Date() })

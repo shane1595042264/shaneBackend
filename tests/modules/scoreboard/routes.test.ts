@@ -405,41 +405,76 @@ describe("match writes", () => {
     expect(res.status).toBe(400);
   });
 
-  it("finish: 400 when the winner is not a participant", async () => {
+  it("finish: 409 when already final", async () => {
     m.listMatchPlayers.mockResolvedValue(MP_ROWS);
+    m.finishMatch.mockResolvedValue(null);
+    m.getMatchOwned.mockResolvedValue({ ...MATCH_ROW, status: "final" });
+    const res = await req(`/matches/${MATCH_ID}/finish`, "POST", undefined, "u1");
+    expect(res.status).toBe(409);
+  });
+
+  it("finish: 200 with no body, winner computed from the scores", async () => {
+    m.listMatchPlayers.mockResolvedValue(MP_ROWS);
+    m.finishMatch.mockResolvedValue({
+      ...MATCH_ROW, status: "final", winnerPlayerId: P2,
+    });
+    const res = await req(`/matches/${MATCH_ID}/finish`, "POST", undefined, "u1");
+    expect(res.status).toBe(200);
+    const { match } = await res.json();
+    expect(match.winnerPlayerId).toBe(P2);
+    expect(match.winnerPlayerIds).toEqual([P2]);
+    expect(match.outcome).toBe("win");
+    // The route must not pass a caller-supplied winner through.
+    expect(m.finishMatch).toHaveBeenCalledWith(MATCH_ID, "u1");
+  });
+
+  it("finish: a caller-supplied winner is ignored, not honoured", async () => {
+    m.listMatchPlayers.mockResolvedValue(MP_ROWS);
+    m.finishMatch.mockResolvedValue({
+      ...MATCH_ROW, status: "final", winnerPlayerId: P2,
+    });
+    // P1 is the loser on MP_ROWS (1 vs 2) and GAME_ID is not even a player.
     const res = await req(
       `/matches/${MATCH_ID}/finish`, "POST",
       { winnerPlayerId: GAME_ID },
       "u1",
     );
-    expect(res.status).toBe(400);
-    expect(m.finishMatch).not.toHaveBeenCalled();
-  });
-
-  it("finish: 409 when already final", async () => {
-    m.listMatchPlayers.mockResolvedValue(MP_ROWS);
-    m.finishMatch.mockResolvedValue(null);
-    m.getMatchOwned.mockResolvedValue({ ...MATCH_ROW, status: "final" });
-    const res = await req(
-      `/matches/${MATCH_ID}/finish`, "POST",
-      { winnerPlayerId: P2 },
-      "u1",
-    );
-    expect(res.status).toBe(409);
-  });
-
-  it("finish: 200 happy path", async () => {
-    m.listMatchPlayers.mockResolvedValue(MP_ROWS);
-    m.finishMatch.mockResolvedValue({
-      ...MATCH_ROW, status: "final", winnerPlayerId: P2,
-    });
-    const res = await req(
-      `/matches/${MATCH_ID}/finish`, "POST",
-      { winnerPlayerId: P2 },
-      "u1",
-    );
     expect(res.status).toBe(200);
     expect((await res.json()).match.winnerPlayerId).toBe(P2);
+    expect(m.finishMatch).toHaveBeenCalledWith(MATCH_ID, "u1");
+  });
+
+  it("finish: a tie serializes every level player as a winner", async () => {
+    const tied = [
+      { ...MP_ROWS[0], score: 2 },
+      { ...MP_ROWS[1], score: 2 },
+    ];
+    m.listMatchPlayers.mockResolvedValue(tied);
+    m.finishMatch.mockResolvedValue({
+      ...MATCH_ROW, status: "final", winnerPlayerId: null,
+    });
+    const res = await req(`/matches/${MATCH_ID}/finish`, "POST", undefined, "u1");
+    expect(res.status).toBe(200);
+    const { match } = await res.json();
+    expect(match.winnerPlayerId).toBeNull();
+    expect(match.outcome).toBe("tie");
+    expect(match.winnerPlayerIds.sort()).toEqual([P1, P2].sort());
+  });
+
+  it("finish: a tie only crowns the players at the top score", async () => {
+    const P3 = "55555555-5555-5555-5555-555555555555";
+    m.listMatchPlayers.mockResolvedValue([
+      { ...MP_ROWS[0], score: 5 },
+      { ...MP_ROWS[1], score: 5 },
+      { matchId: MATCH_ID, playerId: P3, name: "Ava", color: "lime", score: 1, position: 2 },
+    ]);
+    m.finishMatch.mockResolvedValue({
+      ...MATCH_ROW, status: "final", winnerPlayerId: null,
+    });
+    const res = await req(`/matches/${MATCH_ID}/finish`, "POST", undefined, "u1");
+    const { match } = await res.json();
+    expect(match.winnerPlayerIds).not.toContain(P3);
+    expect(match.winnerPlayerIds).toHaveLength(2);
   });
 
   it("reopen: 409 when the match is live", async () => {
@@ -447,6 +482,15 @@ describe("match writes", () => {
     m.getMatchOwned.mockResolvedValue(MATCH_ROW);
     const res = await req(`/matches/${MATCH_ID}/reopen`, "POST", undefined, "u1");
     expect(res.status).toBe(409);
+  });
+
+  it("a live match serializes with no winners and a null outcome", async () => {
+    m.getMatch.mockResolvedValue(MATCH_ROW);
+    m.listMatchPlayers.mockResolvedValue(MP_ROWS);
+    const res = await req(`/matches/${MATCH_ID}`, "GET");
+    const { match } = await res.json();
+    expect(match.outcome).toBeNull();
+    expect(match.winnerPlayerIds).toEqual([]);
   });
 
   it("reopen: 200 from final", async () => {

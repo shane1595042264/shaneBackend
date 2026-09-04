@@ -71,6 +71,7 @@ import {
   createMatch,
   updateMatch,
   incrementScore,
+  decideWinner,
   finishMatch,
   reopenMatch,
   playerHasMatches,
@@ -233,11 +234,50 @@ describe("updateMatch", () => {
   });
 });
 
+describe("decideWinner", () => {
+  it("returns the single top scorer", () => {
+    expect(decideWinner([
+      { playerId: "p1", score: 1 },
+      { playerId: "p2", score: 2 },
+    ])).toBe("p2");
+  });
+
+  it("returns null when the top score is shared (a tie)", () => {
+    expect(decideWinner([
+      { playerId: "p1", score: 3 },
+      { playerId: "p2", score: 3 },
+      { playerId: "p3", score: 1 },
+    ])).toBeNull();
+  });
+
+  it("treats an untouched 0-0 board as a tie, not a p1 win", () => {
+    expect(decideWinner([
+      { playerId: "p1", score: 0 },
+      { playerId: "p2", score: 0 },
+    ])).toBeNull();
+  });
+
+  it("ignores roster order", () => {
+    expect(decideWinner([
+      { playerId: "p1", score: 5 },
+      { playerId: "p2", score: 4 },
+    ])).toBe("p1");
+  });
+
+  it("returns null for an empty roster", () => {
+    expect(decideWinner([])).toBeNull();
+  });
+});
+
 describe("finishMatch", () => {
-  it("updates only live rows, setting winner + final status", async () => {
+  it("updates only live rows, setting the computed winner + final status", async () => {
+    mockSelect.mockReturnValue(chain([
+      { playerId: "p1", score: 1 },
+      { playerId: "p2", score: 2 },
+    ]));
     const ch = updateChain([{ id: "m1", status: "final", winnerPlayerId: "p2" }]);
     mockUpdate.mockReturnValue(ch);
-    const out = await finishMatch("m1", "u1", "p2");
+    const out = await finishMatch("m1", "u1");
     expect(out?.status).toBe("final");
     const setArg = ch.set.mock.calls[0][0] as Record<string, unknown>;
     expect(setArg).toMatchObject({ status: "final", winnerPlayerId: "p2" });
@@ -249,10 +289,24 @@ describe("finishMatch", () => {
     expect(and).toHaveBeenCalled();
   });
 
+  it("stores a null winner when the scores are level", async () => {
+    mockSelect.mockReturnValue(chain([
+      { playerId: "p1", score: 2 },
+      { playerId: "p2", score: 2 },
+    ]));
+    const ch = updateChain([{ id: "m1", status: "final", winnerPlayerId: null }]);
+    mockUpdate.mockReturnValue(ch);
+    const out = await finishMatch("m1", "u1");
+    expect(out?.winnerPlayerId).toBeNull();
+    const setArg = ch.set.mock.calls[0][0] as Record<string, unknown>;
+    expect(setArg).toMatchObject({ status: "final", winnerPlayerId: null });
+  });
+
   it("returns null when the match was already final", async () => {
+    mockSelect.mockReturnValue(chain([{ playerId: "p1", score: 1 }]));
     const ch = updateChain([]);
     mockUpdate.mockReturnValue(ch);
-    expect(await finishMatch("m1", "u1", "p2")).toBeNull();
+    expect(await finishMatch("m1", "u1")).toBeNull();
   });
 });
 
