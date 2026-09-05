@@ -37,6 +37,8 @@ vi.mock("drizzle-orm", () => {
   return {
     eq: vi.fn((a, b) => ({ a, b, op: "eq" })),
     and: vi.fn((...args: unknown[]) => ({ args, op: "and" })),
+    lt: vi.fn((a, b) => ({ a, b, op: "lt" })),
+    inArray: vi.fn((a, b) => ({ a, b, op: "inArray" })),
     asc: vi.fn((c) => ({ c, dir: "asc" })),
     desc: vi.fn((c) => ({ c, dir: "desc" })),
     sql: Object.assign(tag, { raw: (s: string) => s }),
@@ -85,9 +87,14 @@ function deleteChain(returningRows: unknown[]) {
   return { chain: { where }, where, returning };
 }
 
+import { inArray, lt } from "drizzle-orm";
 import {
   createCourse,
   listCourses,
+  coverMeta,
+  ratingSummaries,
+  commentCounts,
+  myRatings,
   getCourseById,
   slugTaken,
   updateCourse,
@@ -125,6 +132,59 @@ describe("listCourses / getCourseById / slugTaken", () => {
   it("lists newest first", async () => {
     mockSelect.mockReturnValue(chain([courseRow]));
     await expect(listCourses()).resolves.toEqual([courseRow]);
+  });
+  it("skips the limit clause when no limit is given", async () => {
+    const c = chain([courseRow]);
+    mockSelect.mockReturnValue(c);
+    await listCourses();
+    expect(c.limit).not.toHaveBeenCalled();
+    expect(c.where).toHaveBeenCalledWith(undefined);
+  });
+  it("applies limit and a createdAt cursor", async () => {
+    const c = chain([courseRow]);
+    mockSelect.mockReturnValue(c);
+    await listCourses({ limit: 2, cursor: "2026-08-31T00:00:00.000Z" });
+    expect(c.limit).toHaveBeenCalledWith(2);
+    expect(lt).toHaveBeenCalledWith(
+      expect.anything(),
+      new Date("2026-08-31T00:00:00.000Z"),
+    );
+  });
+  it("ignores an unparseable cursor rather than filtering on NaN", async () => {
+    const c = chain([courseRow]);
+    mockSelect.mockReturnValue(c);
+    await listCourses({ cursor: "not-a-date" });
+    expect(lt).not.toHaveBeenCalled();
+    expect(c.where).toHaveBeenCalledWith(undefined);
+  });
+});
+
+describe("page-scoped aggregates", () => {
+  it("scope to the given course ids", async () => {
+    for (const run of [
+      () => coverMeta(["c1", "c2"]),
+      () => ratingSummaries(["c1", "c2"]),
+      () => commentCounts(["c1", "c2"]),
+      () => myRatings("u1", ["c1", "c2"]),
+    ]) {
+      vi.clearAllMocks();
+      mockSelect.mockReturnValue(chain([]));
+      await run();
+      expect(inArray).toHaveBeenCalledWith(expect.anything(), ["c1", "c2"]);
+    }
+  });
+  it("short-circuit an empty page without querying", async () => {
+    mockSelect.mockReturnValue(chain([{ courseId: "c1" }]));
+    await expect(coverMeta([])).resolves.toEqual([]);
+    await expect(ratingSummaries([])).resolves.toEqual([]);
+    await expect(commentCounts([])).resolves.toEqual([]);
+    await expect(myRatings("u1", [])).resolves.toEqual([]);
+    expect(mockSelect).not.toHaveBeenCalled();
+  });
+  it("stay unscoped when no ids are passed", async () => {
+    mockSelect.mockReturnValue(chain([]));
+    await coverMeta();
+    expect(inArray).not.toHaveBeenCalled();
   });
   it("returns null when missing", async () => {
     mockSelect.mockReturnValue(chain([]));

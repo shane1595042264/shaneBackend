@@ -19,7 +19,7 @@ export type CourseCategory = (typeof COURSE_CATEGORIES)[number];
 export const COURSE_DIFFICULTIES = ["intro", "intermediate", "advanced"] as const;
 export type CourseDifficulty = (typeof COURSE_DIFFICULTIES)[number];
 
-import { and, asc, desc, eq, getTableColumns, sql } from "drizzle-orm";
+import { and, asc, desc, eq, getTableColumns, inArray, lt, sql } from "drizzle-orm";
 import { db } from "@/db/client";
 import { courseComments, courseCovers, courseRatings, courses, users } from "@/db/schema";
 
@@ -53,8 +53,24 @@ export async function createCourse(input: {
   return row as CourseRow;
 }
 
-export async function listCourses(): Promise<CourseRow[]> {
-  const rows = await db.select().from(courses).orderBy(desc(courses.createdAt));
+export async function listCourses(
+  opts: { limit?: number; cursor?: string } = {},
+): Promise<CourseRow[]> {
+  const conditions = [];
+  if (opts.cursor) {
+    const cursorDate = new Date(opts.cursor);
+    if (!Number.isNaN(cursorDate.getTime())) {
+      conditions.push(lt(courses.createdAt, cursorDate));
+    }
+  }
+
+  const query = db
+    .select()
+    .from(courses)
+    .where(conditions.length ? and(...conditions) : undefined)
+    .orderBy(desc(courses.createdAt));
+
+  const rows = opts.limit ? await query.limit(opts.limit) : await query;
   return rows as CourseRow[];
 }
 
@@ -146,10 +162,19 @@ export async function deleteCoverRow(courseId: string): Promise<void> {
   await db.delete(courseCovers).where(eq(courseCovers.courseId, courseId));
 }
 
-export async function coverMeta(): Promise<{ courseId: string; updatedAt: Date }[]> {
-  return db
+/**
+ * Cover timestamps for the courses on the current page. `courseIds` is
+ * undefined only for callers that genuinely want the whole table; an empty
+ * array means "this page has no rows", so skip the round trip entirely.
+ */
+export async function coverMeta(
+  courseIds?: string[],
+): Promise<{ courseId: string; updatedAt: Date }[]> {
+  if (courseIds && courseIds.length === 0) return [];
+  const query = db
     .select({ courseId: courseCovers.courseId, updatedAt: courseCovers.updatedAt })
     .from(courseCovers);
+  return courseIds ? query.where(inArray(courseCovers.courseId, courseIds)) : query;
 }
 
 export async function coverMetaFor(
@@ -185,9 +210,10 @@ export async function deleteRating(courseId: string, userId: string): Promise<vo
     .where(and(eq(courseRatings.courseId, courseId), eq(courseRatings.userId, userId)));
 }
 
-export async function ratingSummaries(): Promise<
-  { courseId: string; average: number | null; count: number }[]
-> {
+export async function ratingSummaries(
+  courseIds?: string[],
+): Promise<{ courseId: string; average: number | null; count: number }[]> {
+  if (courseIds && courseIds.length === 0) return [];
   return db
     .select({
       courseId: courseRatings.courseId,
@@ -195,6 +221,7 @@ export async function ratingSummaries(): Promise<
       count: sql<number>`count(*)::int`,
     })
     .from(courseRatings)
+    .where(courseIds ? inArray(courseRatings.courseId, courseIds) : undefined)
     .groupBy(courseRatings.courseId);
 }
 
@@ -214,11 +241,20 @@ export async function ratingSummaryFor(
 
 export async function myRatings(
   userId: string,
+  courseIds?: string[],
 ): Promise<{ courseId: string; stars: number }[]> {
+  if (courseIds && courseIds.length === 0) return [];
   return db
     .select({ courseId: courseRatings.courseId, stars: courseRatings.stars })
     .from(courseRatings)
-    .where(eq(courseRatings.userId, userId));
+    .where(
+      courseIds
+        ? and(
+            eq(courseRatings.userId, userId),
+            inArray(courseRatings.courseId, courseIds),
+          )
+        : eq(courseRatings.userId, userId),
+    );
 }
 
 export async function myRatingFor(
@@ -235,13 +271,17 @@ export async function myRatingFor(
 
 // ---- comments -------------------------------------------------------------
 
-export async function commentCounts(): Promise<{ courseId: string; count: number }[]> {
+export async function commentCounts(
+  courseIds?: string[],
+): Promise<{ courseId: string; count: number }[]> {
+  if (courseIds && courseIds.length === 0) return [];
   return db
     .select({
       courseId: courseComments.courseId,
       count: sql<number>`count(*)::int`,
     })
     .from(courseComments)
+    .where(courseIds ? inArray(courseComments.courseId, courseIds) : undefined)
     .groupBy(courseComments.courseId);
 }
 

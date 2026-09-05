@@ -177,6 +177,55 @@ describe("GET /api/courses", () => {
     const body = await res.json();
     expect(body.courses[0].myStars).toBe(4);
   });
+
+  it("returns nextCursor null and no paging args when limit is omitted", async () => {
+    m.listCourses.mockResolvedValue([courseRow]);
+    const res = await app.request("/api/courses");
+    const body = await res.json();
+    expect(body.nextCursor).toBeNull();
+    expect(m.listCourses).toHaveBeenCalledWith({ limit: undefined, cursor: undefined });
+  });
+
+  it("returns nextCursor from the last row when the page is full", async () => {
+    const older = { ...courseRow, id: "c2", createdAt: new Date("2026-08-30T12:00:00Z") };
+    m.listCourses.mockResolvedValue([courseRow, older]);
+    const res = await app.request("/api/courses?limit=2");
+    const body = await res.json();
+    expect(body.nextCursor).toBe("2026-08-30T12:00:00.000Z");
+    expect(m.listCourses).toHaveBeenCalledWith({ limit: 2, cursor: undefined });
+  });
+
+  it("returns nextCursor null on a short final page", async () => {
+    m.listCourses.mockResolvedValue([courseRow]);
+    const res = await app.request("/api/courses?limit=5");
+    expect((await res.json()).nextCursor).toBeNull();
+  });
+
+  it("forwards the cursor to the repo", async () => {
+    m.listCourses.mockResolvedValue([]);
+    const res = await app.request("/api/courses?limit=2&cursor=2026-08-31T00:00:00.000Z");
+    expect(res.status).toBe(200);
+    expect(m.listCourses).toHaveBeenCalledWith({
+      limit: 2,
+      cursor: "2026-08-31T00:00:00.000Z",
+    });
+  });
+
+  it("400s on a bad limit or a malformed cursor", async () => {
+    expect((await app.request("/api/courses?limit=abc")).status).toBe(400);
+    expect((await app.request("/api/courses?limit=0")).status).toBe(400);
+    expect((await app.request("/api/courses?limit=101")).status).toBe(400);
+    expect((await app.request("/api/courses?cursor=nope")).status).toBe(400);
+  });
+
+  it("scopes the aggregates to the ids on the page", async () => {
+    m.listCourses.mockResolvedValue([courseRow]);
+    await app.request("/api/courses?limit=1", { headers: { "X-Test-User": "viewer" } });
+    expect(m.coverMeta).toHaveBeenCalledWith([courseRow.id]);
+    expect(m.ratingSummaries).toHaveBeenCalledWith([courseRow.id]);
+    expect(m.commentCounts).toHaveBeenCalledWith([courseRow.id]);
+    expect(m.myRatings).toHaveBeenCalledWith("viewer", [courseRow.id]);
+  });
 });
 
 describe("GET /api/courses/:slug", () => {

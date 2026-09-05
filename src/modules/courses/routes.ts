@@ -87,6 +87,15 @@ const patchBody = z
     { message: "At least one field is required" },
   );
 
+// Same shape as trips: `limit` is optional (omitting it returns the whole
+// catalog, which is what the site did before pagination existed) and `cursor`
+// is the ISO createdAt of the previous page's last row. Validating the ISO
+// shape here means a malformed cursor is a 400 rather than a silent page 1.
+const listQuery = z.object({
+  limit: z.coerce.number().int().min(1).max(100).optional(),
+  cursor: z.string().datetime().optional(),
+});
+
 const ratingBody = z.object({ stars: z.number().int().min(1).max(5) });
 
 const commentBody = z.object({
@@ -176,19 +185,28 @@ coursesRoutes.get(
   },
 );
 
-coursesRoutes.get("/", optionalAuth, async (c) => {
+coursesRoutes.get("/", optionalAuth, zValidator("query", listQuery), async (c) => {
   const userId = c.get("userId");
-  const [rows, covers, ratings, comments, mine] = await Promise.all([
-    listCourses(),
-    coverMeta(),
-    ratingSummaries(),
-    commentCounts(),
-    userId ? myRatings(userId) : Promise.resolve([]),
+  const { limit, cursor } = c.req.valid("query");
+  // Fetch the page first, then scope every aggregate to the ids on it, so a
+  // request costs what the page costs instead of scanning the whole catalog
+  // (plus covers, ratings and comments) on every load.
+  const rows = await listCourses({ limit, cursor });
+  const ids = rows.map((r) => r.id);
+  const [covers, ratings, comments, mine] = await Promise.all([
+    coverMeta(ids),
+    ratingSummaries(ids),
+    commentCounts(ids),
+    userId ? myRatings(userId, ids) : Promise.resolve([]),
   ]);
   const coverBy = new Map(covers.map((r) => [r.courseId, r.updatedAt]));
   const ratingBy = new Map(ratings.map((r) => [r.courseId, r]));
   const commentBy = new Map(comments.map((r) => [r.courseId, r.count]));
   const mineBy = new Map(mine.map((r) => [r.courseId, r.stars]));
+  const nextCursor =
+    limit && rows.length === limit
+      ? new Date(rows[rows.length - 1].createdAt).toISOString()
+      : null;
   return c.json({
     courses: rows.map((row) =>
       serializeCourse(row, {
@@ -199,6 +217,7 @@ coursesRoutes.get("/", optionalAuth, async (c) => {
         myStars: mineBy.get(row.id) ?? null,
       }),
     ),
+    nextCursor,
   });
 });
 
