@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import { z } from "zod";
-import { zValidator } from "@hono/zod-validator";
+import { zValidator } from "@/modules/shared/zod-validator";
 import { optionalAuth, requireAuth, requireScope } from "@/modules/auth/middleware";
 import { getUniversalTeaPin, getUserTimezone } from "@/modules/auth/user-prefs";
 import {

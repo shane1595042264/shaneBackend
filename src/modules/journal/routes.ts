@@ -1,7 +1,7 @@
 // src/modules/journal/routes.ts
 import { Hono } from "hono";
 import { z } from "zod";
-import { zValidator } from "@hono/zod-validator";
+import { zValidator } from "@/modules/shared/zod-validator";
 import { requireAuth, optionalAuth, requireScope } from "@/modules/auth/middleware";
 import { getUserTimezone } from "@/modules/auth/user-prefs";
 import { listEntries, getEntryByDate, createEntry, softDeleteEntry } from "./entries-repo";

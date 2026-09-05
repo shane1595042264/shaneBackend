@@ -34,6 +34,15 @@ Three things to know:
 
 Two endpoints can share a token's quota or have separate quotas depending on bucket name. The knowledge ingest endpoint runs single-shape and batch-shape limiters off different bucket names so a flurry of single-note posts doesn't lock out a batch sync.
 
+## `zod-validator.ts` — `zValidator`
+
+Drop-in replacement for `@hono/zod-validator`'s `zValidator`. **Import it from here, never from `@hono/zod-validator` directly.** Upstream's default failure response is the raw ZodError dump (`{"success":false,"error":{"issues":[...]}}`), which has no top-level `error` string and contradicts the `{ error }` shape `http-errors.ts` enforces everywhere else. This wrapper injects a default hook that returns 400 `{ error: "Validation failed: <summary>", details: [{ path?, message }] }` (SHAN-451).
+
+- A call site can still pass its own hook as the 3rd arg; the default only applies when none is given.
+- `path` is the dot-joined zod path and is omitted for object-level errors, so clients can key form fields off it.
+- The `error` summary folds the first 5 issues and appends `(+N more)`; `details` is never truncated.
+- The public contract is documented in the frontend docs element (`lib/docs/content/conventions.ts`) — change one, change the other.
+
 ## `embeddings.ts` (if present)
 
 Local embeddings via `@xenova/transformers`. CPU-only, no API key. Slow but free; used for pgvector similarity searches in the knowledge module. Don't try to wire this through `generateText` — it's not text generation.

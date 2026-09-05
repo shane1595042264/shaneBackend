@@ -8,7 +8,7 @@
  * keep only the refresh token; access tokens are minted per request.
  */
 import { Hono } from "hono";
-import { zValidator } from "@hono/zod-validator";
+import { zValidator } from "@/modules/shared/zod-validator";
 import { z } from "zod";
 import { eq } from "drizzle-orm";
 import { db } from "@/db/client";

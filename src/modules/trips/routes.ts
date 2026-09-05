@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { zValidator } from "@hono/zod-validator";
+import { zValidator } from "@/modules/shared/zod-validator";
 import { z } from "zod";
 import { optionalAuth, requireScope } from "@/modules/auth/middleware";
 import { extractTitle } from "./title";

@@ -1,7 +1,7 @@
 // src/modules/courses/routes.ts
 import { Hono } from "hono";
 import { z } from "zod";
-import { zValidator } from "@hono/zod-validator";
+import { zValidator } from "@/modules/shared/zod-validator";
 import { optionalAuth, requireAuth, requireScope } from "@/modules/auth/middleware";
 import { createPATRateLimit } from "@/modules/shared/rate-limit";
 import { sniffImageMime } from "@/modules/shared/image-validate";

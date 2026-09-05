@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { logger } from "hono/logger";
-import { zValidator } from "@hono/zod-validator";
+import { zValidator } from "@/modules/shared/zod-validator";
 import { z } from "zod";
 import { journalRoutes } from "@/modules/journal/routes";
 import { rngRoutes } from "@/modules/rng-capitalist/routes";
