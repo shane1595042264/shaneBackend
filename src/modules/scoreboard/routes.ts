@@ -199,7 +199,19 @@ scoreboardRoutes.get("/matches", zValidator("query", matchesQuery), async (c) =>
     cursor: cursor ? new Date(cursor) : undefined,
   });
   const players = await listMatchPlayers(matches.map((m) => m.id));
-  return c.json({ matches: matches.map((m) => serializeMatch(m, players)) });
+  // Same keyset heuristic as journal/loans/rng-capitalist/courses: a full page
+  // means there is probably more, so hand back the last row's createdAt as the
+  // next cursor. A partial page is the end. Without this, callers had to
+  // reconstruct the cursor from the last item and could never tell whether the
+  // page they got was the last one.
+  const nextCursor =
+    matches.length === limit
+      ? new Date(matches[matches.length - 1].createdAt).toISOString()
+      : null;
+  return c.json({
+    matches: matches.map((m) => serializeMatch(m, players)),
+    nextCursor,
+  });
 });
 
 scoreboardRoutes.get("/matches/:id", zValidator("param", idParam), async (c) => {

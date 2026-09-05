@@ -150,6 +150,29 @@ describe("public reads", () => {
     expect(data.matches[0].players[1]).toMatchObject({ name: "Kalina", score: 2 });
   });
 
+  it("GET /matches returns nextCursor when a full page comes back", async () => {
+    const older = new Date("2026-08-01T10:00:00.000Z");
+    const page = Array.from({ length: 50 }, (_, i) => ({
+      ...MATCH_ROW,
+      id: MATCH_ID,
+      createdAt: i === 49 ? older : new Date("2026-08-02T10:00:00.000Z"),
+    }));
+    m.listMatches.mockResolvedValue(page);
+    m.listMatchPlayers.mockResolvedValue(MP_ROWS);
+    const res = await req("/matches", "GET");
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.nextCursor).toBe(older.toISOString());
+  });
+
+  it("GET /matches returns a null nextCursor on a partial page", async () => {
+    m.listMatches.mockResolvedValue([MATCH_ROW]);
+    m.listMatchPlayers.mockResolvedValue(MP_ROWS);
+    const res = await req("/matches?limit=50", "GET");
+    expect(res.status).toBe(200);
+    expect((await res.json()).nextCursor).toBeNull();
+  });
+
   it("GET /matches/:id 404s on unknown match", async () => {
     m.getMatch.mockResolvedValue(null);
     const res = await req(`/matches/${MATCH_ID}`, "GET");
