@@ -24,6 +24,7 @@ import { coursesRoutes } from "@/modules/courses/routes";
 import { blitzRoutes } from "@/modules/blitz/routes";
 import { isoDate } from "@/modules/shared/validators";
 import { notFoundHandler, errorHandler } from "@/modules/shared/http-errors";
+import { conditionalGet } from "@/modules/shared/conditional-get";
 import { getVersionInfo } from "@/modules/shared/version";
 import { isAdminAuthed } from "@/modules/shared/admin-auth";
 
@@ -39,10 +40,19 @@ app.use(
   cors({
     origin: process.env.CORS_ORIGIN ?? "*",
     allowMethods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allowHeaders: ["Content-Type", "Authorization", "If-Match", "X-Tea-Pin"],
+    allowHeaders: ["Content-Type", "Authorization", "If-Match", "If-None-Match", "X-Tea-Pin"],
+    // ETag is not a CORS-safelisted response header: without exposing it,
+    // browser fetch() cannot read the validator and can never send it back.
+    exposeHeaders: ["ETag"],
     credentials: true,
   })
 );
+
+// Conditional GET: tag every 200 JSON read with a weak ETag and answer a
+// matching If-None-Match with 304. Must stay AFTER cors: hono/cors writes its
+// headers before calling the next middleware, so registering it here is what
+// lets the 304 substituted below inherit them. See modules/shared/conditional-get.
+app.use("*", conditionalGet);
 
 // ---------------------------------------------------------------------------
 // Health check

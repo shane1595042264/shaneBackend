@@ -43,6 +43,16 @@ Drop-in replacement for `@hono/zod-validator`'s `zValidator`. **Import it from h
 - The `error` summary folds the first 5 issues and appends `(+N more)`; `details` is never truncated.
 - The public contract is documented in the frontend docs element (`lib/docs/content/conventions.ts`) — change one, change the other.
 
+## `conditional-get.ts` — `conditionalGet`
+
+Global middleware (registered in `app.ts` right after `cors`) that gives every 200 JSON GET a weak `ETag` plus `Cache-Control: private, no-cache`, and turns a matching `If-None-Match` into a bodiless 304 (SHAN-455).
+
+- **Weak tags on purpose.** Railway's edge proxy applies gzip, not this server, so one handler output is served as two representations. A strong tag would claim byte equality we cannot promise; `If-None-Match` compares weakly anyway.
+- **Handlers win.** If a route already set `ETag` the middleware skips it entirely; if it already set `Cache-Control` (the immutable image routes do) that value is kept.
+- **Register it after `cors`, never before.** `hono/cors` writes its headers onto the response *before* calling the next middleware, so running after it is what puts those headers within reach when this one rebuilds the response. Move it above `cors` and every 304 becomes unreadable to a browser.
+- **The 304 path copies everything except the body-describing headers** (`Content-Type`, `Content-Length`, `Content-Encoding`, ...), then clears the old response's headers before swapping `c.res`. Hono's `res` setter copies the previous response's headers onto the new one, so without that clear they would come straight back onto a bodiless reply.
+- The public contract is documented in the frontend docs element (`lib/docs/content/conventions.ts`) — change one, change the other.
+
 ## `embeddings.ts` (if present)
 
 Local embeddings via `@xenova/transformers`. CPU-only, no API key. Slow but free; used for pgvector similarity searches in the knowledge module. Don't try to wire this through `generateText` — it's not text generation.
