@@ -15,6 +15,7 @@ vi.mock("drizzle-orm", () => ({
   eq: vi.fn((c: unknown, v: unknown) => ({ c, v })),
   and: vi.fn((...a: unknown[]) => ({ and: a })),
   desc: vi.fn((c: unknown) => ({ c, dir: "desc" })),
+  lt: vi.fn((c: unknown, v: unknown) => ({ lt: [c, v] })),
   sql: vi.fn(() => ({ __sql: true })),
   getTableColumns: vi.fn(() => ({})),
 }));
@@ -27,6 +28,7 @@ function chain(rows: unknown[]) {
   return c;
 }
 
+import { lt } from "drizzle-orm";
 import {
   appendDirectVersion,
   listVersions,
@@ -122,7 +124,7 @@ describe("listVersions", () => {
       { id: "v2", versionNum: 2, editorId: "u2", editorName: null, editorAvatarUrl: null },
       { id: "v1", versionNum: 1, editorId: "u1", editorName: "Alice", editorAvatarUrl: "https://img/a.png" },
     ]));
-    const out = await listVersions("e1");
+    const out = await listVersions("e1", { limit: 50 });
     expect(out).toHaveLength(3);
     expect(out[0].versionNum).toBe(3);
     expect(out[0].editor).toEqual({ id: "u1", name: "Alice", avatarUrl: "https://img/a.png" });
@@ -130,6 +132,31 @@ describe("listVersions", () => {
     // Joined columns are stripped from the top level
     expect("editorName" in out[0]).toBe(false);
     expect("editorAvatarUrl" in out[0]).toBe(false);
+  });
+
+  it("never selects the content column (SHAN-461)", async () => {
+    mockSelect.mockReturnValue(chain([]));
+    await listVersions("e1", { limit: 50 });
+    const projection = mockSelect.mock.calls[0][0] as Record<string, unknown>;
+    expect("content" in projection).toBe(false);
+    // The metadata the history UI renders is still there.
+    for (const col of ["id", "versionNum", "contentHash", "source", "createdAt"]) {
+      expect(col in projection).toBe(true);
+    }
+  });
+
+  it("applies the page limit and only adds a cursor predicate when given one", async () => {
+    const noCursor = chain([]);
+    mockSelect.mockReturnValue(noCursor);
+    await listVersions("e1", { limit: 10 });
+    expect(noCursor.limit as any).toHaveBeenCalledWith(10);
+    expect(lt as any).not.toHaveBeenCalled();
+
+    const withCursor = chain([]);
+    mockSelect.mockReturnValue(withCursor);
+    await listVersions("e1", { limit: 10, cursor: 7 });
+    expect(lt as any).toHaveBeenCalledTimes(1);
+    expect((lt as any).mock.calls[0][1]).toBe(7);
   });
 });
 

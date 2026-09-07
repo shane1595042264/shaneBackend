@@ -67,7 +67,7 @@ describe("PATCH /api/journal/entries/:date", () => {
 });
 
 describe("GET /api/journal/entries/:date/versions", () => {
-  it("returns version list ordered desc", async () => {
+  it("returns version list ordered desc with the default page size", async () => {
     mockGetByDate.mockResolvedValue({ entry: { id: "e1" }, currentVersion: { versionNum: 3 } });
     mockListV.mockResolvedValue([
       { id: "v3", versionNum: 3 },
@@ -78,7 +78,38 @@ describe("GET /api/journal/entries/:date/versions", () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.versions).toHaveLength(3);
-    expect(mockListV).toHaveBeenCalledWith("e1");
+    expect(mockListV).toHaveBeenCalledWith("e1", { limit: 50, cursor: undefined });
+    // Partial page — nothing more to fetch.
+    expect(body.nextCursor).toBeNull();
+  });
+
+  it("threads limit + cursor through and returns the last versionNum as nextCursor", async () => {
+    mockGetByDate.mockResolvedValue({ entry: { id: "e1" }, currentVersion: { versionNum: 9 } });
+    mockListV.mockResolvedValue([
+      { id: "v9", versionNum: 9 },
+      { id: "v8", versionNum: 8 },
+    ]);
+    const res = await app.request("/api/journal/entries/2026-04-29/versions?limit=2&cursor=10");
+    expect(res.status).toBe(200);
+    expect(mockListV).toHaveBeenCalledWith("e1", { limit: 2, cursor: 10 });
+    expect((await res.json()).nextCursor).toBe(8);
+  });
+
+  it("returns nextCursor null on a full page that ends at v1", async () => {
+    mockGetByDate.mockResolvedValue({ entry: { id: "e1" }, currentVersion: { versionNum: 2 } });
+    mockListV.mockResolvedValue([
+      { id: "v2", versionNum: 2 },
+      { id: "v1", versionNum: 1 },
+    ]);
+    const res = await app.request("/api/journal/entries/2026-04-29/versions?limit=2");
+    expect((await res.json()).nextCursor).toBeNull();
+  });
+
+  it("rejects a non-numeric cursor with 400 instead of reaching the query", async () => {
+    mockGetByDate.mockResolvedValue({ entry: { id: "e1" }, currentVersion: { versionNum: 1 } });
+    const res = await app.request("/api/journal/entries/2026-04-29/versions?cursor=abc");
+    expect(res.status).toBe(400);
+    expect(mockListV).not.toHaveBeenCalled();
   });
 
   it("returns 404 when entry doesn't exist", async () => {

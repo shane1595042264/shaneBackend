@@ -82,6 +82,14 @@ const dateParam = z.object({ date: isoDate });
 // syntax for type uuid", surfacing as a misleading 500 instead of a 400.
 const uuidParam = z.object({ id: z.string().uuid() });
 
+// Pagination for the version list. The cursor is the versionNum of the last row
+// on the previous page; the list is descending, so the next page is everything
+// below it. z.coerce because it arrives as a query string.
+const versionsQuery = z.object({
+  limit: z.coerce.number().int().min(1).max(100).default(50),
+  cursor: z.coerce.number().int().min(1).optional(),
+});
+
 const listQuery = z.object({
   from: isoDate.optional(),
   to: isoDate.optional(),
@@ -234,12 +242,27 @@ journalRoutes.get(
   }
 );
 
-journalRoutes.get("/entries/:date/versions", optionalAuth, zValidator("param", dateParam), async (c) => {
-  const row = await getEntryByDate(c.req.valid("param").date);
-  if (!row) return c.json({ error: "Not found" }, 404);
-  const versions = await listVersions(row.entry.id);
-  return c.json({ versions });
-});
+// Metadata only — the rows carry no `content` (SHAN-461). Read a body from
+// /entries/:date/versions/:num below, one version at a time.
+journalRoutes.get(
+  "/entries/:date/versions",
+  optionalAuth,
+  zValidator("param", dateParam),
+  zValidator("query", versionsQuery),
+  async (c) => {
+    const row = await getEntryByDate(c.req.valid("param").date);
+    if (!row) return c.json({ error: "Not found" }, 404);
+    const { limit, cursor } = c.req.valid("query");
+    const versions = await listVersions(row.entry.id, { limit, cursor });
+    // Full page means there is probably more, same heuristic as
+    // entries/courses/matches. The extra check is exact rather than a guess:
+    // versionNum is dense from 1, so a page ending at v1 is provably the last.
+    const last = versions[versions.length - 1];
+    const nextCursor =
+      versions.length === limit && last && last.versionNum > 1 ? last.versionNum : null;
+    return c.json({ versions, nextCursor });
+  }
+);
 
 journalRoutes.get(
   "/entries/:date/versions/:num",

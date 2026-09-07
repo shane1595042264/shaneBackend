@@ -1,4 +1,4 @@
-import { and, desc, eq, getTableColumns, sql } from "drizzle-orm";
+import { and, desc, eq, lt, sql } from "drizzle-orm";
 import { db } from "@/db/client";
 import { journalEntries, journalVersions, users } from "@/db/schema";
 import { hashContent } from "./entries-repo";
@@ -59,17 +59,44 @@ export async function appendDirectVersion(input: AppendInput) {
   });
 }
 
-export async function listVersions(entryId: string) {
+// Every column of journal_versions EXCEPT `content`. Versions are append-only
+// and never pruned, so a list built with getTableColumns() carried one full copy
+// of the entry body per edit and grew without bound (SHAN-461). Callers that
+// need a body read it from GET /entries/:date/versions/:num, one at a time.
+const versionListColumns = {
+  id: journalVersions.id,
+  entryId: journalVersions.entryId,
+  versionNum: journalVersions.versionNum,
+  contentHash: journalVersions.contentHash,
+  editorId: journalVersions.editorId,
+  source: journalVersions.source,
+  suggestionId: journalVersions.suggestionId,
+  parentVersionId: journalVersions.parentVersionId,
+  createdAt: journalVersions.createdAt,
+};
+
+export async function listVersions(
+  entryId: string,
+  opts: { limit: number; cursor?: number }
+) {
+  const conditions = [eq(journalVersions.entryId, entryId)];
+  // Keyset on versionNum rather than createdAt (the cursor column everywhere
+  // else): it is unique per entry, dense from 1, and already the sort key, so
+  // it can't skip or repeat a row the way a shared timestamp can.
+  if (opts.cursor !== undefined) {
+    conditions.push(lt(journalVersions.versionNum, opts.cursor));
+  }
   const rows = await db
     .select({
-      ...getTableColumns(journalVersions),
+      ...versionListColumns,
       editorName: users.name,
       editorAvatarUrl: users.avatarUrl,
     })
     .from(journalVersions)
     .leftJoin(users, eq(users.id, journalVersions.editorId))
-    .where(eq(journalVersions.entryId, entryId))
-    .orderBy(desc(journalVersions.versionNum));
+    .where(and(...conditions))
+    .orderBy(desc(journalVersions.versionNum))
+    .limit(opts.limit);
   return rows.map(({ editorName, editorAvatarUrl, ...version }) => ({
     ...version,
     editor: { id: version.editorId, name: editorName, avatarUrl: editorAvatarUrl },

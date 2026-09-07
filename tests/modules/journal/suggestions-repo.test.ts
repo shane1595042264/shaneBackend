@@ -82,6 +82,18 @@ describe("getSuggestion", () => {
     expect("proposerName" in (s as any)).toBe(false);
     expect("proposerAvatarUrl" in (s as any)).toBe(false);
   });
+
+  it("exposes the base version's number so callers skip the version list (SHAN-461)", async () => {
+    const c = chain([
+      { id: "s1", proposerId: "u2", status: "pending", proposerName: null, proposerAvatarUrl: null, baseVersionNum: 4 },
+    ]);
+    mockSelect.mockReturnValue(c);
+    const s = await getSuggestion("s1");
+    expect((s as any).baseVersionNum).toBe(4);
+    // proposer + base version — two left joins, so a suggestion whose base row
+    // somehow went missing still returns instead of dropping to null.
+    expect(c.leftJoin as any).toHaveBeenCalledTimes(2);
+  });
 });
 
 describe("listSuggestionsForEntry", () => {

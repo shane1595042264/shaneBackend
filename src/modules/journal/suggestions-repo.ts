@@ -49,9 +49,15 @@ export async function getSuggestion(id: string) {
       ...getTableColumns(journalSuggestions),
       proposerName: users.name,
       proposerAvatarUrl: users.avatarUrl,
+      // The suggestion page renders a diff against the base version's body.
+      // Handing back the version NUMBER lets it fetch that one version from
+      // /entries/:date/versions/:num instead of pulling the entire version list
+      // just to find the row whose id matches baseVersionId (SHAN-461).
+      baseVersionNum: journalVersions.versionNum,
     })
     .from(journalSuggestions)
     .leftJoin(users, eq(users.id, journalSuggestions.proposerId))
+    .leftJoin(journalVersions, eq(journalVersions.id, journalSuggestions.baseVersionId))
     .where(eq(journalSuggestions.id, id))
     .limit(1);
   return row ? attachProposer(row) : null;
