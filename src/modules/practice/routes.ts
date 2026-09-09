@@ -20,6 +20,7 @@ import { createVocabSession, getVocabSession, vocabSessionSummary } from "./voca
 import { generateVocabSession, vocabPreviewCounts, isVocabCard } from "./vocab-generator";
 import { applyReview } from "./vocab-srs-repo";
 import { trimmedRequired, trimmedNullish } from "@/modules/shared/validators";
+import { planRoutes } from "./plans-routes";
 
 // Per-PAT rolling-60s rate limits on the practice write surface. JWTs bypass
 // (tokenId is null for browser sessions). Sync runs at runner-tick speed —
@@ -471,3 +472,7 @@ practiceRoutes.get(
     return c.json(counts);
   },
 );
+
+// ----- Training plans (SHAN-468) -----
+// Mounted as a sub-app so the plan tree routes stay in their own file.
+practiceRoutes.route("/plans", planRoutes);

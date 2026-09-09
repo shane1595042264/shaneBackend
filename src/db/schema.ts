@@ -1274,3 +1274,126 @@ export const blitzSyncAccounts = pgTable("blitz_sync_accounts", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
+
+// ---------------------------------------------------------------------------
+// Training plans (SHAN-468, Phase 1 of SHAN-467). A goal-driven skeleton for
+// structured practice: a plan owns ordered days, a day owns ordered blocks
+// ("Warm-up", "Foundation"), and a block owns ordered steps ("10 hip openers").
+// Blocks carry the prescription the Phase 3 runner will time against; steps are
+// the free-text instructions an agent fills in. Deliberately separate from
+// practice_sessions — those are the ad-hoc Fitbod-style runs over knowledge
+// items; a plan is an authored curriculum that repeats on a schedule.
+// ---------------------------------------------------------------------------
+export const trainingPlans = pgTable(
+  "training_plans",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    // Readable handle so an agent can address a plan it just authored without
+    // round-tripping the uuid. Unique per user, not globally.
+    slug: varchar("slug", { length: 120 }).notNull(),
+    title: varchar("title", { length: 160 }).notNull(),
+    goal: text("goal"),
+    description: text("description"),
+    discipline: varchar("discipline", { length: 60 }),
+    status: varchar("status", { length: 12 }).notNull().default("draft"),
+    visibility: varchar("visibility", { length: 10 }).notNull().default("private"),
+    startDate: date("start_date"),
+    daysPerWeek: integer("days_per_week"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    unique("training_plans_user_slug_unique").on(t.userId, t.slug),
+    index("training_plans_user_updated_idx").on(t.userId, t.updatedAt),
+  ],
+);
+
+export const trainingPlanDays = pgTable(
+  "training_plan_days",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    planId: uuid("plan_id")
+      .notNull()
+      .references(() => trainingPlans.id, { onDelete: "cascade" }),
+    position: integer("position").notNull(),
+    label: varchar("label", { length: 120 }).notNull(),
+    // 0=Sunday..6=Saturday, null when the day is just "the next session" rather
+    // than pinned to a weekday. Phase 4's calendar reads this.
+    weekday: integer("weekday"),
+    notes: text("notes"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("training_plan_days_plan_pos_idx").on(t.planId, t.position)],
+);
+
+export const trainingPlanBlocks = pgTable(
+  "training_plan_blocks",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    dayId: uuid("day_id")
+      .notNull()
+      .references(() => trainingPlanDays.id, { onDelete: "cascade" }),
+    position: integer("position").notNull(),
+    title: varchar("title", { length: 160 }).notNull(),
+    kind: varchar("kind", { length: 20 }).notNull().default("other"),
+    // 'time' blocks run a countdown of targetSeconds; 'reps' blocks count to
+    // targetReps. Mirrors practice_prescriptions.setMode so the Phase 3 runner
+    // can reuse the same timer component.
+    mode: varchar("mode", { length: 10 }).notNull().default("time"),
+    targetSeconds: integer("target_seconds"),
+    targetReps: integer("target_reps"),
+    sets: integer("sets").notNull().default(1),
+    restSeconds: integer("rest_seconds").notNull().default(0),
+    notes: text("notes"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("training_plan_blocks_day_pos_idx").on(t.dayId, t.position)],
+);
+
+export const trainingPlanSteps = pgTable(
+  "training_plan_steps",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    blockId: uuid("block_id")
+      .notNull()
+      .references(() => trainingPlanBlocks.id, { onDelete: "cascade" }),
+    position: integer("position").notNull(),
+    text: varchar("text", { length: 300 }).notNull(),
+    reps: integer("reps"),
+    durationSeconds: integer("duration_seconds"),
+  },
+  (t) => [index("training_plan_steps_block_pos_idx").on(t.blockId, t.position)],
+);
+
+// One row per (user, block, calendar date) — the tally. Unique on that triple so
+// a runner that re-syncs mid-set updates rather than duplicating.
+export const trainingPlanCompletions = pgTable(
+  "training_plan_completions",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    planId: uuid("plan_id")
+      .notNull()
+      .references(() => trainingPlans.id, { onDelete: "cascade" }),
+    blockId: uuid("block_id")
+      .notNull()
+      .references(() => trainingPlanBlocks.id, { onDelete: "cascade" }),
+    isoDate: date("iso_date").notNull(),
+    setsCompleted: integer("sets_completed").notNull().default(0),
+    elapsedSeconds: integer("elapsed_seconds").notNull().default(0),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    unique("training_plan_completions_user_block_date_unique").on(t.userId, t.blockId, t.isoDate),
+    index("training_plan_completions_plan_date_idx").on(t.planId, t.isoDate),
+  ],
+);

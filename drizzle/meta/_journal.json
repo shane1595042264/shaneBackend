@@ -239,6 +239,13 @@
       "when": 1788382097483,
       "tag": "0033_mean_shard",
       "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1788919408435,
+      "tag": "0034_blue_living_tribunal",
+      "breakpoints": true
     }
   ]
 }
