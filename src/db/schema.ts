@@ -1397,3 +1397,54 @@ export const trainingPlanCompletions = pgTable(
     index("training_plan_completions_plan_date_idx").on(t.planId, t.isoDate),
   ],
 );
+
+// ------------------------------------------------------------------
+// journal access (SHAN-474, Phase 1 of SHAN-472)
+// ------------------------------------------------------------------
+// Membership list for the invite-only journal. A row here means the user may
+// read (and, subject to the existing author/scope rules, write) journal
+// content. `role` is "owner" | "member"; exactly one owner is expected, and
+// the JOURNAL_OWNER_EMAIL user self-heals into this table on first access
+// check so the list can never lock everyone out.
+export const journalAccess = pgTable(
+  "journal_access",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    role: varchar("role", { length: 20 }).notNull().default("member"),
+    // Who granted it. Null for the bootstrapped owner (nobody granted it) and
+    // for invites created before the granter's user row existed.
+    grantedBy: uuid("granted_by").references(() => users.id, { onDelete: "set null" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [unique("journal_access_user_unique").on(t.userId)],
+);
+
+// Google-Docs-style "request access". A signed-in user with no membership
+// POSTs one of these; the owner approves (which writes a journal_access row)
+// or rejects. Only one row per user is ever created — a re-request on a
+// rejected row flips it back to pending rather than piling up duplicates.
+export const journalAccessRequests = pgTable(
+  "journal_access_requests",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    // Optional note from the requester, same spirit as the Google Docs
+    // "message to owner" field.
+    message: text("message"),
+    // "pending" | "approved" | "rejected"
+    status: varchar("status", { length: 20 }).notNull().default("pending"),
+    decidedBy: uuid("decided_by").references(() => users.id, { onDelete: "set null" }),
+    decidedAt: timestamp("decided_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    unique("journal_access_requests_user_unique").on(t.userId),
+    index("journal_access_requests_status_idx").on(t.status),
+  ],
+);

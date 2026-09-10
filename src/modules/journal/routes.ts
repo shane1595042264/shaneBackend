@@ -50,6 +50,7 @@ import {
   MAX_MARKDOWN_BODY_MESSAGE,
 } from "@/modules/shared/validators";
 import { createPATRateLimit } from "@/modules/shared/rate-limit";
+import { journalAccessRoutes } from "./access-routes";
 
 const noInFlightUpload = (v: string) => !containsInFlightUpload(v);
 
@@ -75,6 +76,10 @@ const reactionsWriteLimit = createPATRateLimit({
 
 type Vars = { Variables: { userId: string | null; tokenScopes: string[] | null } };
 export const journalRoutes = new Hono<Vars>();
+
+// Invite-only membership + request-access API (SHAN-474). Mounted ahead of the
+// /entries routes; the path prefixes are disjoint so ordering is cosmetic.
+journalRoutes.route("/access", journalAccessRoutes);
 
 const dateParam = z.object({ date: isoDate });
 // Guards the :id path param on suggestion/comment routes. Without this a
