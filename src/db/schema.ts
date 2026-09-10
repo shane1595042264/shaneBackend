@@ -1302,11 +1302,22 @@ export const trainingPlans = pgTable(
     visibility: varchar("visibility", { length: 10 }).notNull().default("private"),
     startDate: date("start_date"),
     daysPerWeek: integer("days_per_week"),
+    // Phase 4 (SHAN-473). Local clock time a session starts, "HH:MM"; null
+    // makes the calendar feed emit all-day events instead of timed ones.
+    sessionTime: varchar("session_time", { length: 5 }),
+    // Minutes before the session the calendar should alert. Null = no VALARM.
+    // Reminders ride the ICS feed rather than a notification service we do not
+    // have, so the user's own calendar app does the nagging.
+    reminderMinutes: integer("reminder_minutes"),
+    // Bearer token for the unauthenticated .ics feed, minted on demand and
+    // revocable. Null until the owner subscribes; never exposed to non-owners.
+    icsToken: uuid("ics_token"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
     unique("training_plans_user_slug_unique").on(t.userId, t.slug),
+    unique("training_plans_ics_token_unique").on(t.icsToken),
     index("training_plans_user_updated_idx").on(t.userId, t.updatedAt),
   ],
 );

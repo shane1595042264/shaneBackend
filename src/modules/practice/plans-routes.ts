@@ -26,6 +26,7 @@ import {
   getBlock,
   getDay,
   getPlanById,
+  getPlanByIcsToken,
   getPlanTree,
   listCompletions,
   listPlans,
@@ -40,6 +41,7 @@ import {
   upsertCompletion,
   type PlanRow,
 } from "./plans-repo";
+import { buildPlanIcs } from "./plan-ics";
 
 // Per-PAT rolling-60s limits. Authoring a plan is a handful of calls; the
 // completion tally is written by the runner as the user works through a day,
@@ -55,6 +57,14 @@ export const planRoutes = new Hono();
 const planIdParam = z.object({ planId: z.string().uuid() });
 const dayIdParam = planIdParam.extend({ dayId: z.string().uuid() });
 const blockIdParam = dayIdParam.extend({ blockId: z.string().uuid() });
+
+/** Local clock time a session starts, "HH:MM" on a 24h clock. */
+const sessionTime = z
+  .string()
+  .regex(/^([01]\d|2[0-3]):[0-5]\d$/, "sessionTime must be HH:MM");
+
+/** Minutes before the session to alert. 0 = at start, capped at a day out. */
+const reminderMinutes = z.number().int().min(0).max(1440);
 
 const stepInput = z.object({
   text: trimmedRequired(300),
@@ -105,6 +115,8 @@ const planPatchSchema = z
     visibility: z.enum(PLAN_VISIBILITIES).optional(),
     startDate: isoDate.nullish(),
     daysPerWeek: z.number().int().min(1).max(7).nullish(),
+    sessionTime: sessionTime.nullish(),
+    reminderMinutes: reminderMinutes.nullish(),
     // Note: nested `days` authoring is create-only. A PATCH carrying days is
     // stripped by zod rather than applied — edit days via the /days routes.
   })
@@ -213,7 +225,10 @@ planRoutes.get("/:planId", optionalAuth, zValidator("param", planIdParam), async
   const userId = (c.get("userId") as string | null) ?? null;
   const plan = await planForRead(c.req.valid("param").planId, userId);
   if (!plan) return c.json({ error: "Not found" }, 404);
-  return c.json({ plan: await getPlanTree(plan) });
+  const tree = await getPlanTree(plan);
+  // The feed token is a bearer credential. A public plan is readable by
+  // anyone, so it must never travel in a read that is not the owner's.
+  return c.json({ plan: plan.userId === userId ? tree : { ...tree, icsToken: null } });
 });
 
 planRoutes.patch(
@@ -526,5 +541,85 @@ planRoutes.delete(
     const { blockId, isoDate: date } = c.req.valid("query");
     const ok = await deleteCompletion(userId, blockId, date);
     return ok ? c.body(null, 204) : c.json({ error: "Not found" }, 404);
+  },
+);
+
+// ----- Calendar feed (SHAN-473) -----
+
+/**
+ * Mint the plan's .ics token, or rotate it. Minting is idempotent so the
+ * "Subscribe" button can be pressed twice without invalidating the URL the
+ * user already pasted into Google Calendar; `rotate` is the explicit escape
+ * hatch for a leaked feed URL.
+ */
+planRoutes.post(
+  "/:planId/calendar-token",
+  requireAuth,
+  requireScope("practice:write"),
+  plansWriteLimit,
+  zValidator("param", planIdParam),
+  zValidator("json", z.object({ rotate: z.boolean().default(false) }).optional()),
+  async (c) => {
+    const userId = c.get("userId") as string;
+    const { planId } = c.req.valid("param");
+    const plan = await planForWrite(planId, userId);
+    if (!plan) return c.json({ error: "Not found" }, 404);
+
+    const rotate = c.req.valid("json")?.rotate ?? false;
+    if (plan.icsToken && !rotate) return c.json({ token: plan.icsToken });
+
+    const updated = await updatePlan(planId, { icsToken: crypto.randomUUID() });
+    if (!updated) return c.json({ error: "Not found" }, 404);
+    return c.json({ token: updated.icsToken }, plan.icsToken ? 200 : 201);
+  },
+);
+
+/** Revoke the feed. Existing subscribers start getting 404s on refresh. */
+planRoutes.delete(
+  "/:planId/calendar-token",
+  requireAuth,
+  requireScope("practice:write"),
+  plansWriteLimit,
+  zValidator("param", planIdParam),
+  async (c) => {
+    const userId = c.get("userId") as string;
+    const { planId } = c.req.valid("param");
+    if (!(await planForWrite(planId, userId))) return c.json({ error: "Not found" }, 404);
+    await updatePlan(planId, { icsToken: null });
+    return c.body(null, 204);
+  },
+);
+
+/**
+ * The subscribable feed. Deliberately unauthenticated: the subscriber is a
+ * calendar server with no session and no way to carry a JWT, so the token in
+ * the query string is the whole credential. It is looked up first and the
+ * path's planId only has to agree with it, which means a wrong token cannot
+ * confirm that a plan id exists.
+ */
+planRoutes.get(
+  "/:planId/calendar.ics",
+  zValidator("param", planIdParam),
+  zValidator("query", z.object({ token: z.string().uuid() })),
+  async (c) => {
+    const { planId } = c.req.valid("param");
+    const plan = await getPlanByIcsToken(c.req.valid("query").token);
+    if (!plan || plan.id !== planId) return c.json({ error: "Not found" }, 404);
+
+    const tree = await getPlanTree(plan);
+    // No cast: the plan tree already satisfies IcsPlan structurally, and
+    // keeping it that way means a schema change breaks the build here.
+    const body = buildPlanIcs(tree, {
+      today: new Date().toISOString().slice(0, 10),
+    });
+    return new Response(body, {
+      headers: {
+        "Content-Type": "text/calendar; charset=utf-8",
+        "Content-Disposition": `attachment; filename="${plan.slug}.ics"`,
+        // The feed changes whenever the plan does; a subscriber refreshing on
+        // its own cadence should not also be served a stale CDN copy.
+        "Cache-Control": "no-store",
+      },
+    });
   },
 );

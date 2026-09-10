@@ -10,6 +10,7 @@ const m = vi.hoisted(() => ({
   createPlan: vi.fn(),
   listPlans: vi.fn(),
   getPlanById: vi.fn(),
+  getPlanByIcsToken: vi.fn(),
   getPlanTree: vi.fn(),
   updatePlan: vi.fn(),
   touchPlan: vi.fn(),
@@ -93,6 +94,9 @@ const planRow = {
   visibility: "private",
   startDate: "2026-09-08",
   daysPerWeek: 3,
+  sessionTime: null,
+  reminderMinutes: null,
+  icsToken: null,
   createdAt: new Date("2026-09-08T00:00:00Z"),
   updatedAt: new Date("2026-09-08T00:00:00Z"),
 };
@@ -254,6 +258,14 @@ describe("GET /api/practice/plans/:planId", () => {
     m.getPlanById.mockResolvedValue({ ...planRow, visibility: "public" });
     const res = await app.request(`/api/practice/plans/${PLAN_ID}`);
     expect(res.status).toBe(200);
+  });
+
+  it("keeps the feed token out of a public plan read by anyone but the owner", async () => {
+    m.getPlanById.mockResolvedValue({ ...planRow, visibility: "public", icsToken: "secret" });
+    const mine = await (await app.request(`/api/practice/plans/${PLAN_ID}`, { headers: auth() })).json();
+    expect(mine.plan.icsToken).toBe("secret");
+    const theirs = await (await app.request(`/api/practice/plans/${PLAN_ID}`)).json();
+    expect(theirs.plan.icsToken).toBeNull();
   });
 
   it("400s a non-uuid plan id", async () => {
@@ -424,5 +436,154 @@ describe("completions", () => {
       from: "2026-09-01",
       to: "2026-09-30",
     });
+  });
+});
+
+describe("calendar settings (SHAN-473)", () => {
+  it("PATCH accepts a session time and a reminder", async () => {
+    m.updatePlan.mockResolvedValue({ ...planRow, sessionTime: "07:30", reminderMinutes: 30 });
+    const res = await app.request(`/api/practice/plans/${PLAN_ID}`, {
+      method: "PATCH",
+      headers: auth(),
+      body: JSON.stringify({ sessionTime: "07:30", reminderMinutes: 30 }),
+    });
+    expect(res.status).toBe(200);
+    expect(m.updatePlan).toHaveBeenCalledWith(
+      PLAN_ID,
+      expect.objectContaining({ sessionTime: "07:30", reminderMinutes: 30 }),
+    );
+  });
+
+  it("PATCH clears both with nulls", async () => {
+    m.updatePlan.mockResolvedValue(planRow);
+    const res = await app.request(`/api/practice/plans/${PLAN_ID}`, {
+      method: "PATCH",
+      headers: auth(),
+      body: JSON.stringify({ sessionTime: null, reminderMinutes: null }),
+    });
+    expect(res.status).toBe(200);
+  });
+
+  it("PATCH rejects a malformed session time", async () => {
+    const res = await app.request(`/api/practice/plans/${PLAN_ID}`, {
+      method: "PATCH",
+      headers: auth(),
+      body: JSON.stringify({ sessionTime: "7:30am" }),
+    });
+    expect(res.status).toBe(400);
+    expect(m.updatePlan).not.toHaveBeenCalled();
+  });
+
+  it("PATCH rejects a reminder further out than a day", async () => {
+    const res = await app.request(`/api/practice/plans/${PLAN_ID}`, {
+      method: "PATCH",
+      headers: auth(),
+      body: JSON.stringify({ reminderMinutes: 5000 }),
+    });
+    expect(res.status).toBe(400);
+  });
+});
+
+describe("calendar token", () => {
+  it("mints a token on first request", async () => {
+    m.updatePlan.mockImplementation(async (_id: string, patch: any) => ({ ...planRow, ...patch }));
+    const res = await app.request(`/api/practice/plans/${PLAN_ID}/calendar-token`, {
+      method: "POST",
+      headers: auth(),
+      body: JSON.stringify({}),
+    });
+    expect(res.status).toBe(201);
+    expect((await res.json()).token).toMatch(/^[0-9a-f-]{36}$/);
+  });
+
+  it("is idempotent so an already-subscribed URL keeps working", async () => {
+    m.getPlanById.mockResolvedValue({ ...planRow, icsToken: "existing-token" });
+    const res = await app.request(`/api/practice/plans/${PLAN_ID}/calendar-token`, {
+      method: "POST",
+      headers: auth(),
+      body: JSON.stringify({}),
+    });
+    expect(res.status).toBe(200);
+    expect((await res.json()).token).toBe("existing-token");
+    expect(m.updatePlan).not.toHaveBeenCalled();
+  });
+
+  it("rotates on request", async () => {
+    m.getPlanById.mockResolvedValue({ ...planRow, icsToken: "existing-token" });
+    m.updatePlan.mockImplementation(async (_id: string, patch: any) => ({ ...planRow, ...patch }));
+    const res = await app.request(`/api/practice/plans/${PLAN_ID}/calendar-token`, {
+      method: "POST",
+      headers: auth(),
+      body: JSON.stringify({ rotate: true }),
+    });
+    expect(res.status).toBe(200);
+    expect((await res.json()).token).not.toBe("existing-token");
+  });
+
+  it("404s for a non-owner without minting anything", async () => {
+    const res = await app.request(`/api/practice/plans/${PLAN_ID}/calendar-token`, {
+      method: "POST",
+      headers: auth("u2"),
+      body: JSON.stringify({}),
+    });
+    expect(res.status).toBe(404);
+    expect(m.updatePlan).not.toHaveBeenCalled();
+  });
+
+  it("revokes by clearing the column", async () => {
+    m.updatePlan.mockResolvedValue(planRow);
+    const res = await app.request(`/api/practice/plans/${PLAN_ID}/calendar-token`, {
+      method: "DELETE",
+      headers: auth(),
+    });
+    expect(res.status).toBe(204);
+    expect(m.updatePlan).toHaveBeenCalledWith(PLAN_ID, { icsToken: null });
+  });
+});
+
+describe("GET /api/practice/plans/:planId/calendar.ics", () => {
+  const TOKEN = "55555555-5555-4555-8555-555555555555";
+
+  beforeEach(() => {
+    m.getPlanByIcsToken.mockResolvedValue({ ...planRow, icsToken: TOKEN });
+    m.getPlanTree.mockImplementation(async (p: any) => ({
+      ...p,
+      days: [{ ...dayRow, blocks: [{ ...blockRow, steps: [] }] }],
+    }));
+  });
+
+  it("serves the feed to an anonymous caller holding the token", async () => {
+    const res = await app.request(
+      `/api/practice/plans/${PLAN_ID}/calendar.ics?token=${TOKEN}`,
+    );
+    expect(res.status).toBe(200);
+    expect(res.headers.get("Content-Type")).toContain("text/calendar");
+    expect(res.headers.get("Cache-Control")).toBe("no-store");
+    const body = await res.text();
+    expect(body).toContain("BEGIN:VCALENDAR");
+    expect(body).toContain("SUMMARY:Learn the windmill — Day 1 (bboy)");
+  });
+
+  it("404s a token that matches no plan", async () => {
+    m.getPlanByIcsToken.mockResolvedValue(null);
+    const res = await app.request(
+      `/api/practice/plans/${PLAN_ID}/calendar.ics?token=${TOKEN}`,
+    );
+    expect(res.status).toBe(404);
+  });
+
+  it("404s when the token belongs to a different plan than the path", async () => {
+    const res = await app.request(
+      `/api/practice/plans/${OTHER_ID}/calendar.ics?token=${TOKEN}`,
+    );
+    expect(res.status).toBe(404);
+  });
+
+  it("400s without a token rather than falling back to the session", async () => {
+    const res = await app.request(`/api/practice/plans/${PLAN_ID}/calendar.ics`, {
+      headers: auth(),
+    });
+    expect(res.status).toBe(400);
+    expect(m.getPlanTree).not.toHaveBeenCalled();
   });
 });

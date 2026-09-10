@@ -45,6 +45,9 @@ export interface PlanRow {
   visibility: string;
   startDate: string | null;
   daysPerWeek: number | null;
+  sessionTime: string | null;
+  reminderMinutes: number | null;
+  icsToken: string | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -132,6 +135,20 @@ export async function getPlanById(planId: string): Promise<PlanRow | null> {
   return (row as PlanRow) ?? null;
 }
 
+/**
+ * Look a plan up by its calendar-feed token. The token is the only credential
+ * the .ics route has — subscribers are calendar servers, not logged-in
+ * browsers — so this is deliberately the one lookup that is not user-scoped.
+ */
+export async function getPlanByIcsToken(token: string): Promise<PlanRow | null> {
+  const [row] = await db
+    .select()
+    .from(trainingPlans)
+    .where(eq(trainingPlans.icsToken, token))
+    .limit(1);
+  return (row as PlanRow) ?? null;
+}
+
 export async function getPlanBySlug(userId: string, slug: string): Promise<PlanRow | null> {
   const [row] = await db
     .select()
@@ -152,6 +169,9 @@ export async function updatePlan(
     visibility: PlanVisibility;
     startDate: string | null;
     daysPerWeek: number | null;
+    sessionTime: string | null;
+    reminderMinutes: number | null;
+    icsToken: string | null;
   }>,
 ): Promise<PlanRow | null> {
   const [row] = await db
