@@ -79,6 +79,13 @@ vi.mock("@/db/schema", () => ({
   entryReactions: {},
   commentReactions: {},
 }));
+// SHAN-475: every journal route now runs requireJournalMembership. These
+// suites are about the routes, not the gate, so let everyone through here;
+// the gate itself is covered in access-middleware.test.ts.
+vi.mock("@/modules/journal/access-middleware", () => ({
+  requireJournalMembership: async (_c: any, next: any) => { await next(); },
+}));
+
 vi.mock("@/modules/auth/middleware", () => ({
   optionalAuth: async (c: any, next: any) => {
     c.set("userId", c.req.header("X-Test-User") ?? null);

@@ -75,6 +75,13 @@ vi.mock("@/modules/auth/user-prefs", () => ({
 // Custom auth mock: X-Test-Token presence flips the request from "JWT" to
 // "PAT" by setting tokenId. The real limiter only counts when tokenId is
 // non-null, so this is the toggle that exercises the limiter under test.
+// SHAN-475: every journal route now runs requireJournalMembership. These
+// suites are about the routes, not the gate, so let everyone through here;
+// the gate itself is covered in access-middleware.test.ts.
+vi.mock("@/modules/journal/access-middleware", () => ({
+  requireJournalMembership: async (_c: any, next: any) => { await next(); },
+}));
+
 vi.mock("@/modules/auth/middleware", () => ({
   optionalAuth: async (c: any, next: any) => {
     c.set("userId", c.req.header("X-Test-User") ?? null);

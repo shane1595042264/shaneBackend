@@ -51,6 +51,7 @@ import {
 } from "@/modules/shared/validators";
 import { createPATRateLimit } from "@/modules/shared/rate-limit";
 import { journalAccessRoutes } from "./access-routes";
+import { requireJournalMembership } from "./access-middleware";
 
 const noInFlightUpload = (v: string) => !containsInFlightUpload(v);
 
@@ -79,6 +80,11 @@ export const journalRoutes = new Hono<Vars>();
 
 // Invite-only membership + request-access API (SHAN-474). Mounted ahead of the
 // /entries routes; the path prefixes are disjoint so ordering is cosmetic.
+//
+// This is the one sub-router with no requireJournalMembership on it: it is the
+// door, so it cannot be behind itself. Every other route below carries the
+// gate (SHAN-475), with GET /images/:id the single further exemption — see the
+// comment there.
 journalRoutes.route("/access", journalAccessRoutes);
 
 const dateParam = z.object({ date: isoDate });
@@ -122,7 +128,7 @@ const createBody = z.object({
     .refine(noInFlightUpload, { message: IN_FLIGHT_UPLOAD_MESSAGE }),
 });
 
-journalRoutes.get("/entries", optionalAuth, zValidator("query", listQuery), async (c) => {
+journalRoutes.get("/entries", optionalAuth, requireJournalMembership, zValidator("query", listQuery), async (c) => {
   const query = c.req.valid("query");
   const entries = await listEntries({
     from: query.from,
@@ -135,7 +141,7 @@ journalRoutes.get("/entries", optionalAuth, zValidator("query", listQuery), asyn
   return c.json({ entries, nextCursor });
 });
 
-journalRoutes.get("/entries/:date", optionalAuth, zValidator("param", dateParam), async (c) => {
+journalRoutes.get("/entries/:date", optionalAuth, requireJournalMembership, zValidator("param", dateParam), async (c) => {
   const { date } = c.req.valid("param");
   const row = await getEntryByDate(date);
   if (!row) return c.json({ error: "Not found" }, 404);
@@ -152,6 +158,7 @@ journalRoutes.get("/entries/:date", optionalAuth, zValidator("param", dateParam)
 journalRoutes.post(
   "/entries",
   requireAuth,
+  requireJournalMembership,
   requireScope("entries:write"),
   entriesWriteLimit,
   zValidator("json", createBody),
@@ -174,6 +181,7 @@ journalRoutes.post(
 journalRoutes.delete(
   "/entries/:date",
   requireAuth,
+  requireJournalMembership,
   requireScope("entries:write"),
   entriesWriteLimit,
   zValidator("param", dateParam),
@@ -190,6 +198,9 @@ const versionNumParam = z.object({
   num: z.coerce.number().int().positive(),
 });
 
+// Ungated on purpose: a constant 405 for everyone discloses nothing, and
+// answering "method not allowed" before "not a member" keeps the append-only
+// contract obvious to any client that guesses at PATCH.
 journalRoutes.patch("/entries/:date", zValidator("param", dateParam), async (c) =>
   c.json(
     { error: "Entries are append-only; use POST /api/journal/entries/:date/appends" },
@@ -209,6 +220,7 @@ const appendBody = z.object({
 journalRoutes.post(
   "/entries/:date/appends",
   requireAuth,
+  requireJournalMembership,
   requireScope("entries:write"),
   entriesWriteLimit,
   zValidator("param", dateParam),
@@ -238,6 +250,7 @@ journalRoutes.post(
 journalRoutes.get(
   "/entries/:date/appends",
   optionalAuth,
+  requireJournalMembership,
   zValidator("param", dateParam),
   async (c) => {
     const row = await getEntryByDate(c.req.valid("param").date);
@@ -252,6 +265,7 @@ journalRoutes.get(
 journalRoutes.get(
   "/entries/:date/versions",
   optionalAuth,
+  requireJournalMembership,
   zValidator("param", dateParam),
   zValidator("query", versionsQuery),
   async (c) => {
@@ -272,6 +286,7 @@ journalRoutes.get(
 journalRoutes.get(
   "/entries/:date/versions/:num",
   optionalAuth,
+  requireJournalMembership,
   zValidator("param", versionNumParam),
   async (c) => {
     const { date, num } = c.req.valid("param");
@@ -286,6 +301,7 @@ journalRoutes.get(
 journalRoutes.post(
   "/entries/:date/revert",
   requireAuth,
+  requireJournalMembership,
   requireScope("entries:write"),
   entriesWriteLimit,
   zValidator("param", dateParam),
@@ -319,6 +335,7 @@ journalRoutes.post(
 journalRoutes.get(
   "/entries/:date/neighbors",
   optionalAuth,
+  requireJournalMembership,
   zValidator("param", dateParam),
   async (c) => {
     const { date } = c.req.valid("param");
@@ -367,6 +384,7 @@ const suggestionListQuery = z.object({
 journalRoutes.post(
   "/entries/:date/suggestions",
   requireAuth,
+  requireJournalMembership,
   requireScope("suggestions:write"),
   suggestionsWriteLimit,
   zValidator("param", dateParam),
@@ -398,6 +416,7 @@ journalRoutes.post(
 journalRoutes.get(
   "/entries/:date/suggestions",
   optionalAuth,
+  requireJournalMembership,
   zValidator("param", dateParam),
   zValidator("query", suggestionListQuery),
   async (c) => {
@@ -408,7 +427,7 @@ journalRoutes.get(
   }
 );
 
-journalRoutes.get("/suggestions/:id", optionalAuth, zValidator("param", uuidParam), async (c) => {
+journalRoutes.get("/suggestions/:id", optionalAuth, requireJournalMembership, zValidator("param", uuidParam), async (c) => {
   const row = await getSuggestion(c.req.valid("param").id);
   if (!row) return c.json({ error: "Not found" }, 404);
   return c.json({ suggestion: row });
@@ -417,6 +436,7 @@ journalRoutes.get("/suggestions/:id", optionalAuth, zValidator("param", uuidPara
 journalRoutes.patch(
   "/suggestions/:id/approve",
   requireAuth,
+  requireJournalMembership,
   requireScope("suggestions:write"),
   suggestionsWriteLimit,
   zValidator("param", uuidParam),
@@ -455,6 +475,7 @@ journalRoutes.patch(
 journalRoutes.patch(
   "/suggestions/:id/reject",
   requireAuth,
+  requireJournalMembership,
   requireScope("suggestions:write"),
   suggestionsWriteLimit,
   zValidator("param", uuidParam),
@@ -480,6 +501,7 @@ journalRoutes.patch(
 journalRoutes.patch(
   "/suggestions/:id/withdraw",
   requireAuth,
+  requireJournalMembership,
   requireScope("suggestions:write"),
   suggestionsWriteLimit,
   zValidator("param", uuidParam),
@@ -495,7 +517,7 @@ journalRoutes.patch(
   }
 );
 
-journalRoutes.get("/inbox", requireAuth, async (c) => {
+journalRoutes.get("/inbox", requireAuth, requireJournalMembership, async (c) => {
   const userId = c.get("userId") as string;
   const items = await inboxFor(userId);
   return c.json({ items });
@@ -522,6 +544,7 @@ const commentEditBody = z.object({
 journalRoutes.get(
   "/entries/:date/comments",
   optionalAuth,
+  requireJournalMembership,
   zValidator("param", dateParam),
   async (c) => {
     const row = await getEntryByDate(c.req.valid("param").date);
@@ -534,6 +557,7 @@ journalRoutes.get(
 journalRoutes.post(
   "/entries/:date/comments",
   requireAuth,
+  requireJournalMembership,
   requireScope("comments:write"),
   commentsWriteLimit,
   zValidator("param", dateParam),
@@ -558,6 +582,7 @@ journalRoutes.post(
 journalRoutes.patch(
   "/comments/:id",
   requireAuth,
+  requireJournalMembership,
   requireScope("comments:write"),
   commentsWriteLimit,
   zValidator("param", uuidParam),
@@ -573,6 +598,7 @@ journalRoutes.patch(
 journalRoutes.delete(
   "/comments/:id",
   requireAuth,
+  requireJournalMembership,
   requireScope("comments:write"),
   commentsWriteLimit,
   zValidator("param", uuidParam),
@@ -588,6 +614,7 @@ const reactionBody = z.object({ emoji: z.string().max(32) });
 journalRoutes.post(
   "/entries/:date/reactions",
   requireAuth,
+  requireJournalMembership,
   requireScope("reactions:write"),
   reactionsWriteLimit,
   zValidator("param", dateParam),
@@ -606,6 +633,7 @@ journalRoutes.post(
 journalRoutes.post(
   "/comments/:id/reactions",
   requireAuth,
+  requireJournalMembership,
   requireScope("reactions:write"),
   reactionsWriteLimit,
   zValidator("param", uuidParam),
@@ -625,6 +653,7 @@ journalRoutes.post(
 journalRoutes.get(
   "/entries/:date/reactions",
   optionalAuth,
+  requireJournalMembership,
   zValidator("param", dateParam),
   async (c) => {
     const userId = c.get("userId") as string | null;
@@ -636,7 +665,7 @@ journalRoutes.get(
   }
 );
 
-journalRoutes.get("/comments/:id/reactions", optionalAuth, zValidator("param", uuidParam), async (c) => {
+journalRoutes.get("/comments/:id/reactions", optionalAuth, requireJournalMembership, zValidator("param", uuidParam), async (c) => {
   const userId = c.get("userId") as string | null;
   const commentId = c.req.valid("param").id;
   const comment = await getComment(commentId);
@@ -656,7 +685,12 @@ journalRoutes.get("/comments/:id/reactions", optionalAuth, zValidator("param", u
 //   directly, and (b) any client can spoof file.type. Allowlist:
 //   png/jpeg/gif/webp.
 // GET /api/journal/images/:id — streams the raw bytes with the stored mime
-//   type. Immutable cache because the URL is content-addressed by uuid.
+//   type. Deliberately NOT behind requireJournalMembership even though the
+//   journal is invite-only (SHAN-475): an <img> tag sends no Authorization
+//   header, so gating it would break every inline image for members too. The
+//   id is an unguessable uuid, so an image URL is a capability — documented as
+//   such in /docs/images-api.
+//   Immutable cache because the URL is content-addressed by uuid.
 //   X-Content-Type-Options: nosniff prevents browsers from disagreeing with
 //   the stored type if it ever drifts.
 // ---------------------------------------------------------------------------
@@ -664,7 +698,7 @@ const IMAGE_MAX_BYTES = 5 * 1024 * 1024;
 const IMAGE_DAILY_LIMIT = 100;
 const IMAGE_WINDOW_MS = 24 * 60 * 60 * 1000;
 
-journalRoutes.post("/images", requireAuth, async (c) => {
+journalRoutes.post("/images", requireAuth, requireJournalMembership, async (c) => {
   const userId = c.get("userId") as string;
   const contentType = c.req.header("Content-Type") ?? "";
   if (!contentType.includes("multipart/form-data")) {
