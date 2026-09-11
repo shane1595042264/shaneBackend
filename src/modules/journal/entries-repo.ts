@@ -89,15 +89,18 @@ export async function listEntries(opts: {
     where.push(
       or(
         ilike(journalVersions.content, pattern),
-        sql`EXISTS (SELECT 1 FROM ${journalAppends} WHERE ${journalAppends.entryId} = ${journalEntries.id} AND ${journalAppends.content} ILIKE ${pattern})`
+        sql`EXISTS (SELECT 1 FROM ${journalAppends} WHERE ${journalAppends.entryId} = ${journalEntries.id} AND ${journalAppends.deletedAt} IS NULL AND ${journalAppends.content} ILIKE ${pattern})`
       )!
     );
   }
   // Combined searchable text: current version body followed by all appends, in order.
+  // Soft-deleted appends (SHAN-483) are excluded everywhere an append is read:
+  // here, in the excerpt, in the count below, and in listAppendsForEntry. Miss
+  // one and a deleted append still steers search hits or the card excerpt.
   const sourceText = sql`${journalVersions.content} || coalesce(
         (SELECT E'\n\n' || string_agg(${journalAppends.content}, E'\n\n' ORDER BY ${journalAppends.createdAt} ASC)
            FROM ${journalAppends}
-           WHERE ${journalAppends.entryId} = ${journalEntries.id}),
+           WHERE ${journalAppends.entryId} = ${journalEntries.id} AND ${journalAppends.deletedAt} IS NULL),
         ''
       )`;
   // When searching, start the excerpt a small window before the first case-insensitive
@@ -125,7 +128,7 @@ export async function listEntries(opts: {
       updatedAt: journalEntries.updatedAt,
       contentExcerpt: sql<string | null>`${leadingEllipsis} || substring(${sourceText} from ${excerptStart} for ${EXCERPT_SOURCE_LEN})`,
       commentCount: sql<number>`(SELECT COUNT(*)::int FROM ${journalComments} WHERE ${journalComments.entryId} = ${journalEntries.id})`,
-      appendCount: sql<number>`(SELECT COUNT(*)::int FROM ${journalAppends} WHERE ${journalAppends.entryId} = ${journalEntries.id})`,
+      appendCount: sql<number>`(SELECT COUNT(*)::int FROM ${journalAppends} WHERE ${journalAppends.entryId} = ${journalEntries.id} AND ${journalAppends.deletedAt} IS NULL)`,
       authorName: users.name,
       authorAvatarUrl: users.avatarUrl,
     })

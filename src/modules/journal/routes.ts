@@ -5,7 +5,13 @@ import { zValidator } from "@/modules/shared/zod-validator";
 import { requireAuth, optionalAuth, requireScope } from "@/modules/auth/middleware";
 import { getUserTimezone } from "@/modules/auth/user-prefs";
 import { listEntries, getEntryByDate, createEntry, softDeleteEntry } from "./entries-repo";
-import { createAppend, listAppendsForEntry } from "./appends-repo";
+import {
+  createAppend,
+  listAppendsForEntry,
+  updateAppend,
+  softDeleteAppend,
+} from "./appends-repo";
+import { recordActivity, listActivity, listActivityForEntry } from "./activity-repo";
 import { eq, and, desc, asc, lt, gt } from "drizzle-orm";
 import { db } from "@/db/client";
 import { journalEntries } from "@/db/schema";
@@ -75,8 +81,32 @@ const reactionsWriteLimit = createPATRateLimit({
   limitPerMinute: 60,
 });
 
-type Vars = { Variables: { userId: string | null; tokenScopes: string[] | null } };
+type Vars = {
+  Variables: { userId: string | null; tokenScopes: string[] | null; tokenId: string | null };
+};
 export const journalRoutes = new Hono<Vars>();
+
+// Audit-trail helpers (SHAN-483).
+//
+// tokenId is set by the auth middleware for PAT requests and null for browser
+// sessions. Persisting it is what lets the feed distinguish "Shane" from
+// "Shane via jira-worker" — both resolve to the same userId, so without this
+// an agent's writes are invisible as agent writes.
+const actorTokenId = (c: { get: (k: "tokenId") => string | null }) => c.get("tokenId") ?? null;
+
+/**
+ * Look up an entry's date from its id, for audit rows on routes keyed by a
+ * comment/suggestion id rather than a :date. Returns null if the entry is
+ * gone, in which case we skip the audit row rather than fail the request.
+ */
+async function entryDateById(entryId: string): Promise<string | null> {
+  const [row] = await db
+    .select({ date: journalEntries.date })
+    .from(journalEntries)
+    .where(eq(journalEntries.id, entryId))
+    .limit(1);
+  return row?.date ?? null;
+}
 
 // Invite-only membership + request-access API (SHAN-474). Mounted ahead of the
 // /entries routes; the path prefixes are disjoint so ordering is cosmetic.
@@ -168,6 +198,16 @@ journalRoutes.post(
     try {
       const authorTimezone = await getUserTimezone(userId);
       const result = await createEntry({ date, authorId: userId, authorTimezone, content });
+      await recordActivity({
+        entryId: result.entry.id,
+        entryDate: date,
+        action: "entry.create",
+        targetType: "entry",
+        targetId: result.entry.id,
+        actorId: userId,
+        actorTokenId: actorTokenId(c),
+        detail: { versionNum: 1, contentLength: content.length },
+      });
       return c.json({ entry: result.entry, currentVersionNum: 1 }, 201);
     } catch (err: any) {
       if (err?.code === "23505" || err?.cause?.code === "23505") {
@@ -187,8 +227,22 @@ journalRoutes.delete(
   zValidator("param", dateParam),
   async (c) => {
     const userId = c.get("userId") as string;
-    const ok = await softDeleteEntry(c.req.valid("param").date, userId);
-    return ok ? c.body(null, 204) : c.json({ error: "Not found or not author" }, 404);
+    const { date } = c.req.valid("param");
+    // Read the entry before the delete so the audit row can carry its id —
+    // softDeleteEntry only reports whether a row matched.
+    const existing = await getEntryByDate(date);
+    const ok = await softDeleteEntry(date, userId);
+    if (!ok) return c.json({ error: "Not found or not author" }, 404);
+    await recordActivity({
+      entryId: existing?.entry.id ?? null,
+      entryDate: date,
+      action: "entry.delete",
+      targetType: "entry",
+      targetId: existing?.entry.id ?? null,
+      actorId: userId,
+      actorTokenId: actorTokenId(c),
+    });
+    return c.body(null, 204);
   }
 );
 
@@ -243,7 +297,92 @@ journalRoutes.post(
       authorTimezone,
       content,
     });
+    await recordActivity({
+      entryId: row.entry.id,
+      entryDate: date,
+      action: "append.create",
+      targetType: "append",
+      targetId: append.id,
+      actorId: userId,
+      actorTokenId: actorTokenId(c),
+      detail: { contentLength: content.length },
+    });
     return c.json({ append }, 201);
+  }
+);
+
+const appendIdParam = z.object({ date: isoDate, id: z.string().uuid() });
+
+// SHAN-483: appends were POST/GET-only, so an agent that posted duplicate
+// content had no way to take it back. These two routes close that hole.
+// Author-only, same scope and rate-limit bucket as the create above.
+journalRoutes.patch(
+  "/entries/:date/appends/:id",
+  requireAuth,
+  requireJournalMembership,
+  requireScope("entries:write"),
+  entriesWriteLimit,
+  zValidator("param", appendIdParam),
+  zValidator("json", appendBody),
+  async (c) => {
+    const userId = c.get("userId") as string;
+    const { date, id } = c.req.valid("param");
+    const { content } = c.req.valid("json");
+
+    const row = await getEntryByDate(date);
+    if (!row) return c.json({ error: "Not found" }, 404);
+
+    const updated = await updateAppend({
+      id,
+      entryId: row.entry.id,
+      authorId: userId,
+      content,
+    });
+    // One 404 for "no such append", "not yours" and "already deleted": the
+    // distinction would tell a non-author which append ids exist.
+    if (!updated) return c.json({ error: "Not found or not author" }, 404);
+
+    await recordActivity({
+      entryId: row.entry.id,
+      entryDate: date,
+      action: "append.update",
+      targetType: "append",
+      targetId: updated.id,
+      actorId: userId,
+      actorTokenId: actorTokenId(c),
+      detail: { contentLength: content.length },
+    });
+    return c.json({ append: updated });
+  }
+);
+
+journalRoutes.delete(
+  "/entries/:date/appends/:id",
+  requireAuth,
+  requireJournalMembership,
+  requireScope("entries:write"),
+  entriesWriteLimit,
+  zValidator("param", appendIdParam),
+  async (c) => {
+    const userId = c.get("userId") as string;
+    const { date, id } = c.req.valid("param");
+
+    const row = await getEntryByDate(date);
+    if (!row) return c.json({ error: "Not found" }, 404);
+
+    const deleted = await softDeleteAppend({ id, entryId: row.entry.id, authorId: userId });
+    if (!deleted) return c.json({ error: "Not found or not author" }, 404);
+
+    await recordActivity({
+      entryId: row.entry.id,
+      entryDate: date,
+      action: "append.delete",
+      targetType: "append",
+      targetId: deleted.id,
+      actorId: userId,
+      actorTokenId: actorTokenId(c),
+    });
+    return c.body(null, 204);
   }
 );
 
@@ -322,6 +461,16 @@ journalRoutes.post(
 
     try {
       const v = await revertToVersion(row.entry.id, target_version_num, userId, ifMatchNum);
+      await recordActivity({
+        entryId: row.entry.id,
+        entryDate: date,
+        action: "entry.revert",
+        targetType: "entry",
+        targetId: row.entry.id,
+        actorId: userId,
+        actorTokenId: actorTokenId(c),
+        detail: { targetVersionNum: target_version_num, versionNum: v.versionNum },
+      });
       return c.json({ versionNum: v.versionNum, versionId: v.id });
     } catch (err) {
       if (err instanceof VersionConflictError) {
@@ -409,6 +558,16 @@ journalRoutes.post(
       baseVersionId: baseVersion.id,
       proposedContent: proposed_content,
     });
+    await recordActivity({
+      entryId: row.entry.id,
+      entryDate: date,
+      action: "suggestion.create",
+      targetType: "suggestion",
+      targetId: suggestion.id,
+      actorId: userId,
+      actorTokenId: actorTokenId(c),
+      detail: { baseVersionNum: base_version_num },
+    });
     return c.json({ suggestion }, 201);
   }
 );
@@ -452,9 +611,10 @@ journalRoutes.patch(
     const ifMatchNum = parseInt(ifMatch, 10);
     if (Number.isNaN(ifMatchNum)) return c.json({ error: "Invalid If-Match" }, 400);
 
-    // Verify caller is the author of the parent entry
+    // Verify caller is the author of the parent entry. `date` rides along for
+    // the audit row so this stays a single query.
     const [entryRow] = await db
-      .select({ authorId: journalEntries.authorId })
+      .select({ authorId: journalEntries.authorId, date: journalEntries.date })
       .from(journalEntries)
       .where(eq(journalEntries.id, s.entryId))
       .limit(1);
@@ -462,6 +622,16 @@ journalRoutes.patch(
 
     try {
       const v = await approveSuggestion(id, userId, ifMatchNum);
+      await recordActivity({
+        entryId: s.entryId,
+        entryDate: entryRow.date,
+        action: "suggestion.approve",
+        targetType: "suggestion",
+        targetId: id,
+        actorId: userId,
+        actorTokenId: actorTokenId(c),
+        detail: { versionNum: v.versionNum },
+      });
       return c.json({ versionNum: v.versionNum, versionId: v.id });
     } catch (err) {
       if (err instanceof VersionConflictError) {
@@ -487,13 +657,24 @@ journalRoutes.patch(
     if (!s) return c.json({ error: "Not found" }, 404);
 
     const [entryRow] = await db
-      .select({ authorId: journalEntries.authorId })
+      .select({ authorId: journalEntries.authorId, date: journalEntries.date })
       .from(journalEntries)
       .where(eq(journalEntries.id, s.entryId))
       .limit(1);
     if (!entryRow || entryRow.authorId !== userId) return c.json({ error: "Only the entry author can reject" }, 403);
 
-    const updated = await rejectSuggestion(id, userId, c.req.valid("json").reason);
+    const reason = c.req.valid("json").reason;
+    const updated = await rejectSuggestion(id, userId, reason);
+    await recordActivity({
+      entryId: s.entryId,
+      entryDate: entryRow.date,
+      action: "suggestion.reject",
+      targetType: "suggestion",
+      targetId: id,
+      actorId: userId,
+      actorTokenId: actorTokenId(c),
+      detail: reason ? { reason } : null,
+    });
     return c.json({ suggestion: { ...updated, status: "rejected" } });
   }
 );
@@ -510,10 +691,75 @@ journalRoutes.patch(
     const id = c.req.valid("param").id;
     try {
       const updated = await withdrawSuggestion(id, userId);
+      const entryDate = await entryDateById(updated.entryId);
+      if (entryDate) {
+        await recordActivity({
+          entryId: updated.entryId,
+          entryDate,
+          action: "suggestion.withdraw",
+          targetType: "suggestion",
+          targetId: id,
+          actorId: userId,
+          actorTokenId: actorTokenId(c),
+        });
+      }
       return c.json({ suggestion: { ...updated, status: "withdrawn" } });
     } catch {
       return c.json({ error: "Cannot withdraw" }, 403);
     }
+  }
+);
+
+// Cursor is the createdAt of the last row on the previous page (ISO timestamp,
+// not an isoDate — unlike the entries cursor, SHAN-373).
+const activityQuery = z.object({
+  limit: z.coerce.number().int().min(1).max(100).default(50),
+  cursor: z.string().datetime().optional(),
+});
+
+// SHAN-483: the transparency half of the ticket. Membership-gated like every
+// other journal read (SHAN-475) rather than world-public — a world-readable
+// feed would hand entry dates and member names back to non-members and undo
+// the invite-only gate. Within the journal it is fully transparent: every
+// member sees every member's actions, not just their own.
+//
+// Rows carry metadata only, never content bodies.
+journalRoutes.get(
+  "/activity",
+  optionalAuth,
+  requireJournalMembership,
+  zValidator("query", activityQuery),
+  async (c) => {
+    const { limit, cursor } = c.req.valid("query");
+    const rows = await listActivity({
+      limit,
+      cursor: cursor ? new Date(cursor) : undefined,
+    });
+    const last = rows[rows.length - 1];
+    const nextCursor =
+      rows.length === limit && last ? last.createdAt.toISOString() : null;
+    return c.json({ activity: rows, nextCursor });
+  }
+);
+
+journalRoutes.get(
+  "/entries/:date/activity",
+  optionalAuth,
+  requireJournalMembership,
+  zValidator("param", dateParam),
+  zValidator("query", activityQuery),
+  async (c) => {
+    const row = await getEntryByDate(c.req.valid("param").date);
+    if (!row) return c.json({ error: "Not found" }, 404);
+    const { limit, cursor } = c.req.valid("query");
+    const rows = await listActivityForEntry(row.entry.id, {
+      limit,
+      cursor: cursor ? new Date(cursor) : undefined,
+    });
+    const last = rows[rows.length - 1];
+    const nextCursor =
+      rows.length === limit && last ? last.createdAt.toISOString() : null;
+    return c.json({ activity: rows, nextCursor });
   }
 );
 
@@ -564,7 +810,8 @@ journalRoutes.post(
   zValidator("json", commentBody),
   async (c) => {
     const userId = c.get("userId") as string;
-    const row = await getEntryByDate(c.req.valid("param").date);
+    const { date } = c.req.valid("param");
+    const row = await getEntryByDate(date);
     if (!row) return c.json({ error: "Not found" }, 404);
     const { content, parent_comment_id } = c.req.valid("json");
     const authorTimezone = await getUserTimezone(userId);
@@ -574,6 +821,16 @@ journalRoutes.post(
       authorTimezone,
       content,
       parentCommentId: parent_comment_id,
+    });
+    await recordActivity({
+      entryId: row.entry.id,
+      entryDate: date,
+      action: "comment.create",
+      targetType: "comment",
+      targetId: comment.id,
+      actorId: userId,
+      actorTokenId: actorTokenId(c),
+      detail: parent_comment_id ? { parentCommentId: parent_comment_id } : null,
     });
     return c.json({ comment }, 201);
   }
@@ -591,6 +848,18 @@ journalRoutes.patch(
     const userId = c.get("userId") as string;
     const updated = await updateCommentRepo(c.req.valid("param").id, userId, c.req.valid("json").content);
     if (!updated) return c.json({ error: "Not found or not author" }, 404);
+    const entryDate = await entryDateById(updated.entryId);
+    if (entryDate) {
+      await recordActivity({
+        entryId: updated.entryId,
+        entryDate,
+        action: "comment.update",
+        targetType: "comment",
+        targetId: updated.id,
+        actorId: userId,
+        actorTokenId: actorTokenId(c),
+      });
+    }
     return c.json({ comment: updated });
   }
 );
@@ -604,8 +873,28 @@ journalRoutes.delete(
   zValidator("param", uuidParam),
   async (c) => {
     const userId = c.get("userId") as string;
-    const ok = await deleteCommentRepo(c.req.valid("param").id, userId);
-    return ok ? c.body(null, 204) : c.json({ error: "Not found or not authorized" }, 404);
+    const commentId = c.req.valid("param").id;
+    // Comments are hard-deleted, so read the row first or the audit trail
+    // loses which entry it belonged to.
+    const existing = await getComment(commentId);
+    const ok = await deleteCommentRepo(commentId, userId);
+    if (!ok) return c.json({ error: "Not found or not authorized" }, 404);
+    const entryDate = existing ? await entryDateById(existing.entryId) : null;
+    if (existing && entryDate) {
+      await recordActivity({
+        entryId: existing.entryId,
+        entryDate,
+        action: "comment.delete",
+        targetType: "comment",
+        targetId: commentId,
+        actorId: userId,
+        actorTokenId: actorTokenId(c),
+        // The entry author can delete someone else's comment; recording whose
+        // it was is the point of an audit trail for a moderation action.
+        detail: { commentAuthorId: existing.authorId },
+      });
+    }
+    return c.body(null, 204);
   }
 );
 

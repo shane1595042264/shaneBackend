@@ -561,10 +561,75 @@ export const journalAppends = pgTable(
       .references(() => users.id, { onDelete: "restrict" }),
     authorTimezone: varchar("author_timezone", { length: 64 }),
     content: text("content").notNull(),
+    // SHAN-483: appends are editable and soft-deletable now. Soft rather than
+    // hard delete so a mistaken removal is recoverable and the audit row in
+    // journal_activity still points at a real target.
+    editedAt: timestamp("edited_at", { withTimezone: true }),
+    deletedAt: timestamp("deleted_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
     index("journal_appends_entry_created_idx").on(t.entryId, t.createdAt),
+  ]
+);
+
+// ------------------------------------------------------------------
+// journal_activity (SHAN-483) — append-only audit trail for every journal
+// mutation. Exists because the journal had no way to answer "who changed
+// this, and was it a person or one of their agents?": journal_versions only
+// covers the entry BODY, and a PAT request resolves to its owner's user id,
+// so agent writes were indistinguishable from the human's.
+//
+// actor_token_id is the fix — it is null for browser (JWT) sessions and set
+// to the api_tokens row for PAT writes, so the feed can render "Shane via
+// jira-worker". ON DELETE SET NULL so revoking and deleting a token never
+// erases history, it just anonymizes the agent label.
+//
+// entry_date is denormalized on purpose: the feed is read far more often
+// than it is written, and this keeps a site-wide listing from joining back
+// to journal_entries just to render a link. It also means an activity row
+// survives readably even though the entry FK cascades on delete.
+// ------------------------------------------------------------------
+export const journalActivityActionEnum = pgEnum("journal_activity_action", [
+  "entry.create",
+  "entry.delete",
+  "entry.revert",
+  "append.create",
+  "append.update",
+  "append.delete",
+  "comment.create",
+  "comment.update",
+  "comment.delete",
+  "suggestion.create",
+  "suggestion.approve",
+  "suggestion.reject",
+  "suggestion.withdraw",
+]);
+
+export const journalActivity = pgTable(
+  "journal_activity",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    entryId: uuid("entry_id").references(() => journalEntries.id, { onDelete: "set null" }),
+    entryDate: date("entry_date").notNull(),
+    action: journalActivityActionEnum("action").notNull(),
+    // Free-form rather than an enum: the target is whichever row the action
+    // touched ("entry" | "append" | "comment" | "suggestion"), and a new
+    // journal object type should not need a migration to start logging.
+    targetType: varchar("target_type", { length: 32 }).notNull(),
+    targetId: uuid("target_id"),
+    actorId: uuid("actor_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "restrict" }),
+    actorTokenId: uuid("actor_token_id").references(() => apiTokens.id, { onDelete: "set null" }),
+    // Small action-specific extras (version numbers, content length, reason).
+    // Never the content itself — the feed is metadata, not a second copy.
+    detail: jsonb("detail"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("journal_activity_created_idx").on(t.createdAt),
+    index("journal_activity_entry_created_idx").on(t.entryId, t.createdAt),
   ]
 );
 

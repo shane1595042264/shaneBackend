@@ -85,7 +85,17 @@ vi.mock("@/modules/auth/middleware", () => ({
 
 import { journalRoutes } from "@/modules/journal/routes";
 
-beforeEach(() => vi.clearAllMocks());
+beforeEach(() => {
+  vi.clearAllMocks();
+  // SHAN-483: comment mutations now look the parent entry's date up via
+  // db.select() to stamp an audit row. Default it to a resolvable date so
+  // these route assertions stay about the comment behaviour.
+  const chain: Record<string, unknown> = {};
+  const promise = Promise.resolve([{ authorId: "u1", date: "2026-05-03" }]);
+  for (const m of ["from", "where", "limit"]) chain[m] = vi.fn(() => chain);
+  Object.assign(chain, { then: (r: any, j: any) => promise.then(r, j) });
+  mockSelect.mockReturnValue(chain);
+});
 const app = new Hono().route("/api/journal", journalRoutes);
 
 // Valid UUID for :id path params — routes now reject malformed UUIDs with 400.

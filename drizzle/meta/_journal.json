@@ -267,6 +267,13 @@
       "when": 1789113819324,
       "tag": "0037_fair_jamie_braddock",
       "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "7",
+      "when": 1789135396044,
+      "tag": "0038_moaning_goliath",
+      "breakpoints": true
     }
   ]
 }

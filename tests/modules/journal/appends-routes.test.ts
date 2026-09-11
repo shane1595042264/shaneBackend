@@ -1,10 +1,29 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { Hono } from "hono";
 
-const { mockGetByDate, mockCreateAppend, mockListAppends } = vi.hoisted(() => ({
+const {
+  mockGetByDate,
+  mockCreateAppend,
+  mockListAppends,
+  mockUpdateAppend,
+  mockSoftDeleteAppend,
+  mockRecordActivity,
+} = vi.hoisted(() => ({
   mockGetByDate: vi.fn(),
   mockCreateAppend: vi.fn(),
   mockListAppends: vi.fn(),
+  mockUpdateAppend: vi.fn(),
+  mockSoftDeleteAppend: vi.fn(),
+  mockRecordActivity: vi.fn(),
+}));
+
+// SHAN-483: stub the audit trail so these assertions stay about the append
+// routes. recordActivity swallows its own errors by design, so an unmocked
+// one would pass silently while trying to reach a real DB.
+vi.mock("@/modules/journal/activity-repo", () => ({
+  recordActivity: mockRecordActivity,
+  listActivity: vi.fn(),
+  listActivityForEntry: vi.fn(),
 }));
 
 vi.mock("@/modules/auth/user-prefs", () => ({
@@ -22,6 +41,8 @@ vi.mock("@/modules/journal/entries-repo", () => ({
 vi.mock("@/modules/journal/appends-repo", () => ({
   createAppend: mockCreateAppend,
   listAppendsForEntry: mockListAppends,
+  updateAppend: mockUpdateAppend,
+  softDeleteAppend: mockSoftDeleteAppend,
 }));
 // SHAN-475: every journal route now runs requireJournalMembership. These
 // suites are about the routes, not the gate, so let everyone through here;
@@ -175,5 +196,126 @@ describe("GET /api/journal/entries/:date includes appends", () => {
     expect(body.content).toBe("first post");
     expect(body.appends).toHaveLength(1);
     expect(body.appends[0].content).toBe("later thought");
+  });
+});
+
+// SHAN-483: the reported bug was "an agent added double content and there is
+// no way to delete the redundant part". These two routes are the fix.
+const AID = "11111111-1111-4111-8111-111111111111";
+
+describe("PATCH /api/journal/entries/:date/appends/:id", () => {
+  it("edits the author's own append and records an audit row", async () => {
+    mockGetByDate.mockResolvedValue({ entry: { id: "e1", authorId: "u1" } });
+    mockUpdateAppend.mockResolvedValue({ id: AID, entryId: "e1", content: "fixed" });
+
+    const res = await app.request(`/api/journal/entries/2026-05-11/appends/${AID}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", "X-Test-User": "u1" },
+      body: JSON.stringify({ content: "fixed" }),
+    });
+    expect(res.status).toBe(200);
+    expect((await res.json()).append.content).toBe("fixed");
+    expect(mockUpdateAppend).toHaveBeenCalledWith({
+      id: AID,
+      entryId: "e1",
+      authorId: "u1",
+      content: "fixed",
+    });
+    expect(mockRecordActivity).toHaveBeenCalledWith(
+      expect.objectContaining({ action: "append.update", targetType: "append", targetId: AID })
+    );
+  });
+
+  it("404s when the append is not the caller's, and logs nothing", async () => {
+    mockGetByDate.mockResolvedValue({ entry: { id: "e1", authorId: "u1" } });
+    mockUpdateAppend.mockResolvedValue(null);
+
+    const res = await app.request(`/api/journal/entries/2026-05-11/appends/${AID}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", "X-Test-User": "u2" },
+      body: JSON.stringify({ content: "fixed" }),
+    });
+    expect(res.status).toBe(404);
+    expect(mockRecordActivity).not.toHaveBeenCalled();
+  });
+
+  it("404s when the entry is missing", async () => {
+    mockGetByDate.mockResolvedValue(null);
+    const res = await app.request(`/api/journal/entries/2026-05-11/appends/${AID}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", "X-Test-User": "u1" },
+      body: JSON.stringify({ content: "fixed" }),
+    });
+    expect(res.status).toBe(404);
+    expect(mockUpdateAppend).not.toHaveBeenCalled();
+  });
+
+  it("400s on a malformed append id rather than reaching the uuid column", async () => {
+    const res = await app.request("/api/journal/entries/2026-05-11/appends/not-a-uuid", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", "X-Test-User": "u1" },
+      body: JSON.stringify({ content: "fixed" }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it("400s on whitespace-only content", async () => {
+    mockGetByDate.mockResolvedValue({ entry: { id: "e1", authorId: "u1" } });
+    const res = await app.request(`/api/journal/entries/2026-05-11/appends/${AID}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", "X-Test-User": "u1" },
+      body: JSON.stringify({ content: "   \n " }),
+    });
+    expect(res.status).toBe(400);
+    expect(mockUpdateAppend).not.toHaveBeenCalled();
+  });
+
+  it("401s without auth", async () => {
+    const res = await app.request(`/api/journal/entries/2026-05-11/appends/${AID}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content: "fixed" }),
+    });
+    expect(res.status).toBe(401);
+  });
+});
+
+describe("DELETE /api/journal/entries/:date/appends/:id", () => {
+  it("soft-deletes the author's own append and records an audit row", async () => {
+    mockGetByDate.mockResolvedValue({ entry: { id: "e1", authorId: "u1" } });
+    mockSoftDeleteAppend.mockResolvedValue({ id: AID, entryId: "e1" });
+
+    const res = await app.request(`/api/journal/entries/2026-05-11/appends/${AID}`, {
+      method: "DELETE",
+      headers: { "X-Test-User": "u1" },
+    });
+    expect(res.status).toBe(204);
+    expect(mockSoftDeleteAppend).toHaveBeenCalledWith({
+      id: AID,
+      entryId: "e1",
+      authorId: "u1",
+    });
+    expect(mockRecordActivity).toHaveBeenCalledWith(
+      expect.objectContaining({ action: "append.delete", targetType: "append", targetId: AID })
+    );
+  });
+
+  it("404s on a repeat delete (already soft-deleted) instead of double-logging", async () => {
+    mockGetByDate.mockResolvedValue({ entry: { id: "e1", authorId: "u1" } });
+    mockSoftDeleteAppend.mockResolvedValue(null);
+
+    const res = await app.request(`/api/journal/entries/2026-05-11/appends/${AID}`, {
+      method: "DELETE",
+      headers: { "X-Test-User": "u1" },
+    });
+    expect(res.status).toBe(404);
+    expect(mockRecordActivity).not.toHaveBeenCalled();
+  });
+
+  it("401s without auth", async () => {
+    const res = await app.request(`/api/journal/entries/2026-05-11/appends/${AID}`, {
+      method: "DELETE",
+    });
+    expect(res.status).toBe(401);
   });
 });
