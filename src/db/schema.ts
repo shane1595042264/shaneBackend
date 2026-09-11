@@ -1459,3 +1459,91 @@ export const journalAccessRequests = pgTable(
     index("journal_access_requests_status_idx").on(t.status),
   ],
 );
+
+// ───────────────────────────────────────────────────────────────────
+// Blog (SHAN-478 Phase 1) — the public counterpart to the journal.
+//
+// Same mechanics as journal_entries/journal_versions (first-poster
+// authorship, append-only revision history, revert), with two deliberate
+// divergences:
+//
+//   1. Keyed by slug, not date. The journal is a diary: one entry per day,
+//      `date` unique. A blog publishes many posts a day and wants readable
+//      URLs, so the natural key is a generated slug + a separate title.
+//   2. No membership gate. Every read path here is anonymous-public; the
+//      journal's requireJournalMembership (SHAN-475) deliberately does not
+//      appear in this module. Writes stay author-only.
+// ───────────────────────────────────────────────────────────────────
+
+export const blogPostStatusEnum = pgEnum("blog_post_status", [
+  "published",
+  "draft",
+  "trashed",
+]);
+
+// No "suggestion" member (unlike journal_version_source): PR-style
+// suggestions are Phase 4 work and adding an unused enum value now would
+// make the eventual migration look like a rename.
+export const blogVersionSourceEnum = pgEnum("blog_version_source", [
+  "direct",
+  "revert",
+]);
+
+export const blogPosts = pgTable(
+  "blog_posts",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    slug: varchar("slug", { length: 80 }).notNull().unique(),
+    // Denormalized from the current version so the list query can sort and
+    // filter on it without joining blog_versions.
+    title: varchar("title", { length: 200 }).notNull(),
+    authorId: uuid("author_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "restrict" }),
+    // Author's IANA TZ at create time, same snapshot rationale as
+    // journal_entries.author_timezone.
+    authorTimezone: varchar("author_timezone", { length: 64 }),
+    currentVersionId: uuid("current_version_id"),
+    status: blogPostStatusEnum("status").notNull().default("published"),
+    tags: jsonb("tags").notNull().default([]),
+    editCount: integer("edit_count").notNull().default(1),
+    // Ordering key and keyset cursor for the public list. Separate from
+    // created_at so a draft promoted to published later sorts by when it
+    // went public, not when it was first typed.
+    publishedAt: timestamp("published_at", { withTimezone: true }).notNull().defaultNow(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    // Serves the public list: WHERE status = 'published' ORDER BY published_at DESC.
+    index("blog_posts_status_published_idx").on(t.status, t.publishedAt),
+    index("blog_posts_author_idx").on(t.authorId),
+  ],
+);
+
+export const blogVersions = pgTable(
+  "blog_versions",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    postId: uuid("post_id")
+      .notNull()
+      .references(() => blogPosts.id, { onDelete: "cascade" }),
+    versionNum: integer("version_num").notNull(),
+    // Titles are versioned too. The journal never needed this (its entries
+    // are titled by date), but renaming a post is an edit like any other and
+    // a revert has to restore the old title along with the old body.
+    title: varchar("title", { length: 200 }).notNull(),
+    content: text("content").notNull(),
+    contentHash: varchar("content_hash", { length: 64 }).notNull(),
+    editorId: uuid("editor_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "restrict" }),
+    source: blogVersionSourceEnum("source").notNull(),
+    parentVersionId: uuid("parent_version_id"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    unique("blog_versions_post_id_version_num_unique").on(t.postId, t.versionNum),
+    index("blog_versions_post_idx").on(t.postId),
+  ],
+);
