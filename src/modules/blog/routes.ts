@@ -274,11 +274,20 @@ blogRoutes.patch(
 
     let post = row.post;
     if (patch.tags !== undefined || patch.status !== undefined) {
+      // Runs after the version append, so its RETURNING row already carries
+      // the new title and editCount.
       const updated = await updatePostMeta(slug, userId, {
         tags: patch.tags,
         status: patch.status,
       });
       if (updated) post = updated;
+    } else if (touchesBody) {
+      // Body-only edit: `row` was read before appendDirectVersion bumped the
+      // denormalized title and editCount, so returning it verbatim hands the
+      // client a pre-edit snapshot and the edit UI renders the old title until
+      // it happens to refetch. Re-read instead.
+      const fresh = await getPostBySlug(slug, userId);
+      if (fresh) post = fresh.post;
     }
 
     return c.json({ post, currentVersionNum });

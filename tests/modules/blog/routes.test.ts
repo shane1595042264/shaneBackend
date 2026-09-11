@@ -443,3 +443,45 @@ describe("POST /api/blog/posts slug collisions", () => {
     expect(mockCreatePost).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("PATCH /api/blog/posts/:slug response freshness", () => {
+  const patch = (body: unknown, headers: Record<string, string> = {}) =>
+    app.request("/api/blog/posts/hello-world", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", "X-Test-User": "u1", ...headers },
+      body: JSON.stringify(body),
+    });
+
+  it("re-reads the post after a body-only edit so the title is not a pre-edit snapshot", async () => {
+    // First read is the pre-edit row the handler loads to authorize; the
+    // second is the refetch that must supply the response.
+    mockGetPostBySlug
+      .mockResolvedValueOnce(postRow())
+      .mockResolvedValueOnce(postRow({ title: "Renamed", editCount: 2 }));
+    mockAppendVersion.mockResolvedValue({ versionNum: 4, id: "v4" });
+
+    const res = await patch({ title: "Renamed" }, { "If-Match": "3" });
+    const body = await res.json();
+    expect(body.post.title).toBe("Renamed");
+    expect(body.post.editCount).toBe(2);
+    expect(mockGetPostBySlug).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not spend an extra read when the patch also updates metadata", async () => {
+    mockGetPostBySlug.mockResolvedValue(postRow());
+    mockAppendVersion.mockResolvedValue({ versionNum: 4, id: "v4" });
+    // updatePostMeta runs after the append, so its RETURNING row is already fresh.
+    mockUpdatePostMeta.mockResolvedValue({ id: "p1", title: "Renamed", editCount: 2 });
+
+    const res = await patch({ title: "Renamed", tags: ["x"] }, { "If-Match": "3" });
+    expect((await res.json()).post.title).toBe("Renamed");
+    expect(mockGetPostBySlug).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not re-read for a metadata-only patch", async () => {
+    mockGetPostBySlug.mockResolvedValue(postRow());
+    mockUpdatePostMeta.mockResolvedValue({ id: "p1", tags: ["x"] });
+    await patch({ tags: ["x"] });
+    expect(mockGetPostBySlug).toHaveBeenCalledTimes(1);
+  });
+});
