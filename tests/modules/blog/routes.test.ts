@@ -605,3 +605,72 @@ describe("cover_image_url", () => {
     );
   });
 });
+
+// SHAN-487: X-If-Match is the proxy-safe alias for If-Match. A real If-Match
+// never survives the Vercel rewrite — the edge compares it against our weak
+// ETag, fails the strong-comparison rule and answers 412 AFTER the write has
+// committed. Both spellings have to work, since PAT callers hit Railway
+// directly and keep using the documented header.
+describe("X-If-Match alias", () => {
+  it("accepts X-If-Match on a body edit", async () => {
+    mockGetPostBySlug.mockResolvedValue(postRow());
+    mockAppendVersion.mockResolvedValue({ versionNum: 4, id: "v4" });
+    const res = await app.request("/api/blog/posts/hello-world", {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Test-User": "u1",
+        "X-If-Match": "3",
+      },
+      body: JSON.stringify({ content: "new body" }),
+    });
+    expect(res.status).toBe(200);
+    expect(mockAppendVersion).toHaveBeenCalledWith(
+      expect.objectContaining({ ifMatchVersionNum: 3 })
+    );
+  });
+
+  it("accepts X-If-Match on a revert", async () => {
+    mockGetPostBySlug.mockResolvedValue(postRow());
+    mockRevert.mockResolvedValue({ versionNum: 5, id: "v5" });
+    const res = await app.request("/api/blog/posts/hello-world/revert", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Test-User": "u1",
+        "X-If-Match": "3",
+      },
+      body: JSON.stringify({ target_version_num: 1 }),
+    });
+    expect(res.status).toBe(200);
+    expect(mockRevert).toHaveBeenCalledWith("p1", 1, "u1", 3);
+  });
+
+  it("still 428s when neither header is present", async () => {
+    mockGetPostBySlug.mockResolvedValue(postRow());
+    const res = await app.request("/api/blog/posts/hello-world", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", "X-Test-User": "u1" },
+      body: JSON.stringify({ content: "new body" }),
+    });
+    expect(res.status).toBe(428);
+  });
+
+  it("prefers If-Match when both are sent", async () => {
+    mockGetPostBySlug.mockResolvedValue(postRow());
+    mockAppendVersion.mockResolvedValue({ versionNum: 4, id: "v4" });
+    await app.request("/api/blog/posts/hello-world", {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Test-User": "u1",
+        "If-Match": "3",
+        "X-If-Match": "99",
+      },
+      body: JSON.stringify({ content: "new body" }),
+    });
+    expect(mockAppendVersion).toHaveBeenCalledWith(
+      expect.objectContaining({ ifMatchVersionNum: 3 })
+    );
+  });
+});

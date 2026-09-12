@@ -41,7 +41,17 @@ app.use(
   cors({
     origin: process.env.CORS_ORIGIN ?? "*",
     allowMethods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allowHeaders: ["Content-Type", "Authorization", "If-Match", "If-None-Match", "X-Tea-Pin"],
+    // X-If-Match is the proxy-safe alias for If-Match (SHAN-487): Vercel's
+    // edge turns a real If-Match into a 412 against our weak ETags, after the
+    // write has already committed. See readIfMatch in modules/blog/routes.ts.
+    allowHeaders: [
+      "Content-Type",
+      "Authorization",
+      "If-Match",
+      "X-If-Match",
+      "If-None-Match",
+      "X-Tea-Pin",
+    ],
     // ETag is not a CORS-safelisted response header: without exposing it,
     // browser fetch() cannot read the validator and can never send it back.
     exposeHeaders: ["ETag"],

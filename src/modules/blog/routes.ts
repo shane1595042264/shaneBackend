@@ -139,6 +139,27 @@ const versionsQuery = z.object({
 
 const revertBody = z.object({ target_version_num: z.number().int().positive() });
 
+/**
+ * Read the optimistic-concurrency version, preferring the plain `If-Match`
+ * header and falling back to `X-If-Match`.
+ *
+ * Why the alias exists (SHAN-487): browser writes are same-origin and ride the
+ * Vercel rewrite (SHAN-458). Vercel's proxy evaluates a real `If-Match` against
+ * the response ETag, and every 200 JSON response here carries a WEAK one
+ * (conditionalGet in app.ts) — a weak validator can never satisfy If-Match,
+ * which requires strong comparison. The result was the worst possible failure
+ * mode: the PATCH reached the backend and committed, then Vercel replaced the
+ * 200 with `412 PRECONDITION_FAILED`, so the editor reported "failed to save"
+ * on a write that had already landed and a retry wrote it twice. Error
+ * responses (409/428) carry no ETag, which is why only the successes broke.
+ *
+ * `If-Match` stays the documented header for direct callers (PAT + curl
+ * straight at Railway); browsers send `X-If-Match`, which no proxy interprets.
+ */
+function readIfMatch(c: { req: { header(name: string): string | undefined } }) {
+  return c.req.header("If-Match") ?? c.req.header("X-If-Match");
+}
+
 // ── Public reads ───────────────────────────────────────────────────
 
 blogRoutes.get("/posts", optionalAuth, zValidator("query", listQuery), async (c) => {
@@ -276,7 +297,7 @@ blogRoutes.patch(
     let currentVersionNum = row.currentVersion?.versionNum ?? 1;
 
     if (touchesBody) {
-      const ifMatch = c.req.header("If-Match");
+      const ifMatch = readIfMatch(c);
       if (!ifMatch) return c.json({ error: "If-Match header required" }, 428);
       const ifMatchNum = parseInt(ifMatch, 10);
       if (Number.isNaN(ifMatchNum)) return c.json({ error: "Invalid If-Match" }, 400);
@@ -340,7 +361,7 @@ blogRoutes.post(
     const { slug } = c.req.valid("param");
     const { target_version_num } = c.req.valid("json");
 
-    const ifMatch = c.req.header("If-Match");
+    const ifMatch = readIfMatch(c);
     if (!ifMatch) return c.json({ error: "If-Match header required" }, 428);
     const ifMatchNum = parseInt(ifMatch, 10);
     if (Number.isNaN(ifMatchNum)) return c.json({ error: "Invalid If-Match" }, 400);
