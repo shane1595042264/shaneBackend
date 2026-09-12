@@ -485,3 +485,123 @@ describe("PATCH /api/blog/posts/:slug response freshness", () => {
     expect(mockGetPostBySlug).toHaveBeenCalledTimes(1);
   });
 });
+
+// SHAN-487: cover images. Metadata, so a cover-only PATCH must never touch the
+// version chain, and the validator has to keep a cover from pointing anywhere
+// other than an uploaded image or an https URL.
+describe("cover_image_url", () => {
+  const COVER = "/api/journal/images/11111111-2222-3333-4444-555555555555";
+
+  const patch = (body: unknown, headers: Record<string, string> = {}) =>
+    app.request("/api/blog/posts/hello-world", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", "X-Test-User": "u1", ...headers },
+      body: JSON.stringify(body),
+    });
+
+  it("passes an uploaded image path through on create", async () => {
+    mockCreatePost.mockResolvedValue({ post: {}, version: { versionNum: 1 } });
+    const res = await app.request("/api/blog/posts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Test-User": "u1" },
+      body: JSON.stringify({ title: "T", content: "c", cover_image_url: COVER }),
+    });
+    expect(res.status).toBe(201);
+    expect(mockCreatePost).toHaveBeenCalledWith(
+      expect.objectContaining({ coverImageUrl: COVER })
+    );
+  });
+
+  it("stores null when no cover is supplied on create", async () => {
+    mockCreatePost.mockResolvedValue({ post: {}, version: { versionNum: 1 } });
+    await app.request("/api/blog/posts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Test-User": "u1" },
+      body: JSON.stringify({ title: "T", content: "c" }),
+    });
+    expect(mockCreatePost).toHaveBeenCalledWith(
+      expect.objectContaining({ coverImageUrl: null })
+    );
+  });
+
+  it("accepts an absolute https URL", async () => {
+    mockCreatePost.mockResolvedValue({ post: {}, version: { versionNum: 1 } });
+    const res = await app.request("/api/blog/posts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Test-User": "u1" },
+      body: JSON.stringify({
+        title: "T",
+        content: "c",
+        cover_image_url: "https://images.example.com/a.jpg",
+      }),
+    });
+    expect(res.status).toBe(201);
+  });
+
+  it.each([
+    ["javascript:alert(1)"],
+    ["http://images.example.com/a.jpg"],
+    ["/api/admin/secrets"],
+    ["/api/journal/images/not-a-uuid"],
+  ])("400s on %s", async (bad) => {
+    const res = await app.request("/api/blog/posts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Test-User": "u1" },
+      body: JSON.stringify({ title: "T", content: "c", cover_image_url: bad }),
+    });
+    expect(res.status).toBe(400);
+    expect(mockCreatePost).not.toHaveBeenCalled();
+  });
+
+  it("treats a cover-only patch as a real patch, not an empty one", async () => {
+    mockGetPostBySlug.mockResolvedValue(postRow());
+    mockUpdatePostMeta.mockResolvedValue({ id: "p1", coverImageUrl: COVER });
+    const res = await patch({ cover_image_url: COVER });
+    expect(res.status).toBe(200);
+    expect(mockUpdatePostMeta).toHaveBeenCalledWith(
+      "hello-world",
+      "u1",
+      expect.objectContaining({ coverImageUrl: COVER })
+    );
+  });
+
+  it("does not mint a version for a cover-only patch", async () => {
+    mockGetPostBySlug.mockResolvedValue(postRow());
+    mockUpdatePostMeta.mockResolvedValue({ id: "p1", coverImageUrl: COVER });
+    await patch({ cover_image_url: COVER });
+    expect(mockAppendVersion).not.toHaveBeenCalled();
+  });
+
+  it("clears the cover on an explicit null", async () => {
+    mockGetPostBySlug.mockResolvedValue(postRow());
+    mockUpdatePostMeta.mockResolvedValue({ id: "p1", coverImageUrl: null });
+    await patch({ cover_image_url: null });
+    expect(mockUpdatePostMeta).toHaveBeenCalledWith(
+      "hello-world",
+      "u1",
+      expect.objectContaining({ coverImageUrl: null })
+    );
+  });
+
+  it("leaves the cover alone when the field is omitted", async () => {
+    mockGetPostBySlug.mockResolvedValue(postRow());
+    mockUpdatePostMeta.mockResolvedValue({ id: "p1" });
+    await patch({ tags: ["x"] });
+    expect(mockUpdatePostMeta).toHaveBeenCalledWith(
+      "hello-world",
+      "u1",
+      expect.objectContaining({ coverImageUrl: undefined })
+    );
+  });
+
+  it("collapses a blank cover string to null rather than persisting empty text", async () => {
+    mockGetPostBySlug.mockResolvedValue(postRow());
+    mockUpdatePostMeta.mockResolvedValue({ id: "p1", coverImageUrl: null });
+    await patch({ cover_image_url: "   " });
+    expect(mockUpdatePostMeta).toHaveBeenCalledWith(
+      "hello-world",
+      "u1",
+      expect.objectContaining({ coverImageUrl: null })
+    );
+  });
+});

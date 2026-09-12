@@ -1570,6 +1570,12 @@ export const blogPosts = pgTable(
     authorTimezone: varchar("author_timezone", { length: 64 }),
     currentVersionId: uuid("current_version_id"),
     status: blogPostStatusEnum("status").notNull().default("published"),
+    // SHAN-487. Cover art for the masonry tile and the detail hero. Metadata,
+    // not content: swapping a cover is not a revision of the post, so it never
+    // mints a blog_versions row and a revert leaves it alone. Normally a
+    // relative /api/journal/images/<id> path (the shared uploader's output),
+    // stored relative so it keeps working if the backend origin ever moves.
+    coverImageUrl: varchar("cover_image_url", { length: 500 }),
     tags: jsonb("tags").notNull().default([]),
     editCount: integer("edit_count").notNull().default(1),
     // Ordering key and keyset cursor for the public list. Separate from

@@ -1,0 +1,1 @@
+ALTER TABLE "blog_posts" ADD COLUMN "cover_image_url" varchar(500);

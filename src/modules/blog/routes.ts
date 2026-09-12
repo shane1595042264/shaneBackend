@@ -54,6 +54,31 @@ export const blogRoutes = new Hono<Vars>();
 const MAX_TITLE = 200;
 const MAX_TAGS = 10;
 const MAX_TAG_LEN = 40;
+const MAX_COVER_URL = 500;
+
+// A cover is either the shared uploader's own output
+// (/api/journal/images/<uuid>, stored relative so it survives an origin move)
+// or an absolute https URL for art hosted elsewhere. Everything else is
+// rejected: an arbitrary same-origin path would let a cover point at any
+// backend route, and http:/data:/javascript: are not image sources we serve.
+const COVER_URL_RE =
+  /^(?:\/api\/journal\/images\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|https:\/\/[^\s<>"']+)$/i;
+
+// Nullish rather than optional: an explicit null is how a client removes a
+// cover, while omitting the field leaves the existing one alone. Blank strings
+// collapse to null so an emptied input doesn't persist as "".
+const coverImageUrl = z
+  .string()
+  .max(MAX_COVER_URL)
+  .nullish()
+  .transform((v) => {
+    if (v === undefined || v === null) return v;
+    const t = v.trim();
+    return t.length ? t : null;
+  })
+  .refine((v) => v == null || COVER_URL_RE.test(v), {
+    message: "cover_image_url must be an uploaded image path or an https URL",
+  });
 
 const slugParam = z.object({
   // Matches what generateUniqueSlug can emit. Rejecting junk here keeps a
@@ -93,6 +118,7 @@ const createBody = z.object({
   content: bodyContent,
   tags: trimmedLabels(MAX_TAG_LEN, MAX_TAGS).optional(),
   status: z.enum(["published", "draft"]).default("published"),
+  cover_image_url: coverImageUrl,
 });
 
 // Every field optional: a PATCH may carry only tags, only a status flip, only
@@ -103,6 +129,7 @@ const updateBody = z.object({
   content: bodyContent.optional(),
   tags: trimmedLabels(MAX_TAG_LEN, MAX_TAGS).optional(),
   status: z.enum(["published", "draft"]).optional(),
+  cover_image_url: coverImageUrl,
 });
 
 const versionsQuery = z.object({
@@ -185,7 +212,7 @@ blogRoutes.post(
   zValidator("json", createBody),
   async (c) => {
     const userId = c.get("userId") as string;
-    const { title, content, tags, status } = c.req.valid("json");
+    const { title, content, tags, status, cover_image_url } = c.req.valid("json");
     const authorTimezone = await getUserTimezone(userId);
 
     // generateUniqueSlug probes for a free slug and then we insert, which is
@@ -204,6 +231,7 @@ blogRoutes.post(
           content,
           tags,
           status,
+          coverImageUrl: cover_image_url ?? null,
         });
         return c.json({ post: result.post, currentVersionNum: 1 }, 201);
       } catch (err: any) {
@@ -230,7 +258,8 @@ blogRoutes.patch(
       patch.title === undefined &&
       patch.content === undefined &&
       patch.tags === undefined &&
-      patch.status === undefined
+      patch.status === undefined &&
+      patch.cover_image_url === undefined
     ) {
       return c.json({ error: "No fields to update" }, 400);
     }
@@ -241,7 +270,7 @@ blogRoutes.patch(
       return c.json({ error: "Only the author can edit" }, 403);
     }
 
-    // Title/body edits go into the revision history; tags and the
+    // Title/body edits go into the revision history; tags, the cover and the
     // draft/published flip are plain metadata and do not.
     const touchesBody = patch.title !== undefined || patch.content !== undefined;
     let currentVersionNum = row.currentVersion?.versionNum ?? 1;
@@ -273,12 +302,17 @@ blogRoutes.patch(
     }
 
     let post = row.post;
-    if (patch.tags !== undefined || patch.status !== undefined) {
+    if (
+      patch.tags !== undefined ||
+      patch.status !== undefined ||
+      patch.cover_image_url !== undefined
+    ) {
       // Runs after the version append, so its RETURNING row already carries
       // the new title and editCount.
       const updated = await updatePostMeta(slug, userId, {
         tags: patch.tags,
         status: patch.status,
+        coverImageUrl: patch.cover_image_url,
       });
       if (updated) post = updated;
     } else if (touchesBody) {

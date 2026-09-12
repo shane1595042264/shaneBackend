@@ -36,6 +36,8 @@ export async function createPost(input: {
   content: string;
   tags?: string[];
   status?: "published" | "draft";
+  /** Relative /api/journal/images/<id> path, or null for no cover. */
+  coverImageUrl?: string | null;
 }): Promise<{
   post: typeof blogPosts.$inferSelect;
   version: typeof blogVersions.$inferSelect;
@@ -50,6 +52,7 @@ export async function createPost(input: {
         authorTimezone: input.authorTimezone ?? "America/Chicago",
         tags: input.tags ?? [],
         status: input.status ?? "published",
+        coverImageUrl: input.coverImageUrl ?? null,
       })
       .returning();
 
@@ -162,6 +165,7 @@ export async function listPosts(opts: {
       authorTimezone: blogPosts.authorTimezone,
       currentVersionId: blogPosts.currentVersionId,
       status: blogPosts.status,
+      coverImageUrl: blogPosts.coverImageUrl,
       tags: blogPosts.tags,
       editCount: blogPosts.editCount,
       publishedAt: blogPosts.publishedAt,
@@ -188,15 +192,21 @@ export async function listPosts(opts: {
  * Metadata-only update. Title and body changes do NOT come through here —
  * those mint a new version via versions-repo.appendDirectVersion, because
  * they belong in the revision history. This handles tags and the
- * draft/published flip, which do not.
+ * draft/published flip, plus the cover image, none of which do.
  */
 export async function updatePostMeta(
   slug: string,
   authorId: string,
-  patch: { tags?: string[]; status?: "published" | "draft" }
+  patch: {
+    tags?: string[];
+    status?: "published" | "draft";
+    /** Explicit null clears the cover; undefined leaves it untouched. */
+    coverImageUrl?: string | null;
+  }
 ) {
   const set: Record<string, unknown> = { updatedAt: new Date() };
   if (patch.tags !== undefined) set.tags = patch.tags;
+  if (patch.coverImageUrl !== undefined) set.coverImageUrl = patch.coverImageUrl;
   if (patch.status !== undefined) {
     set.status = patch.status;
     // Publishing should date the post from now, not from whenever the draft
