@@ -43,6 +43,10 @@ const wordsQuerySchema = z.object({
   // Filter by source.app — case-insensitive match against the jsonb source column.
   // Lets clients browse "all entries from <app>" (e.g. ?app=nibbler).
   app: z.string().min(1).max(100).optional(),
+  // SHAN-485: filter by a memorization location (SHAN-339's location-memorization
+  // technique) — case-insensitive membership test against the jsonb array. Cap is
+  // 120 to match the per-location bound on PUT /entries.
+  location: z.string().min(1).max(120).optional(),
   limit: z.coerce.number().int().min(1).max(500).default(100),
   offset: z.coerce.number().int().min(0).default(0),
 });
@@ -316,7 +320,8 @@ const createWordSchema = z.object({
 // List entries with optional filters
 knowledgeRoutes.get("/entries", zValidator("query", wordsQuerySchema), async (c) => {
   try {
-    const { language, label, search, category, app, limit, offset } = c.req.valid("query");
+    const { language, label, search, category, app, location, limit, offset } =
+      c.req.valid("query");
 
     const conditions = [];
     if (language) conditions.push(eq(vocabWords.language, language));
@@ -326,6 +331,18 @@ knowledgeRoutes.get("/entries", zValidator("query", wordsQuerySchema), async (c)
       // case-insensitive without forcing callers to canonicalise (e.g. nibbler
       // vs Nibbler vs NIBBLER all hit the same set of rows).
       conditions.push(sql`lower(${vocabWords.source}->>'app') = lower(${app})`);
+    }
+    if (location) {
+      // Membership test over the jsonb array rather than containment (@>) so the
+      // match can be case-insensitive — locations are free text and the same place
+      // gets typed "Cafe" and "cafe" across sessions.
+      conditions.push(
+        sql`EXISTS (
+          SELECT 1
+          FROM jsonb_array_elements_text(coalesce(${vocabWords.memorizationLocations}, '[]'::jsonb)) AS loc
+          WHERE lower(loc) = lower(${location})
+        )`
+      );
     }
     if (search) {
       const pattern = `%${search}%`;
@@ -693,6 +710,21 @@ knowledgeRoutes.get("/labels", async (c) => {
   );
   const labels = (result.rows as { label: string }[]).map((r) => r.label);
   return c.json({ labels });
+});
+
+// SHAN-485: the distinct memorization locations across every card, so the browse
+// UI can offer a location filter without paging the whole collection first.
+// Deduped case-insensitively (first-seen casing wins) to match how the card
+// editor normalizes locations.
+knowledgeRoutes.get("/locations", async (c) => {
+  const result = await db.execute(
+    sql`SELECT DISTINCT ON (lower(loc)) loc AS location
+        FROM vocab_words,
+             LATERAL jsonb_array_elements_text(coalesce(memorization_locations, '[]'::jsonb)) AS loc
+        ORDER BY lower(loc)`
+  );
+  const locations = (result.rows as { location: string }[]).map((r) => r.location);
+  return c.json({ locations });
 });
 
 knowledgeRoutes.get("/languages", async (c) => {

@@ -2,11 +2,12 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { Hono } from "hono";
 import { __resetRateLimitBuckets } from "@/modules/shared/rate-limit";
 
-const { mockSelect, mockInsert, mockDelete, mockUpdate, mockSql } = vi.hoisted(() => ({
+const { mockSelect, mockInsert, mockDelete, mockUpdate, mockExecute, mockSql } = vi.hoisted(() => ({
   mockSelect: vi.fn(),
   mockInsert: vi.fn(),
   mockDelete: vi.fn(),
   mockUpdate: vi.fn(),
+  mockExecute: vi.fn(),
   // Records the raw template fragments so tests can assert what SQL the
   // route attempted to emit (e.g. "->>'app'" for the source.app filter).
   mockSql: vi.fn((strings: unknown, ..._values: unknown[]) => {
@@ -31,6 +32,7 @@ vi.mock("@/db/client", () => ({
     select: mockSelect,
     delete: mockDelete,
     update: mockUpdate,
+    execute: mockExecute,
   },
 }));
 
@@ -834,5 +836,89 @@ describe("GET /api/knowledge/entries — filter param length bounds (SHAN-415)",
     });
     const res = await app.request(`/api/knowledge/entries?${qs.toString()}`);
     expect(res.status).toBe(200);
+  });
+});
+
+// SHAN-485: browse by the memorization locations recorded under SHAN-339, plus
+// the distinct-locations list the filter dropdown is built from.
+describe("GET /api/knowledge/entries — memorization location filter (SHAN-485)", () => {
+  function selectChain(rows: unknown[]) {
+    const c: Record<string, unknown> = {};
+    const t = Promise.resolve(rows);
+    for (const m of ["from", "where", "orderBy", "limit", "offset"]) {
+      c[m] = vi.fn(() => c);
+    }
+    Object.assign(c, { then: (r: any, j: any) => t.then(r, j) });
+    return c;
+  }
+
+  function sqlSawLocationFilter(): boolean {
+    return mockSql.mock.calls.some(([strings]) => {
+      const raw = Array.isArray((strings as TemplateStringsArray)?.raw)
+        ? (strings as TemplateStringsArray).raw.join("?")
+        : String(strings);
+      return /jsonb_array_elements_text/.test(raw) && /lower\(loc\)/.test(raw);
+    });
+  }
+
+  it("emits the location membership filter when ?location=<value> is provided", async () => {
+    mockSelect
+      .mockReturnValueOnce(selectChain([{ id: "u1", word: "build" }]))
+      .mockReturnValueOnce(selectChain([{ count: 1 }]));
+
+    const res = await app.request("/api/knowledge/entries?location=Kitchen");
+    expect(res.status).toBe(200);
+    expect(sqlSawLocationFilter()).toBe(true);
+  });
+
+  it("does NOT emit the location filter when ?location is omitted", async () => {
+    mockSelect
+      .mockReturnValueOnce(selectChain([]))
+      .mockReturnValueOnce(selectChain([{ count: 0 }]));
+
+    const res = await app.request("/api/knowledge/entries");
+    expect(res.status).toBe(200);
+    expect(sqlSawLocationFilter()).toBe(false);
+  });
+
+  it("rejects an empty ?location= via zod min(1)", async () => {
+    const res = await app.request("/api/knowledge/entries?location=");
+    expect(res.status).toBe(400);
+    expect(mockSelect).not.toHaveBeenCalled();
+  });
+
+  it("rejects an over-cap ?location= (121 chars) with 400 before querying", async () => {
+    const res = await app.request(`/api/knowledge/entries?location=${"e".repeat(121)}`);
+    expect(res.status).toBe(400);
+    expect(mockSelect).not.toHaveBeenCalled();
+  });
+
+  it("accepts a location at the 120-char boundary", async () => {
+    mockSelect
+      .mockReturnValueOnce(selectChain([{ id: "u1", word: "build" }]))
+      .mockReturnValueOnce(selectChain([{ count: 1 }]));
+
+    const res = await app.request(`/api/knowledge/entries?location=${"e".repeat(120)}`);
+    expect(res.status).toBe(200);
+  });
+});
+
+describe("GET /api/knowledge/locations (SHAN-485)", () => {
+  it("returns the distinct location names from the jsonb column", async () => {
+    mockExecute.mockResolvedValueOnce({
+      rows: [{ location: "Cafe Grumpy" }, { location: "Kitchen" }],
+    });
+
+    const res = await app.request("/api/knowledge/locations");
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ locations: ["Cafe Grumpy", "Kitchen"] });
+  });
+
+  it("returns an empty list when no card has any location", async () => {
+    mockExecute.mockResolvedValueOnce({ rows: [] });
+
+    const res = await app.request("/api/knowledge/locations");
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ locations: [] });
   });
 });
