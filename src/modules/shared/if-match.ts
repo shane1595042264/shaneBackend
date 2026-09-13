@@ -14,6 +14,12 @@
  * 409 and 428 paths looked perfect and this stayed hidden (SHAN-487 for the
  * blog, SHAN-489 for the journal).
  *
+ * Measured at the edge on 2026-09-13 (SHAN-489 E2E): a PATCH carrying
+ * `If-Match` comes back 412 with Vercel's error page while the origin commits
+ * the write; the same header on a POST passes straight through today. Every
+ * version-gated write reads through this helper anyway rather than depending on
+ * which methods Vercel decides to intercept.
+ *
  * `If-Match` wins if both are sent.
  */
 export function readIfMatch(c: { req: { header(name: string): string | undefined } }) {
