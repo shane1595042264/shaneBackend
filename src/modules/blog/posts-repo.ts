@@ -168,6 +168,9 @@ export async function listPosts(opts: {
       coverImageUrl: blogPosts.coverImageUrl,
       tags: blogPosts.tags,
       editCount: blogPosts.editCount,
+      // Denormalized (SHAN-488) precisely so the index tile can show a count
+      // without a correlated subquery per row.
+      commentCount: blogPosts.commentCount,
       publishedAt: blogPosts.publishedAt,
       createdAt: blogPosts.createdAt,
       updatedAt: blogPosts.updatedAt,

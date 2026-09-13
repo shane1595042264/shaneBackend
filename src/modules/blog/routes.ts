@@ -37,6 +37,18 @@ import {
   revertToVersion,
   VersionConflictError,
 } from "./versions-repo";
+import {
+  createComment,
+  deleteComment,
+  listForPost as listComments,
+  updateComment,
+} from "./comments-repo";
+import {
+  listMyReactionsForPost,
+  summarizePostReactions,
+  togglePostReaction,
+} from "./reactions-repo";
+import { isAllowedEmoji } from "@/modules/journal/reactions-repo";
 
 const noInFlightUpload = (v: string) => !containsInFlightUpload(v);
 
@@ -400,5 +412,141 @@ blogRoutes.delete(
     const userId = c.get("userId") as string;
     const ok = await softDeletePost(c.req.valid("param").slug, userId);
     return ok ? c.body(null, 204) : c.json({ error: "Not found or not author" }, 404);
+  }
+);
+
+// ── Social layer (SHAN-488) ────────────────────────────────────────
+//
+// Reads anonymous, writes any signed-in user, edit/delete author-only. Every
+// route here resolves the post through getPostBySlug(slug, viewerId) first,
+// which is what keeps drafts and trashed posts from growing a comment thread
+// that strangers can see: that helper already returns null for both.
+//
+// Own rate-limit buckets rather than sharing blogWriteLimit — a chatty
+// commenting PAT must not be able to exhaust the author's publish budget.
+const blogCommentsLimit = createPATRateLimit({
+  bucket: "blog-comments-write",
+  limitPerMinute: 30,
+});
+const blogReactionsLimit = createPATRateLimit({
+  bucket: "blog-reactions-write",
+  limitPerMinute: 60,
+});
+
+const commentIdParam = z.object({ id: z.string().uuid() });
+
+const commentBody = z.object({
+  content: z
+    .string()
+    .trim()
+    .min(1)
+    .max(10_000)
+    .refine(noInFlightUpload, { message: IN_FLIGHT_UPLOAD_MESSAGE }),
+});
+
+const reactionBody = z.object({ emoji: z.string().max(32) });
+
+blogRoutes.get(
+  "/posts/:slug/comments",
+  optionalAuth,
+  zValidator("param", slugParam),
+  async (c) => {
+    const row = await getPostBySlug(c.req.valid("param").slug, c.get("userId"));
+    if (!row) return c.json({ error: "Not found" }, 404);
+    const comments = await listComments(row.post.id);
+    return c.json({ comments });
+  }
+);
+
+blogRoutes.post(
+  "/posts/:slug/comments",
+  requireAuth,
+  requireScope("comments:write"),
+  blogCommentsLimit,
+  zValidator("param", slugParam),
+  zValidator("json", commentBody),
+  async (c) => {
+    const userId = c.get("userId") as string;
+    const row = await getPostBySlug(c.req.valid("param").slug, userId);
+    if (!row) return c.json({ error: "Not found" }, 404);
+    const authorTimezone = await getUserTimezone(userId);
+    const comment = await createComment({
+      postId: row.post.id,
+      authorId: userId,
+      authorTimezone,
+      content: c.req.valid("json").content,
+    });
+    return c.json({ comment }, 201);
+  }
+);
+
+blogRoutes.patch(
+  "/comments/:id",
+  requireAuth,
+  requireScope("comments:write"),
+  blogCommentsLimit,
+  zValidator("param", commentIdParam),
+  zValidator("json", commentBody),
+  async (c) => {
+    const userId = c.get("userId") as string;
+    const updated = await updateComment(
+      c.req.valid("param").id,
+      userId,
+      c.req.valid("json").content
+    );
+    // One 404 for both "no such comment" and "not yours": distinguishing them
+    // would let anyone probe which comment ids exist.
+    if (!updated) return c.json({ error: "Not found or not author" }, 404);
+    return c.json({ comment: updated });
+  }
+);
+
+blogRoutes.delete(
+  "/comments/:id",
+  requireAuth,
+  requireScope("comments:write"),
+  blogCommentsLimit,
+  zValidator("param", commentIdParam),
+  async (c) => {
+    const userId = c.get("userId") as string;
+    const ok = await deleteComment(c.req.valid("param").id, userId);
+    if (!ok) return c.json({ error: "Not found or not authorized" }, 404);
+    return c.body(null, 204);
+  }
+);
+
+blogRoutes.get(
+  "/posts/:slug/reactions",
+  optionalAuth,
+  zValidator("param", slugParam),
+  async (c) => {
+    const viewerId = c.get("userId");
+    const row = await getPostBySlug(c.req.valid("param").slug, viewerId);
+    if (!row) return c.json({ error: "Not found" }, 404);
+    const summary = await summarizePostReactions(row.post.id);
+    const mine = viewerId
+      ? (await listMyReactionsForPost(row.post.id, viewerId)).map((r) => r.emoji)
+      : [];
+    return c.json({ summary, mine });
+  }
+);
+
+blogRoutes.post(
+  "/posts/:slug/reactions",
+  requireAuth,
+  requireScope("reactions:write"),
+  blogReactionsLimit,
+  zValidator("param", slugParam),
+  zValidator("json", reactionBody),
+  async (c) => {
+    const userId = c.get("userId") as string;
+    const { emoji } = c.req.valid("json");
+    // Validated against the shared allowlist rather than the zod schema so an
+    // unknown emoji is a 400, not a Postgres enum cast error at insert time.
+    if (!isAllowedEmoji(emoji)) return c.json({ error: "Invalid emoji" }, 400);
+    const row = await getPostBySlug(c.req.valid("param").slug, userId);
+    if (!row) return c.json({ error: "Not found" }, 404);
+    const result = await togglePostReaction(userId, row.post.id, emoji);
+    return c.json({ result });
   }
 );

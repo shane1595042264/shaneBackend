@@ -1578,6 +1578,11 @@ export const blogPosts = pgTable(
     coverImageUrl: varchar("cover_image_url", { length: 500 }),
     tags: jsonb("tags").notNull().default([]),
     editCount: integer("edit_count").notNull().default(1),
+    // SHAN-488. Denormalized so the index can put a count on every tile
+    // without a correlated subquery per row. Maintained in the same
+    // transaction as the insert/delete in blog/comments-repo.ts; the
+    // decrement is floored at 0 so a racing double-delete can't go negative.
+    commentCount: integer("comment_count").notNull().default(0),
     // Ordering key and keyset cursor for the public list. Separate from
     // created_at so a draft promoted to published later sorts by when it
     // went public, not when it was first typed.
@@ -1616,5 +1621,64 @@ export const blogVersions = pgTable(
   (t) => [
     unique("blog_versions_post_id_version_num_unique").on(t.postId, t.versionNum),
     index("blog_versions_post_idx").on(t.postId),
+  ],
+);
+
+// SHAN-488 Phase 4. The social layer on the public blog.
+//
+// Structurally journal_comments / entry_reactions with the membership gate
+// gone: reads are anonymous, writes need any signed-in user, edit and delete
+// are author-only. Two deliberate divergences from the journal shape:
+//
+//   - No parent_comment_id. The journal threads one level deep; a public
+//     post's thread is mostly the author answering readers, which reads
+//     better flat, and flat sidesteps the one genuinely awkward case in the
+//     journal's version (comments are hard-deleted, so a threaded blog would
+//     have to decide what happens to a reply whose parent is gone).
+//   - No blog comment reactions. The journal has comment_reactions because a
+//     journal thread is a two-person conversation where a thumbs-up is a
+//     reply. On a public post the reaction that carries signal is the one on
+//     the post itself.
+export const blogComments = pgTable(
+  "blog_comments",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    postId: uuid("post_id")
+      .notNull()
+      .references(() => blogPosts.id, { onDelete: "cascade" }),
+    authorId: uuid("author_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "restrict" }),
+    authorTimezone: varchar("author_timezone", { length: 64 }),
+    content: text("content").notNull(),
+    editedAt: timestamp("edited_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    // The only read path: every comment on one post, oldest first.
+    index("blog_comments_post_created_idx").on(t.postId, t.createdAt),
+  ],
+);
+
+export const blogPostReactions = pgTable(
+  "blog_post_reactions",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "restrict" }),
+    postId: uuid("post_id")
+      .notNull()
+      .references(() => blogPosts.id, { onDelete: "cascade" }),
+    emoji: reactionEmojiEnum("emoji").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    unique("blog_post_reactions_user_id_post_id_emoji_unique").on(t.userId, t.postId, t.emoji),
+    // The summary query filters on post_id alone. The composite unique above
+    // leads with user_id and can't serve it — same reason entry_reactions
+    // carries its own entry_id index.
+    index("blog_post_reactions_post_id_idx").on(t.postId),
   ],
 );
