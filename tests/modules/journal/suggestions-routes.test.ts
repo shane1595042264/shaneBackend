@@ -364,3 +364,42 @@ describe("GET /api/journal/inbox", () => {
     expect(res.status).toBe(401);
   });
 });
+
+// SHAN-489: approve is the journal's other optimistic-concurrency write, and it
+// broke the same way the blog's edit did — Vercel's edge turned the browser's
+// If-Match into a 412 against our weak ETag after the approve had committed.
+// X-If-Match is the proxy-safe alias; If-Match stays valid for direct callers.
+describe("PATCH /api/journal/suggestions/:id/approve — X-If-Match alias", () => {
+  it("accepts X-If-Match", async () => {
+    mockGetSug.mockResolvedValue({ id: "s1", entryId: "e1", status: "pending" });
+    mockSelect.mockReturnValue(chain([{ authorId: "owner" }]));
+    mockApprove.mockResolvedValue({ id: "v2", versionNum: 2 });
+    const res = await app.request(`/api/journal/suggestions/${SID}/approve`, {
+      method: "PATCH",
+      headers: { "X-Test-User": "owner", "X-If-Match": "1" },
+    });
+    expect(res.status).toBe(200);
+    expect(mockApprove).toHaveBeenCalledWith(SID, "owner", 1);
+  });
+
+  it("prefers If-Match when both are sent", async () => {
+    mockGetSug.mockResolvedValue({ id: "s1", entryId: "e1", status: "pending" });
+    mockSelect.mockReturnValue(chain([{ authorId: "owner" }]));
+    mockApprove.mockResolvedValue({ id: "v2", versionNum: 2 });
+    await app.request(`/api/journal/suggestions/${SID}/approve`, {
+      method: "PATCH",
+      headers: { "X-Test-User": "owner", "If-Match": "1", "X-If-Match": "9" },
+    });
+    expect(mockApprove).toHaveBeenCalledWith(SID, "owner", 1);
+  });
+
+  it("400 when X-If-Match is malformed", async () => {
+    mockGetSug.mockResolvedValue({ id: "s1", entryId: "e1", status: "pending" });
+    const res = await app.request(`/api/journal/suggestions/${SID}/approve`, {
+      method: "PATCH",
+      headers: { "X-Test-User": "owner", "X-If-Match": "nope" },
+    });
+    expect(res.status).toBe(400);
+    expect(mockApprove).not.toHaveBeenCalled();
+  });
+});

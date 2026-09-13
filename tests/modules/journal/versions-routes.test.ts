@@ -216,3 +216,48 @@ describe("POST /api/journal/entries/:date/revert", () => {
     expect(mockRevert).not.toHaveBeenCalled();
   });
 });
+
+// SHAN-489: X-If-Match is the proxy-safe alias for If-Match. A browser's real
+// If-Match never survives the Vercel rewrite — the edge compares it against our
+// weak ETag, fails the strong-comparison rule and answers 412 AFTER the revert
+// has committed. Both spellings have to work: PAT callers hit Railway directly
+// and keep using the documented header.
+describe("POST /api/journal/entries/:date/revert — X-If-Match alias", () => {
+  it("accepts X-If-Match", async () => {
+    mockGetByDate.mockResolvedValue({ entry: { authorId: "u1", id: "e1" }, currentVersion: { versionNum: 5 } });
+    mockRevert.mockResolvedValue({ id: "v6", versionNum: 6 });
+    const res = await app.request("/api/journal/entries/2026-04-29/revert", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Test-User": "u1", "X-If-Match": "5" },
+      body: JSON.stringify({ target_version_num: 2 }),
+    });
+    expect(res.status).toBe(200);
+    expect(mockRevert).toHaveBeenCalledWith("e1", 2, "u1", 5);
+  });
+
+  it("prefers If-Match when both are sent", async () => {
+    mockGetByDate.mockResolvedValue({ entry: { authorId: "u1", id: "e1" }, currentVersion: { versionNum: 5 } });
+    mockRevert.mockResolvedValue({ id: "v6", versionNum: 6 });
+    await app.request("/api/journal/entries/2026-04-29/revert", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Test-User": "u1",
+        "If-Match": "5",
+        "X-If-Match": "2",
+      },
+      body: JSON.stringify({ target_version_num: 2 }),
+    });
+    expect(mockRevert).toHaveBeenCalledWith("e1", 2, "u1", 5);
+  });
+
+  it("returns 400 when X-If-Match is malformed", async () => {
+    const res = await app.request("/api/journal/entries/2026-04-29/revert", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Test-User": "u1", "X-If-Match": "nope" },
+      body: JSON.stringify({ target_version_num: 2 }),
+    });
+    expect(res.status).toBe(400);
+    expect(mockRevert).not.toHaveBeenCalled();
+  });
+});

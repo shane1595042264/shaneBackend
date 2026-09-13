@@ -2,6 +2,7 @@
 import { Hono } from "hono";
 import { z } from "zod";
 import { zValidator } from "@/modules/shared/zod-validator";
+import { readIfMatch } from "@/modules/shared/if-match";
 import { requireAuth, optionalAuth, requireScope } from "@/modules/auth/middleware";
 import { getUserTimezone } from "@/modules/auth/user-prefs";
 import { listEntries, getEntryByDate, createEntry, softDeleteEntry } from "./entries-repo";
@@ -450,7 +451,7 @@ journalRoutes.post(
     const { date } = c.req.valid("param");
     const { target_version_num } = c.req.valid("json");
 
-    const ifMatch = c.req.header("If-Match");
+    const ifMatch = readIfMatch(c);
     if (!ifMatch) return c.json({ error: "If-Match header required" }, 428);
     const ifMatchNum = parseInt(ifMatch, 10);
     if (Number.isNaN(ifMatchNum)) return c.json({ error: "Invalid If-Match" }, 400);
@@ -606,7 +607,7 @@ journalRoutes.patch(
     const s = await getSuggestion(id);
     if (!s) return c.json({ error: "Not found" }, 404);
 
-    const ifMatch = c.req.header("If-Match");
+    const ifMatch = readIfMatch(c);
     if (!ifMatch) return c.json({ error: "If-Match header required" }, 428);
     const ifMatchNum = parseInt(ifMatch, 10);
     if (Number.isNaN(ifMatchNum)) return c.json({ error: "Invalid If-Match" }, 400);

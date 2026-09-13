@@ -53,6 +53,14 @@ Global middleware (registered in `app.ts` right after `cors`) that gives every 2
 - **The 304 path copies everything except the body-describing headers** (`Content-Type`, `Content-Length`, `Content-Encoding`, ...), then clears the old response's headers before swapping `c.res`. Hono's `res` setter copies the previous response's headers onto the new one, so without that clear they would come straight back onto a bodiless reply.
 - The public contract is documented in the frontend docs element (`lib/docs/content/conventions.ts`) — change one, change the other.
 
+## `if-match.ts` — `readIfMatch`
+
+Reads the optimistic-concurrency version off a request, accepting `If-Match` or `X-If-Match`, `If-Match` winning if both are sent. Every handler that gates a write on a version number must call this instead of reading the header directly — journal revert, journal suggestion approve, blog body-edit and blog revert all do.
+
+- **Why the alias.** Browser writes are same-origin and ride the rewrite through Vercel's edge (SHAN-458), which evaluates a real `If-Match` against the response `ETag`. `conditional-get.ts` tags every 200 JSON response with a **weak** validator, and a weak validator can never satisfy `If-Match`, which requires strong comparison. The edge therefore replaced the origin's 200 with a `412` *after* the write committed: the client reported a failure on a save that had landed, and the retry duplicated it (SHAN-487 on the blog, SHAN-489 on the journal).
+- **Only the successes break**, which is what hid it for so long — the 409 and 428 paths carry no `ETag`, so the conflict flows looked perfect.
+- **`If-Match` remains the documented header** for direct callers (a PAT plus curl against the Railway origin); `X-If-Match` exists for browsers, and both are in the `allowHeaders` list in `app.ts`.
+
 ## `embeddings.ts` (if present)
 
 Local embeddings via `@xenova/transformers`. CPU-only, no API key. Slow but free; used for pgvector similarity searches in the knowledge module. Don't try to wire this through `generateText` — it's not text generation.
