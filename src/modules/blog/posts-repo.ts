@@ -5,7 +5,7 @@
 //   - the natural key is a slug, not a date, so every lookup takes a slug
 //   - nothing here filters by membership; published rows are world-readable
 import { createHash } from "node:crypto";
-import { and, desc, eq, lt, or, ilike, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, lt, or, ilike, sql } from "drizzle-orm";
 import { db } from "@/db/client";
 import { blogPosts, blogVersions, users } from "@/db/schema";
 
@@ -189,6 +189,69 @@ export async function listPosts(opts: {
     ...rest,
     author: { id: rest.authorId, name: authorName, avatarUrl: authorAvatarUrl },
   }));
+}
+
+/**
+ * SHAN-495. The chronological neighbours of one post, for the prev/next pair
+ * at the foot of /blog/[slug].
+ *
+ * Two rules worth keeping:
+ *   - Published only. The pivot may itself be a draft (its author is allowed
+ *     to preview it), but the links render into a document that is cached for
+ *     every visitor, so a neighbour must be something anyone may read.
+ *   - Ordered by (published_at, id), not published_at alone. Two posts can
+ *     share a timestamp (a seeded import, or two publishes inside the same
+ *     clock tick), and without the id tie-break one of them would be
+ *     unreachable from the other while both claimed the same neighbour.
+ *
+ * Written as or(lt(ts), and(eq(ts), lt(id))) rather than a row comparison so
+ * drizzle keeps the timestamptz and uuid parameters typed. Served by
+ * blog_posts_status_published_idx in both directions.
+ */
+export async function getAdjacentPosts(pivot: {
+  postId: string;
+  publishedAt: Date;
+}): Promise<{
+  prev: { slug: string; title: string } | null;
+  next: { slug: string; title: string } | null;
+}> {
+  const published = eq(blogPosts.status, "published");
+  // Denormalized title (kept in step by appendDirectVersion), so neither side
+  // has to join blog_versions just to label a link.
+  const columns = { slug: blogPosts.slug, title: blogPosts.title };
+
+  const older = db
+    .select(columns)
+    .from(blogPosts)
+    .where(
+      and(
+        published,
+        or(
+          lt(blogPosts.publishedAt, pivot.publishedAt),
+          and(eq(blogPosts.publishedAt, pivot.publishedAt), lt(blogPosts.id, pivot.postId))
+        )
+      )
+    )
+    .orderBy(desc(blogPosts.publishedAt), desc(blogPosts.id))
+    .limit(1);
+
+  const newer = db
+    .select(columns)
+    .from(blogPosts)
+    .where(
+      and(
+        published,
+        or(
+          gt(blogPosts.publishedAt, pivot.publishedAt),
+          and(eq(blogPosts.publishedAt, pivot.publishedAt), gt(blogPosts.id, pivot.postId))
+        )
+      )
+    )
+    .orderBy(asc(blogPosts.publishedAt), asc(blogPosts.id))
+    .limit(1);
+
+  const [prevRows, nextRows] = await Promise.all([older, newer]);
+  return { prev: prevRows[0] ?? null, next: nextRows[0] ?? null };
 }
 
 /**

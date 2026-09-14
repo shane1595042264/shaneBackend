@@ -5,6 +5,7 @@ import { Hono } from "hono";
 const {
   mockCreatePost,
   mockGetPostBySlug,
+  mockGetAdjacentPosts,
   mockListPosts,
   mockSlugTaken,
   mockSoftDeletePost,
@@ -16,6 +17,7 @@ const {
 } = vi.hoisted(() => ({
   mockCreatePost: vi.fn(),
   mockGetPostBySlug: vi.fn(),
+  mockGetAdjacentPosts: vi.fn(),
   mockListPosts: vi.fn(),
   mockSlugTaken: vi.fn().mockResolvedValue(false),
   mockSoftDeletePost: vi.fn(),
@@ -29,6 +31,7 @@ const {
 vi.mock("@/modules/blog/posts-repo", () => ({
   createPost: mockCreatePost,
   getPostBySlug: mockGetPostBySlug,
+  getAdjacentPosts: mockGetAdjacentPosts,
   listPosts: mockListPosts,
   slugTaken: mockSlugTaken,
   softDeletePost: mockSoftDeletePost,
@@ -81,6 +84,9 @@ import { VersionConflictError } from "@/modules/blog/versions-repo";
 beforeEach(() => {
   vi.clearAllMocks();
   mockSlugTaken.mockResolvedValue(false);
+  // SHAN-495: the GET route destructures this, so leaving it undefined would
+  // turn every single-post read in this file into a 500.
+  mockGetAdjacentPosts.mockResolvedValue({ prev: null, next: null });
 });
 
 const app = new Hono().route("/api/blog", blogRoutes);
@@ -93,6 +99,7 @@ const postRow = (over: Record<string, unknown> = {}) => ({
     title: "Hello World",
     authorId: "u1",
     status: "published",
+    publishedAt,
     ...over,
   },
   currentVersion: { versionNum: 3, title: "Hello World", content: "body" },
@@ -174,6 +181,34 @@ describe("GET /api/blog/posts/:slug", () => {
     const res = await app.request("/api/blog/posts/Not%20A%20Slug");
     expect(res.status).toBe(400);
     expect(mockGetPostBySlug).not.toHaveBeenCalled();
+  });
+
+  // SHAN-495
+  it("carries the chronological neighbours, keyed off this post's own id and date", async () => {
+    mockGetPostBySlug.mockResolvedValue(postRow());
+    mockGetAdjacentPosts.mockResolvedValue({
+      prev: { slug: "older-one", title: "Older One" },
+      next: { slug: "newer-one", title: "Newer One" },
+    });
+    const res = await app.request("/api/blog/posts/hello-world");
+    const body = await res.json();
+    expect(body.prev).toEqual({ slug: "older-one", title: "Older One" });
+    expect(body.next).toEqual({ slug: "newer-one", title: "Newer One" });
+    expect(mockGetAdjacentPosts).toHaveBeenCalledWith({ postId: "p1", publishedAt });
+  });
+
+  it("sends explicit nulls at the ends of the archive rather than omitting them", async () => {
+    mockGetPostBySlug.mockResolvedValue(postRow());
+    const res = await app.request("/api/blog/posts/hello-world");
+    const body = await res.json();
+    expect(body).toHaveProperty("prev", null);
+    expect(body).toHaveProperty("next", null);
+  });
+
+  it("does not look for neighbours when the slug is unknown", async () => {
+    mockGetPostBySlug.mockResolvedValue(null);
+    await app.request("/api/blog/posts/nope");
+    expect(mockGetAdjacentPosts).not.toHaveBeenCalled();
   });
 });
 

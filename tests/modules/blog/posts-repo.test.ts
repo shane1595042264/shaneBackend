@@ -30,6 +30,8 @@ vi.mock("drizzle-orm", () => ({
   or: vi.fn((...a: unknown[]) => ({ or: a })),
   desc: vi.fn((c: unknown) => ({ c, dir: "desc" })),
   lt: vi.fn((c: unknown, v: unknown) => ({ lt: [c, v] })),
+  gt: vi.fn((c: unknown, v: unknown) => ({ gt: [c, v] })),
+  asc: vi.fn((c: unknown) => ({ c, dir: "asc" })),
   ilike: vi.fn((c: unknown, v: unknown) => ({ ilike: [c, v] })),
   sql: Object.assign(
     vi.fn((strings: TemplateStringsArray, ...values: unknown[]) => ({
@@ -49,9 +51,13 @@ function chain(rows: unknown[]) {
   return c;
 }
 
+// The mocked predicate builders, imported so the neighbour query's WHERE and
+// ORDER BY can be asserted without a real database.
+import { asc, desc, eq, gt, lt } from "drizzle-orm";
 import {
   hashContent,
   createPost,
+  getAdjacentPosts,
   getPostBySlug,
   listPosts,
   slugTaken,
@@ -310,5 +316,64 @@ describe("slugTaken", () => {
   it("is false when nothing matches", async () => {
     mockSelect.mockReturnValue(chain([]));
     expect(await slugTaken("a")).toBe(false);
+  });
+});
+
+// SHAN-495
+describe("getAdjacentPosts", () => {
+  const pivot = { postId: "p1", publishedAt: new Date("2026-09-01T12:00:00.000Z") };
+
+  it("returns the older row as prev and the newer row as next", async () => {
+    mockSelect
+      .mockReturnValueOnce(chain([{ slug: "older", title: "Older" }]))
+      .mockReturnValueOnce(chain([{ slug: "newer", title: "Newer" }]));
+    expect(await getAdjacentPosts(pivot)).toEqual({
+      prev: { slug: "older", title: "Older" },
+      next: { slug: "newer", title: "Newer" },
+    });
+  });
+
+  it("nulls each side independently at the ends of the archive", async () => {
+    mockSelect
+      .mockReturnValueOnce(chain([]))
+      .mockReturnValueOnce(chain([{ slug: "n", title: "N" }]));
+    expect(await getAdjacentPosts(pivot)).toEqual({
+      prev: null,
+      next: { slug: "n", title: "N" },
+    });
+  });
+
+  it("only ever considers published rows, so a draft or trashed neighbour cannot leak", async () => {
+    mockSelect.mockReturnValue(chain([]));
+    await getAdjacentPosts(pivot);
+    expect(eq).toHaveBeenCalledWith(expect.anything(), "published");
+  });
+
+  it("breaks published_at ties on id so posts sharing a timestamp stay reachable", async () => {
+    mockSelect.mockReturnValue(chain([]));
+    await getAdjacentPosts(pivot);
+    // Older side: published_at < pivot OR (published_at = pivot AND id < pivot id).
+    expect(lt).toHaveBeenCalledWith(expect.anything(), pivot.publishedAt);
+    expect(lt).toHaveBeenCalledWith(expect.anything(), pivot.postId);
+    // Newer side is the mirror image.
+    expect(gt).toHaveBeenCalledWith(expect.anything(), pivot.publishedAt);
+    expect(gt).toHaveBeenCalledWith(expect.anything(), pivot.postId);
+  });
+
+  it("asks for exactly one row per side and orders each outward from the pivot", async () => {
+    const older = chain([]);
+    const newer = chain([]);
+    mockSelect.mockReturnValueOnce(older).mockReturnValueOnce(newer);
+    await getAdjacentPosts(pivot);
+    expect(older.limit).toHaveBeenCalledWith(1);
+    expect(newer.limit).toHaveBeenCalledWith(1);
+    expect(older.orderBy).toHaveBeenCalledWith(
+      expect.objectContaining({ dir: "desc" }),
+      expect.objectContaining({ dir: "desc" })
+    );
+    expect(newer.orderBy).toHaveBeenCalledWith(
+      expect.objectContaining({ dir: "asc" }),
+      expect.objectContaining({ dir: "asc" })
+    );
   });
 });

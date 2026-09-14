@@ -25,6 +25,7 @@ import {
 } from "@/modules/shared/validators";
 import {
   createPost,
+  getAdjacentPosts,
   getPostBySlug,
   listPosts,
   slugTaken,
@@ -175,12 +176,23 @@ blogRoutes.get("/posts/:slug", optionalAuth, zValidator("param", slugParam), asy
   const { slug } = c.req.valid("param");
   const row = await getPostBySlug(slug, c.get("userId"));
   if (!row) return c.json({ error: "Not found" }, 404);
+  // SHAN-495. Sent with the post rather than from a second endpoint: the
+  // detail page is server-rendered and ISR-cached, so folding the neighbours
+  // into the document it already fetches keeps the prev/next links crawlable
+  // and costs the reader no extra round trip. Published neighbours only, even
+  // when the viewer is the author previewing their own draft.
+  const { prev, next } = await getAdjacentPosts({
+    postId: row.post.id,
+    publishedAt: row.post.publishedAt,
+  });
   return c.json({
     post: row.post,
     author: row.author,
     title: row.currentVersion?.title ?? row.post.title,
     content: row.currentVersion?.content ?? "",
     currentVersionNum: row.currentVersion?.versionNum ?? 1,
+    prev,
+    next,
   });
 });
 

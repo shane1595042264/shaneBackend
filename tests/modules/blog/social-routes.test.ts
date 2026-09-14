@@ -10,6 +10,7 @@ import { Hono } from "hono";
 
 const {
   mockGetPostBySlug,
+  mockGetAdjacentPosts,
   mockCreateComment,
   mockListComments,
   mockUpdateComment,
@@ -19,6 +20,7 @@ const {
   mockListMine,
 } = vi.hoisted(() => ({
   mockGetPostBySlug: vi.fn(),
+  mockGetAdjacentPosts: vi.fn(),
   mockCreateComment: vi.fn(),
   mockListComments: vi.fn(),
   mockUpdateComment: vi.fn(),
@@ -31,6 +33,7 @@ const {
 vi.mock("@/modules/blog/posts-repo", () => ({
   createPost: vi.fn(),
   getPostBySlug: mockGetPostBySlug,
+  getAdjacentPosts: mockGetAdjacentPosts,
   listPosts: vi.fn(),
   slugTaken: vi.fn().mockResolvedValue(false),
   softDeletePost: vi.fn(),
