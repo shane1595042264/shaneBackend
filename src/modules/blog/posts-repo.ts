@@ -5,7 +5,7 @@
 //   - the natural key is a slug, not a date, so every lookup takes a slug
 //   - nothing here filters by membership; published rows are world-readable
 import { createHash } from "node:crypto";
-import { and, asc, desc, eq, gt, lt, or, ilike, sql } from "drizzle-orm";
+import { and, asc, desc, eq, lt, or, ilike, sql } from "drizzle-orm";
 import { db } from "@/db/client";
 import { blogPosts, blogVersions, users } from "@/db/schema";
 
@@ -204,13 +204,24 @@ export async function listPosts(opts: {
  *     clock tick), and without the id tie-break one of them would be
  *     unreachable from the other while both claimed the same neighbour.
  *
- * Written as or(lt(ts), and(eq(ts), lt(id))) rather than a row comparison so
- * drizzle keeps the timestamptz and uuid parameters typed. Served by
+ * The pivot's own key is read back inside the query instead of being passed in
+ * as a JS value, and that is load-bearing rather than tidiness. published_at is
+ * timestamptz, which Postgres keeps to microseconds, while node-postgres parses
+ * it into a Date, which only holds milliseconds. A round-tripped pivot is
+ * therefore strictly LESS than the row it came from (.603406 arrives as .603),
+ * so "published_at > pivot" matched the pivot itself, and because the newer
+ * side scans ascending it matched it FIRST: every post's next link pointed back
+ * at the post you were already reading. Comparing inside Postgres keeps full
+ * precision and excludes the pivot exactly.
+ *
+ * Row comparison rather than an unrolled OR because the RHS is a one-row
+ * subquery, which makes (published_at, id) < (pivot) both the tie-break and the
+ * self-exclusion in one predicate. A pivot id that matches nothing yields NULL,
+ * so both sides come back null rather than erroring. Served by
  * blog_posts_status_published_idx in both directions.
  */
 export async function getAdjacentPosts(pivot: {
   postId: string;
-  publishedAt: Date;
 }): Promise<{
   prev: { slug: string; title: string } | null;
   next: { slug: string; title: string } | null;
@@ -219,34 +230,21 @@ export async function getAdjacentPosts(pivot: {
   // Denormalized title (kept in step by appendDirectVersion), so neither side
   // has to join blog_versions just to label a link.
   const columns = { slug: blogPosts.slug, title: blogPosts.title };
+  // Aliased to p so the self-reference can't collide with the outer query.
+  const pivotKey = sql`(select p.published_at, p.id from blog_posts p where p.id = ${pivot.postId}::uuid)`;
+  const key = sql`(${blogPosts.publishedAt}, ${blogPosts.id})`;
 
   const older = db
     .select(columns)
     .from(blogPosts)
-    .where(
-      and(
-        published,
-        or(
-          lt(blogPosts.publishedAt, pivot.publishedAt),
-          and(eq(blogPosts.publishedAt, pivot.publishedAt), lt(blogPosts.id, pivot.postId))
-        )
-      )
-    )
+    .where(and(published, sql`${key} < ${pivotKey}`))
     .orderBy(desc(blogPosts.publishedAt), desc(blogPosts.id))
     .limit(1);
 
   const newer = db
     .select(columns)
     .from(blogPosts)
-    .where(
-      and(
-        published,
-        or(
-          gt(blogPosts.publishedAt, pivot.publishedAt),
-          and(eq(blogPosts.publishedAt, pivot.publishedAt), gt(blogPosts.id, pivot.postId))
-        )
-      )
-    )
+    .where(and(published, sql`${key} > ${pivotKey}`))
     .orderBy(asc(blogPosts.publishedAt), asc(blogPosts.id))
     .limit(1);
 

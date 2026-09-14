@@ -181,10 +181,7 @@ blogRoutes.get("/posts/:slug", optionalAuth, zValidator("param", slugParam), asy
   // into the document it already fetches keeps the prev/next links crawlable
   // and costs the reader no extra round trip. Published neighbours only, even
   // when the viewer is the author previewing their own draft.
-  const { prev, next } = await getAdjacentPosts({
-    postId: row.post.id,
-    publishedAt: row.post.publishedAt,
-  });
+  const { prev, next } = await getAdjacentPosts({ postId: row.post.id });
   return c.json({
     post: row.post,
     author: row.author,

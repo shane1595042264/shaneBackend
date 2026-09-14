@@ -30,7 +30,6 @@ vi.mock("drizzle-orm", () => ({
   or: vi.fn((...a: unknown[]) => ({ or: a })),
   desc: vi.fn((c: unknown) => ({ c, dir: "desc" })),
   lt: vi.fn((c: unknown, v: unknown) => ({ lt: [c, v] })),
-  gt: vi.fn((c: unknown, v: unknown) => ({ gt: [c, v] })),
   asc: vi.fn((c: unknown) => ({ c, dir: "asc" })),
   ilike: vi.fn((c: unknown, v: unknown) => ({ ilike: [c, v] })),
   sql: Object.assign(
@@ -53,7 +52,8 @@ function chain(rows: unknown[]) {
 
 // The mocked predicate builders, imported so the neighbour query's WHERE and
 // ORDER BY can be asserted without a real database.
-import { asc, desc, eq, gt, lt } from "drizzle-orm";
+import type { Mock } from "vitest";
+import { eq, sql } from "drizzle-orm";
 import {
   hashContent,
   createPost,
@@ -321,7 +321,13 @@ describe("slugTaken", () => {
 
 // SHAN-495
 describe("getAdjacentPosts", () => {
-  const pivot = { postId: "p1", publishedAt: new Date("2026-09-01T12:00:00.000Z") };
+  const pivot = { postId: "p1" };
+
+  // Every sql`` fragment the call built, as its joined text.
+  const fragments = () =>
+    (sql as unknown as Mock).mock.results.map(
+      (r) => (r.value as { __sql: string }).__sql
+    );
 
   it("returns the older row as prev and the newer row as next", async () => {
     mockSelect
@@ -349,15 +355,34 @@ describe("getAdjacentPosts", () => {
     expect(eq).toHaveBeenCalledWith(expect.anything(), "published");
   });
 
-  it("breaks published_at ties on id so posts sharing a timestamp stay reachable", async () => {
+  // The regression this guards is not hypothetical: published_at is
+  // timestamptz (microseconds) and node-postgres hands back a millisecond
+  // Date, so a pivot passed in from the caller reads as older than its own
+  // row. The newer side then matched the pivot first and every post's next
+  // link pointed at itself. Reading the key back inside the query is the fix.
+  it("compares against the pivot's stored key, never a value round-tripped through JS", async () => {
     mockSelect.mockReturnValue(chain([]));
     await getAdjacentPosts(pivot);
-    // Older side: published_at < pivot OR (published_at = pivot AND id < pivot id).
-    expect(lt).toHaveBeenCalledWith(expect.anything(), pivot.publishedAt);
-    expect(lt).toHaveBeenCalledWith(expect.anything(), pivot.postId);
-    // Newer side is the mirror image.
-    expect(gt).toHaveBeenCalledWith(expect.anything(), pivot.publishedAt);
-    expect(gt).toHaveBeenCalledWith(expect.anything(), pivot.postId);
+    const subquery = fragments().find((f) => f.includes("select p.published_at"));
+    expect(subquery).toBe(
+      "(select p.published_at, p.id from blog_posts p where p.id = ?::uuid)"
+    );
+    expect(
+      (sql as unknown as Mock).mock.calls.some((c) => c.slice(1).includes("p1"))
+    ).toBe(true);
+  });
+
+  it("orders on (published_at, id) so posts sharing a timestamp stay reachable", async () => {
+    mockSelect.mockReturnValue(chain([]));
+    await getAdjacentPosts(pivot);
+    // The sort key is built as a row, which is what makes the id a tie-break
+    // rather than a second, independent sort.
+    expect(fragments()).toContain("(?, ?)");
+    // One strictly-older predicate and one strictly-newer one, and no
+    // non-strict comparison that would let the pivot match itself.
+    expect(fragments()).toContain("? < ?");
+    expect(fragments()).toContain("? > ?");
+    expect(fragments().some((f) => f.includes("<=") || f.includes(">="))).toBe(false);
   });
 
   it("asks for exactly one row per side and orders each outward from the pivot", async () => {

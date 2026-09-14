@@ -184,7 +184,7 @@ describe("GET /api/blog/posts/:slug", () => {
   });
 
   // SHAN-495
-  it("carries the chronological neighbours, keyed off this post's own id and date", async () => {
+  it("carries the chronological neighbours, keyed off this post's own id", async () => {
     mockGetPostBySlug.mockResolvedValue(postRow());
     mockGetAdjacentPosts.mockResolvedValue({
       prev: { slug: "older-one", title: "Older One" },
@@ -194,7 +194,10 @@ describe("GET /api/blog/posts/:slug", () => {
     const body = await res.json();
     expect(body.prev).toEqual({ slug: "older-one", title: "Older One" });
     expect(body.next).toEqual({ slug: "newer-one", title: "Newer One" });
-    expect(mockGetAdjacentPosts).toHaveBeenCalledWith({ postId: "p1", publishedAt });
+    // Id only: the pivot's published_at is read back inside the query, because
+    // a Date round-tripped through node-postgres loses the microseconds that
+    // make it distinguishable from its own row.
+    expect(mockGetAdjacentPosts).toHaveBeenCalledWith({ postId: "p1" });
   });
 
   it("sends explicit nulls at the ends of the archive rather than omitting them", async () => {
