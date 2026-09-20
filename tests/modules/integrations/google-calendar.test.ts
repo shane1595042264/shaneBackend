@@ -192,6 +192,64 @@ describe("GoogleCalendarConnector", () => {
     await expect(connector.fetchActivities("2024-01-15")).rejects.toThrow();
   });
 
+  it("should include the OAuth error code and description when token refresh fails", async () => {
+    global.fetch = vi.fn().mockResolvedValueOnce({
+      ok: false,
+      status: 400,
+      statusText: "Bad Request",
+      text: async () =>
+        JSON.stringify({
+          error: "unauthorized_client",
+          error_description: "Unauthorized",
+        }),
+    } as unknown as Response);
+
+    await expect(connector.fetchActivities("2024-01-15")).rejects.toThrow(
+      /unauthorized_client: Unauthorized/
+    );
+  });
+
+  it("should skip ingest without throwing when the refresh token is revoked", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    global.fetch = vi.fn().mockResolvedValueOnce({
+      ok: false,
+      status: 400,
+      statusText: "Bad Request",
+      text: async () =>
+        JSON.stringify({ error: "invalid_grant", error_description: "Bad Request" }),
+    } as unknown as Response);
+
+    const activities = await connector.fetchActivities("2024-01-15");
+
+    expect(activities).toEqual([]);
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining("https://developers.google.com/oauthplayground")
+    );
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining("GOOGLE_CALENDAR_REFRESH_TOKEN")
+    );
+    // The events request must never be attempted without a token.
+    expect(fetch).toHaveBeenCalledTimes(1);
+
+    warn.mockRestore();
+  });
+
+  it("should still throw when the token error body is unreadable", async () => {
+    global.fetch = vi.fn().mockResolvedValueOnce({
+      ok: false,
+      status: 400,
+      statusText: "Bad Request",
+      text: async () => {
+        throw new Error("body already consumed");
+      },
+    } as unknown as Response);
+
+    await expect(connector.fetchActivities("2024-01-15")).rejects.toThrow(
+      /Google token refresh failed: 400 Bad Request/
+    );
+  });
+
   it("should handle multiple events", async () => {
     const mockTokenResponse = { access_token: "new-access-token" };
     const mockEventsResponse = {
