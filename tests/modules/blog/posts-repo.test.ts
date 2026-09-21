@@ -24,6 +24,10 @@ vi.mock("@/db/schema", () => {
     users: table("users"),
   };
 });
+vi.mock("@/modules/shared/keyset", () => ({
+  parseKeysetCursor: vi.fn((raw?: string) => (raw ? { ts: new Date(raw), id: "p9" } : null)),
+  keysetBefore: vi.fn((ts: unknown, id: unknown, cursor: unknown) => ({ keyset: [ts, id, cursor] })),
+}));
 vi.mock("drizzle-orm", () => ({
   eq: vi.fn((c: unknown, v: unknown) => ({ eq: [c, v] })),
   and: vi.fn((...a: unknown[]) => ({ and: a })),
@@ -224,10 +228,20 @@ describe("listPosts", () => {
 
   it("applies a keyset cursor when given one", async () => {
     mockSelect.mockReturnValue(chain([]));
-    const { lt } = await import("drizzle-orm");
-    const cursor = new Date("2026-09-01T00:00:00Z");
-    await listPosts({ limit: 20, cursorPublishedAt: cursor });
-    expect(lt).toHaveBeenCalledWith(expect.anything(), cursor);
+    const { keysetBefore } = await import("@/modules/shared/keyset");
+    await listPosts({ limit: 20, cursor: "2026-09-01T00:00:00.000Z" });
+    expect(keysetBefore).toHaveBeenCalledWith(expect.anything(), expect.anything(), {
+      ts: new Date("2026-09-01T00:00:00.000Z"),
+      id: "p9",
+    });
+  });
+
+  it("adds no keyset condition when no cursor is given", async () => {
+    mockSelect.mockReturnValue(chain([]));
+    const { keysetBefore } = await import("@/modules/shared/keyset");
+    (keysetBefore as unknown as { mockClear: () => void }).mockClear();
+    await listPosts({ limit: 20 });
+    expect(keysetBefore).not.toHaveBeenCalled();
   });
 
   it("restricts to published only when no viewer is supplied", async () => {

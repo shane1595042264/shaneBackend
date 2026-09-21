@@ -5,9 +5,10 @@
 //   - the natural key is a slug, not a date, so every lookup takes a slug
 //   - nothing here filters by membership; published rows are world-readable
 import { createHash } from "node:crypto";
-import { and, asc, desc, eq, lt, or, ilike, sql } from "drizzle-orm";
+import { and, asc, desc, eq, or, ilike, sql } from "drizzle-orm";
 import { db } from "@/db/client";
 import { blogPosts, blogVersions, users } from "@/db/schema";
+import { keysetBefore, parseKeysetCursor } from "@/modules/shared/keyset";
 
 const EXCERPT_SOURCE_LEN = 500;
 // When a search (q) matches deep in the body, start the excerpt this many
@@ -113,8 +114,8 @@ export async function listPosts(opts: {
   /** Case-insensitive search across title and current body. */
   q?: string;
   limit: number;
-  /** Keyset cursor: the publishedAt of the last row on the previous page. */
-  cursorPublishedAt?: Date;
+  /** Keyset cursor for the last row on the previous page (publishedAt + id). */
+  cursor?: string;
   /**
    * When set, list this author's drafts alongside their published posts.
    * Callers pass the signed-in user id; anonymous callers pass nothing and
@@ -133,8 +134,9 @@ export async function listPosts(opts: {
     : eq(blogPosts.status, "published");
 
   const where = [visible];
-  if (opts.cursorPublishedAt) {
-    where.push(lt(blogPosts.publishedAt, opts.cursorPublishedAt));
+  const cursor = parseKeysetCursor(opts.cursor);
+  if (cursor) {
+    where.push(keysetBefore(blogPosts.publishedAt, blogPosts.id, cursor));
   }
   if (opts.tag) {
     // Containment against the jsonb array. Parameterized as a one-element
@@ -182,7 +184,7 @@ export async function listPosts(opts: {
     .leftJoin(blogVersions, eq(blogPosts.currentVersionId, blogVersions.id))
     .leftJoin(users, eq(users.id, blogPosts.authorId))
     .where(and(...where))
-    .orderBy(desc(blogPosts.publishedAt))
+    .orderBy(desc(blogPosts.publishedAt), desc(blogPosts.id))
     .limit(opts.limit);
 
   return rows.map(({ authorName, authorAvatarUrl, ...rest }) => ({

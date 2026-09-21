@@ -121,7 +121,7 @@ describe("GET /api/blog/posts", () => {
     ]);
     const res = await app.request("/api/blog/posts?limit=2");
     const body = await res.json();
-    expect(body.nextCursor).toBe("2026-09-01T12:00:00.000Z");
+    expect(body.nextCursor).toBe("2026-09-01T12:00:00.000Z_p2");
   });
 
   it("returns a null cursor when the page is short", async () => {
@@ -134,7 +134,12 @@ describe("GET /api/blog/posts", () => {
     mockListPosts.mockResolvedValue([]);
     await app.request("/api/blog/posts?tag=rust&q=borrow&cursor=2026-09-01T12:00:00.000Z&limit=5");
     expect(mockListPosts).toHaveBeenCalledWith(
-      expect.objectContaining({ tag: "rust", q: "borrow", limit: 5, cursorPublishedAt: publishedAt })
+      expect.objectContaining({
+        tag: "rust",
+        q: "borrow",
+        limit: 5,
+        cursor: "2026-09-01T12:00:00.000Z",
+      })
     );
   });
 

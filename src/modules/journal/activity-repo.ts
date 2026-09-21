@@ -8,9 +8,10 @@
 // identical. We persist the api_tokens row id alongside the user id, and the
 // read side joins it back to a token name, so the feed can say
 // "Shane via jira-worker" instead of just "Shane".
-import { and, desc, eq, lt } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 import { db } from "@/db/client";
 import { apiTokens, journalActivity, users } from "@/db/schema";
+import { keysetBefore, parseKeysetCursor } from "@/modules/shared/keyset";
 
 export type JournalActivityAction =
   (typeof journalActivity.$inferInsert)["action"];
@@ -121,18 +122,23 @@ function shape(rows: Record<string, any>[]): JournalActivityRow[] {
 }
 
 /**
- * Site-wide feed, newest first. Paginated by createdAt because activity rows
- * have no dense sequence and a timestamp cursor survives concurrent inserts.
+ * Site-wide feed, newest first. Keyed on createdAt because activity rows have
+ * no dense sequence and a timestamp cursor survives concurrent inserts, plus
+ * the row id as a tiebreaker so a shared timestamp can't skip a row
+ * (SHAN-513).
  */
-export async function listActivity(opts: { limit: number; cursor?: Date }) {
-  const where = opts.cursor ? [lt(journalActivity.createdAt, opts.cursor)] : [];
+export async function listActivity(opts: { limit: number; cursor?: string }) {
+  const cursor = parseKeysetCursor(opts.cursor);
+  const where = cursor
+    ? [keysetBefore(journalActivity.createdAt, journalActivity.id, cursor)]
+    : [];
   const rows = await db
     .select(activitySelection())
     .from(journalActivity)
     .leftJoin(users, eq(users.id, journalActivity.actorId))
     .leftJoin(apiTokens, eq(apiTokens.id, journalActivity.actorTokenId))
     .where(where.length ? and(...where) : undefined)
-    .orderBy(desc(journalActivity.createdAt))
+    .orderBy(desc(journalActivity.createdAt), desc(journalActivity.id))
     .limit(opts.limit);
   return shape(rows);
 }
@@ -140,17 +146,18 @@ export async function listActivity(opts: { limit: number; cursor?: Date }) {
 /** Same feed, scoped to one entry. */
 export async function listActivityForEntry(
   entryId: string,
-  opts: { limit: number; cursor?: Date }
+  opts: { limit: number; cursor?: string }
 ) {
   const where = [eq(journalActivity.entryId, entryId)];
-  if (opts.cursor) where.push(lt(journalActivity.createdAt, opts.cursor));
+  const cursor = parseKeysetCursor(opts.cursor);
+  if (cursor) where.push(keysetBefore(journalActivity.createdAt, journalActivity.id, cursor));
   const rows = await db
     .select(activitySelection())
     .from(journalActivity)
     .leftJoin(users, eq(users.id, journalActivity.actorId))
     .leftJoin(apiTokens, eq(apiTokens.id, journalActivity.actorTokenId))
     .where(and(...where))
-    .orderBy(desc(journalActivity.createdAt))
+    .orderBy(desc(journalActivity.createdAt), desc(journalActivity.id))
     .limit(opts.limit);
   return shape(rows);
 }

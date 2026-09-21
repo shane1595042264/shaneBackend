@@ -116,18 +116,28 @@ describe("GET /api/journal/activity", () => {
     const full = await (
       await app.request("/api/journal/activity?limit=2", { headers: { "X-Test-User": "u1" } })
     ).json();
-    expect(full.nextCursor).toBe("2026-09-11T10:00:00.000Z");
+    expect(full.nextCursor).toBe("2026-09-11T10:00:00.000Z_act2");
   });
 
-  it("passes a cursor through as a Date", async () => {
+  it("passes the cursor through to the repo verbatim", async () => {
     mockListActivity.mockResolvedValue([]);
     await app.request("/api/journal/activity?cursor=2026-09-11T10:00:00.000Z", {
       headers: { "X-Test-User": "u1" },
     });
     expect(mockListActivity).toHaveBeenCalledWith({
       limit: 50,
-      cursor: new Date("2026-09-11T10:00:00.000Z"),
+      cursor: "2026-09-11T10:00:00.000Z",
     });
+  });
+
+  it("accepts a compound cursor carrying the boundary row id", async () => {
+    mockListActivity.mockResolvedValue([]);
+    const cursor = "2026-09-11T10:00:00.000Z_11111111-1111-1111-1111-111111111111";
+    const res = await app.request(`/api/journal/activity?cursor=${cursor}`, {
+      headers: { "X-Test-User": "u1" },
+    });
+    expect(res.status).toBe(200);
+    expect(mockListActivity).toHaveBeenCalledWith({ limit: 50, cursor });
   });
 
   // The activity cursor is a timestamp, NOT an isoDate like the entries

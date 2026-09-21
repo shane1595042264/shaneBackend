@@ -1,7 +1,8 @@
 import { timingSafeEqual } from "node:crypto";
-import { and, desc, eq, lt, sql } from "drizzle-orm";
+import { and, desc, eq, sql } from "drizzle-orm";
 import { db } from "@/db/client";
 import { teaEntries } from "@/db/schema";
+import { keysetBefore, parseKeysetCursor } from "@/modules/shared/keyset";
 
 // Mirrors EXCERPT_SOURCE_LEN in journal entries-repo. 500 source chars is well
 // over the ~140 the FE renders, leaving slack for markdown-strip + ellipsis.
@@ -67,21 +68,17 @@ export async function getTeaEntryById(id: string): Promise<TeaEntryRow | null> {
 }
 
 // Opt-in keyset pagination. With no opts the full list is returned (legacy
-// behavior). Pass { limit, cursor } to page: cursor is the ISO createdAt of the
-// last row from the previous page, seeked via the (author_id, created_at) index
-// (tea_entries_author_created_idx). Mirrors the loans/trips contract
-// (SHAN-335/336).
+// behavior). Pass { limit, cursor } to page: cursor is the compound keyset
+// cursor for the last row of the previous page, seeked via the (author_id,
+// created_at) index (tea_entries_author_created_idx). Mirrors the loans/trips
+// contract (SHAN-335/336), including the id tiebreaker added in SHAN-513.
 export async function listTeaEntriesForAuthor(
   authorId: string,
   opts: { limit?: number; cursor?: string } = {},
 ): Promise<TeaEntrySummary[]> {
   const conditions = [eq(teaEntries.authorId, authorId)];
-  if (opts.cursor) {
-    const cursorDate = new Date(opts.cursor);
-    if (!Number.isNaN(cursorDate.getTime())) {
-      conditions.push(lt(teaEntries.createdAt, cursorDate));
-    }
-  }
+  const cursor = parseKeysetCursor(opts.cursor);
+  if (cursor) conditions.push(keysetBefore(teaEntries.createdAt, teaEntries.id, cursor));
 
   const query = db
     .select({
@@ -97,7 +94,7 @@ export async function listTeaEntriesForAuthor(
     })
     .from(teaEntries)
     .where(and(...conditions))
-    .orderBy(desc(teaEntries.createdAt));
+    .orderBy(desc(teaEntries.createdAt), desc(teaEntries.id));
 
   const rows = opts.limit ? await query.limit(opts.limit) : await query;
   return rows as TeaEntrySummary[];

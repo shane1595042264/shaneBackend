@@ -162,7 +162,7 @@ describe("public reads", () => {
     const res = await req("/matches", "GET");
     expect(res.status).toBe(200);
     const data = await res.json();
-    expect(data.nextCursor).toBe(older.toISOString());
+    expect(data.nextCursor).toBe(`${older.toISOString()}_${MATCH_ID}`);
   });
 
   it("GET /matches returns a null nextCursor on a partial page", async () => {

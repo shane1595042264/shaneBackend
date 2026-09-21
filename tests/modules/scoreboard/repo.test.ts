@@ -349,7 +349,7 @@ describe("listMatches", () => {
     const c = chain([]);
     mockSelect.mockReturnValue(c);
     await listMatches({
-      gameId: "g1", status: "final", limit: 10, cursor: new Date("2026-01-01"),
+      gameId: "g1", status: "final", limit: 10, cursor: "2026-01-01T00:00:00.000Z",
     });
     const whereArg = (c.where as ReturnType<typeof vi.fn>).mock.calls[0][0] as {
       and?: unknown[];

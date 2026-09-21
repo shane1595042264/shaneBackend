@@ -59,6 +59,7 @@ import {
 import { createPATRateLimit } from "@/modules/shared/rate-limit";
 import { journalAccessRoutes } from "./access-routes";
 import { requireJournalMembership } from "./access-middleware";
+import { encodeKeysetCursor, keysetCursorParam } from "@/modules/shared/keyset";
 
 const noInFlightUpload = (v: string) => !containsInFlightUpload(v);
 
@@ -711,11 +712,11 @@ journalRoutes.patch(
   }
 );
 
-// Cursor is the createdAt of the last row on the previous page (ISO timestamp,
-// not an isoDate — unlike the entries cursor, SHAN-373).
+// Cursor keys on the last row's createdAt plus its id (SHAN-513), not on an
+// isoDate — unlike the entries cursor, SHAN-373.
 const activityQuery = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(50),
-  cursor: z.string().datetime().optional(),
+  cursor: keysetCursorParam.optional(),
 });
 
 // SHAN-483: the transparency half of the ticket. Membership-gated like every
@@ -732,13 +733,10 @@ journalRoutes.get(
   zValidator("query", activityQuery),
   async (c) => {
     const { limit, cursor } = c.req.valid("query");
-    const rows = await listActivity({
-      limit,
-      cursor: cursor ? new Date(cursor) : undefined,
-    });
+    const rows = await listActivity({ limit, cursor });
     const last = rows[rows.length - 1];
     const nextCursor =
-      rows.length === limit && last ? last.createdAt.toISOString() : null;
+      rows.length === limit && last ? encodeKeysetCursor(last.createdAt, last.id) : null;
     return c.json({ activity: rows, nextCursor });
   }
 );
@@ -753,13 +751,10 @@ journalRoutes.get(
     const row = await getEntryByDate(c.req.valid("param").date);
     if (!row) return c.json({ error: "Not found" }, 404);
     const { limit, cursor } = c.req.valid("query");
-    const rows = await listActivityForEntry(row.entry.id, {
-      limit,
-      cursor: cursor ? new Date(cursor) : undefined,
-    });
+    const rows = await listActivityForEntry(row.entry.id, { limit, cursor });
     const last = rows[rows.length - 1];
     const nextCursor =
-      rows.length === limit && last ? last.createdAt.toISOString() : null;
+      rows.length === limit && last ? encodeKeysetCursor(last.createdAt, last.id) : null;
     return c.json({ activity: rows, nextCursor });
   }
 );

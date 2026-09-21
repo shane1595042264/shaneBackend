@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { zValidator } from "@/modules/shared/zod-validator";
 import { z } from "zod";
 import { optionalAuth, requireScope } from "@/modules/auth/middleware";
+import { encodeKeysetCursor, keysetCursorParam } from "@/modules/shared/keyset";
 import { extractTitle } from "./title";
 import { createTrip, listTrips, getTripBySlug, updateTripBySlug, deleteTripBySlug } from "./repo";
 
@@ -28,11 +29,12 @@ const slugParam = z.object({
 // bare GET /api/trips keeps returning the full list (nextCursor null).
 const listQuery = z.object({
   limit: z.coerce.number().int().min(1).max(100).optional(),
-  // Cursor is the ISO createdAt of the last row from the previous page. Validate
-  // the ISO shape here so a malformed cursor is rejected with 400 rather than
-  // silently swallowed downstream (which would resurface page 1). nextCursor is
-  // always toISOString() (UTC Z), so valid cursors round-trip unchanged.
-  cursor: z.string().datetime().optional(),
+  // Compound cursor (`<iso>_<id>`) for the last row of the previous page —
+  // see modules/shared/keyset.ts for why the id half is load-bearing. The
+  // shape is validated here so a malformed cursor is rejected with 400 rather
+  // than silently swallowed downstream (which would resurface page 1). Bare
+  // ISO cursors minted before SHAN-513 still parse.
+  cursor: keysetCursorParam.optional(),
 });
 
 /**
@@ -124,19 +126,18 @@ tripsRoutes.post("/", optionalAuth, async (c) => {
 /**
  * GET /api/trips — list metadata only (no html, keeps payload small).
  *
- * Opt-in pagination: pass ?limit=N (1..100) and optionally ?cursor=<ISO
- * createdAt of the last item from the previous page>. With no params the
- * full list is returned and nextCursor is null (legacy behavior). When a
- * full page (length === limit) comes back, nextCursor is the createdAt of
- * the last row so the caller can fetch the next page.
+ * Opt-in pagination: pass ?limit=N (1..100) and optionally ?cursor=<the
+ * nextCursor from the previous page>. With no params the full list is
+ * returned and nextCursor is null (legacy behavior). When a full page
+ * (length === limit) comes back, nextCursor encodes the last row's createdAt
+ * and id so the caller can fetch the next page without skipping a tie.
  */
 tripsRoutes.get("/", zValidator("query", listQuery), async (c) => {
   const { limit, cursor } = c.req.valid("query");
   const trips = await listTrips({ limit, cursor });
+  const last = trips[trips.length - 1];
   const nextCursor =
-    limit && trips.length === limit
-      ? new Date(trips[trips.length - 1].createdAt).toISOString()
-      : null;
+    limit && trips.length === limit ? encodeKeysetCursor(last.createdAt, last.id) : null;
   return c.json({ trips, nextCursor });
 });
 

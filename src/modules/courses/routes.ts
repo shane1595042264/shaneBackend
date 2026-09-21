@@ -42,6 +42,7 @@ import {
   updateCourseComment,
   deleteCourseComment,
 } from "./repo";
+import { encodeKeysetCursor, keysetCursorParam } from "@/modules/shared/keyset";
 
 // Per-PAT 60s rolling write limit. JWT browser sessions bypass. Distinct
 // bucket so a busy courses session doesn't lock out other modules.
@@ -89,11 +90,13 @@ const patchBody = z
 
 // Same shape as trips: `limit` is optional (omitting it returns the whole
 // catalog, which is what the site did before pagination existed) and `cursor`
-// is the ISO createdAt of the previous page's last row. Validating the ISO
-// shape here means a malformed cursor is a 400 rather than a silent page 1.
+// is the compound keyset cursor (`<iso>_<id>`) that nextCursor emits — see
+// modules/shared/keyset.ts. Validating the shape here means a malformed cursor
+// is a 400 rather than a silent page 1; bare ISO cursors minted before
+// SHAN-513 still parse.
 const listQuery = z.object({
   limit: z.coerce.number().int().min(1).max(100).optional(),
-  cursor: z.string().datetime().optional(),
+  cursor: keysetCursorParam.optional(),
 });
 
 const ratingBody = z.object({ stars: z.number().int().min(1).max(5) });
@@ -203,10 +206,9 @@ coursesRoutes.get("/", optionalAuth, zValidator("query", listQuery), async (c) =
   const ratingBy = new Map(ratings.map((r) => [r.courseId, r]));
   const commentBy = new Map(comments.map((r) => [r.courseId, r.count]));
   const mineBy = new Map(mine.map((r) => [r.courseId, r.stars]));
+  const last = rows[rows.length - 1];
   const nextCursor =
-    limit && rows.length === limit
-      ? new Date(rows[rows.length - 1].createdAt).toISOString()
-      : null;
+    limit && rows.length === limit ? encodeKeysetCursor(last.createdAt, last.id) : null;
   return c.json({
     courses: rows.map((row) =>
       serializeCourse(row, {

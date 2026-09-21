@@ -191,7 +191,7 @@ describe("GET /api/courses", () => {
     m.listCourses.mockResolvedValue([courseRow, older]);
     const res = await app.request("/api/courses?limit=2");
     const body = await res.json();
-    expect(body.nextCursor).toBe("2026-08-30T12:00:00.000Z");
+    expect(body.nextCursor).toBe("2026-08-30T12:00:00.000Z_c2");
     expect(m.listCourses).toHaveBeenCalledWith({ limit: 2, cursor: undefined });
   });
 

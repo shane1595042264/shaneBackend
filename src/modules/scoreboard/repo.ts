@@ -1,4 +1,5 @@
-import { and, asc, desc, eq, inArray, lt, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
+import { keysetBefore, parseKeysetCursor } from "@/modules/shared/keyset";
 import { db } from "@/db/client";
 import {
   scoreboardGames,
@@ -288,17 +289,18 @@ export async function listMatches(opts: {
   gameId?: string;
   status?: string;
   limit: number;
-  cursor?: Date;
+  cursor?: string;
 }): Promise<ScoreboardMatchRow[]> {
   const conditions = [];
   if (opts.gameId) conditions.push(eq(scoreboardMatches.gameId, opts.gameId));
   if (opts.status) conditions.push(eq(scoreboardMatches.status, opts.status));
-  if (opts.cursor) conditions.push(lt(scoreboardMatches.createdAt, opts.cursor));
+  const cursor = parseKeysetCursor(opts.cursor);
+  if (cursor) conditions.push(keysetBefore(scoreboardMatches.createdAt, scoreboardMatches.id, cursor));
   const rows = await db
     .select()
     .from(scoreboardMatches)
     .where(conditions.length ? and(...conditions) : undefined)
-    .orderBy(desc(scoreboardMatches.createdAt))
+    .orderBy(desc(scoreboardMatches.createdAt), desc(scoreboardMatches.id))
     .limit(opts.limit);
   return rows as ScoreboardMatchRow[];
 }

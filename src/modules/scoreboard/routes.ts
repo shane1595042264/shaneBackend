@@ -37,6 +37,7 @@ import {
   type ScoreboardMatchRow,
   type MatchPlayerJoinedRow,
 } from "./repo";
+import { encodeKeysetCursor, keysetCursorParam } from "@/modules/shared/keyset";
 
 // Per-PAT 60s rolling write limit. JWT browser sessions bypass. Distinct
 // bucket so a busy scoreboard session doesn't lock out journal writes.
@@ -112,7 +113,7 @@ const matchesQuery = z.object({
   gameId: z.string().uuid().optional(),
   status: z.enum(["live", "final"]).optional(),
   limit: z.coerce.number().int().min(1).max(100).default(50),
-  cursor: z.string().datetime().optional(),
+  cursor: keysetCursorParam.optional(),
 });
 
 const iconsQuery = z.object({ q: z.string().trim().min(2).max(60) });
@@ -196,7 +197,7 @@ scoreboardRoutes.get("/matches", zValidator("query", matchesQuery), async (c) =>
     gameId,
     status,
     limit,
-    cursor: cursor ? new Date(cursor) : undefined,
+    cursor,
   });
   const players = await listMatchPlayers(matches.map((m) => m.id));
   // Same keyset heuristic as journal/loans/rng-capitalist/courses: a full page
@@ -204,10 +205,9 @@ scoreboardRoutes.get("/matches", zValidator("query", matchesQuery), async (c) =>
   // next cursor. A partial page is the end. Without this, callers had to
   // reconstruct the cursor from the last item and could never tell whether the
   // page they got was the last one.
+  const last = matches[matches.length - 1];
   const nextCursor =
-    matches.length === limit
-      ? new Date(matches[matches.length - 1].createdAt).toISOString()
-      : null;
+    matches.length === limit ? encodeKeysetCursor(last.createdAt, last.id) : null;
   return c.json({
     matches: matches.map((m) => serializeMatch(m, players)),
     nextCursor,

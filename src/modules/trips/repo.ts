@@ -1,6 +1,7 @@
-import { and, desc, eq, lt } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 import { db } from "@/db/client";
 import { trips, users } from "@/db/schema";
+import { keysetBefore, parseKeysetCursor } from "@/modules/shared/keyset";
 import { generateUniqueSlug } from "./slug";
 
 export interface TripListItem {
@@ -62,19 +63,15 @@ export async function createTrip(input: {
  * /entries pattern:
  *  - No opts → return every trip (unchanged legacy behavior).
  *  - opts.limit → return at most `limit` rows.
- *  - opts.cursor (ISO createdAt of the last row seen) → return only rows
- *    strictly older than the cursor, so pages don't overlap.
+ *  - opts.cursor (compound keyset cursor for the last row seen) → return only
+ *    rows strictly after it, so pages neither overlap nor skip.
  * An invalid cursor string is ignored rather than throwing (the route
  * validator already guards shape; this is defense in depth).
  */
 export async function listTrips(opts: { limit?: number; cursor?: string } = {}): Promise<TripListItem[]> {
   const conditions = [];
-  if (opts.cursor) {
-    const cursorDate = new Date(opts.cursor);
-    if (!Number.isNaN(cursorDate.getTime())) {
-      conditions.push(lt(trips.createdAt, cursorDate));
-    }
-  }
+  const cursor = parseKeysetCursor(opts.cursor);
+  if (cursor) conditions.push(keysetBefore(trips.createdAt, trips.id, cursor));
 
   const query = db
     .select({
@@ -89,7 +86,7 @@ export async function listTrips(opts: { limit?: number; cursor?: string } = {}):
     .from(trips)
     .leftJoin(users, eq(users.id, trips.ownerId))
     .where(conditions.length ? and(...conditions) : undefined)
-    .orderBy(desc(trips.createdAt));
+    .orderBy(desc(trips.createdAt), desc(trips.id));
 
   return opts.limit ? await query.limit(opts.limit) : await query;
 }

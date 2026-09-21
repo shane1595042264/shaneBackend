@@ -61,6 +61,18 @@ Reads the optimistic-concurrency version off a request, accepting `If-Match` or 
 - **Only the successes break**, which is what hid it for so long — the 409 and 428 paths carry no `ETag`, so the conflict flows looked perfect.
 - **`If-Match` remains the documented header** for direct callers (a PAT plus curl against the Railway origin); `X-If-Match` exists for browsers, and both are in the `allowHeaders` list in `app.ts`.
 
+## `keyset.ts` — `encodeKeysetCursor` / `parseKeysetCursor` / `keysetCursorParam` / `keysetBefore`
+
+Compound cursors for the newest-first list endpoints (SHAN-513). Every list that keysets on a timestamp must use these instead of hand-rolling `lt(createdAt, new Date(cursor))`.
+
+- **Why the id half exists.** The old predicate was `lt(createdAt, cursor)` under `orderBy(desc(createdAt))` with no tiebreaker, which drops rows two ways. Tied timestamps: `createdAt` is not unique, so when two rows share one and it ends a page, the strict `lt` excludes the tied sibling from every later page. Postgres `now()` is transaction-start time, so anything written in one transaction ties exactly. Truncation: the column is microsecond-precision but the pg driver parses it into a millisecond-precision JS `Date`, so a cursor built from it lands *before* the boundary row's real value and swallows anything in that gap. Measured on prod: `2026-05-24 21:32:37.48453+00` emits as `...:37.484Z`, a 530μs blind spot.
+- **`keysetBefore` compares against the stored key, not the cursor's copy of it.** `(ts, id) < (coalesce((select k.<ts> from <table> k where k.id = $1::uuid), $2::timestamptz), $3::uuid)`. The subquery is what restores full precision; the alias `k` is what keeps its `from` from correlating with the outer query. The `coalesce` is the degradation path — a boundary row deleted between pages would otherwise make the comparison NULL and end pagination early.
+- **Pair it with `orderBy(desc(ts), desc(id))`.** The predicate and the sort have to agree or pages overlap. This is the easy half to forget.
+- **Legacy cursors still work.** A bare ISO string parses to `{ ts, id: null }` and takes the old `lt` path, so cursors in flight across a deploy keep working. Only newly emitted ones carry the id.
+- **Identifiers come from the passed columns at call time** via `getTableName` + `sql.identifier`. Don't hoist them to module scope: a top-level `table.col` throws under the partial `@/db/schema` mocks the route tests use.
+- Unit tests compile the real SQL with `PgDialect`, and `scripts/keyset-dryrun.ts` runs the composed predicate against the real database in a rolled-back transaction — the mocked-drizzle tests cannot tell you the SQL is valid.
+- The public contract is documented in the frontend docs element (`lib/docs/content/conventions.ts`) — change one, change the other.
+
 ## `embeddings.ts` (if present)
 
 Local embeddings via `@xenova/transformers`. CPU-only, no API key. Slow but free; used for pgvector similarity searches in the knowledge module. Don't try to wire this through `generateText` — it's not text generation.

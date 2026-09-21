@@ -23,6 +23,7 @@ import {
   recordFailedPinAttempt,
 } from "./pin-rate-limit";
 import { createPATRateLimit } from "@/modules/shared/rate-limit";
+import { encodeKeysetCursor, keysetCursorParam } from "@/modules/shared/keyset";
 
 const noInFlightUpload = (v: string) => !containsInFlightUpload(v);
 
@@ -79,11 +80,11 @@ const idParam = z.object({ id: z.string().uuid() });
 // the loans/trips list contract (SHAN-336/335).
 const listQuery = z.object({
   limit: z.coerce.number().int().min(1).max(100).optional(),
-  // Cursor is the ISO createdAt of the last row from the previous page. Validate
-  // the ISO shape here so a malformed cursor is rejected with 400 rather than
-  // silently swallowed downstream (which would resurface page 1). nextCursor is
-  // always toISOString() (UTC Z), so valid cursors round-trip unchanged.
-  cursor: z.string().datetime().optional(),
+  // Cursor is the compound keyset cursor (`<iso>_<id>`) that nextCursor emits
+  // — see modules/shared/keyset.ts. The shape is validated here so a malformed
+  // cursor is a 400 rather than a silent page 1; bare ISO cursors minted
+  // before SHAN-513 still parse.
+  cursor: keysetCursorParam.optional(),
 });
 
 teaEntriesRoutes.post(
@@ -121,18 +122,17 @@ teaEntriesRoutes.post(
 );
 
 // Opt-in keyset pagination: pass ?limit=N (1..100) and optionally
-// ?cursor=<ISO createdAt of the last item from the previous page>. With no
-// params the full list is returned and nextCursor is null (legacy behavior).
-// When a full page (length === limit) comes back, nextCursor is the createdAt
-// of the last row so the caller can fetch the next page.
+// ?cursor=<the nextCursor from the previous page>. With no params the full
+// list is returned and nextCursor is null (legacy behavior). When a full page
+// (length === limit) comes back, nextCursor encodes the last row's createdAt
+// and id so the next page can't skip a tie.
 teaEntriesRoutes.get("/", requireAuth, zValidator("query", listQuery), async (c) => {
   const userId = c.get("userId") as string;
   const { limit, cursor } = c.req.valid("query");
   const entries = await listTeaEntriesForAuthor(userId, { limit, cursor });
+  const last = entries[entries.length - 1];
   const nextCursor =
-    limit && entries.length === limit
-      ? entries[entries.length - 1].createdAt.toISOString()
-      : null;
+    limit && entries.length === limit ? encodeKeysetCursor(last.createdAt, last.id) : null;
   return c.json({ entries, nextCursor });
 });
 

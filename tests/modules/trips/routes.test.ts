@@ -183,7 +183,7 @@ describe("GET /api/trips", () => {
     expect(mockList).not.toHaveBeenCalled();
   });
 
-  it("returns nextCursor = last createdAt when a full page comes back", async () => {
+  it("returns nextCursor = last createdAt plus row id when a full page comes back", async () => {
     const last = new Date("2026-02-01T12:00:00.000Z");
     mockList.mockResolvedValue([
       { id: "t1", slug: "a", title: "A", createdAt: new Date("2026-03-01T00:00:00.000Z") },
@@ -191,7 +191,7 @@ describe("GET /api/trips", () => {
     ]);
     const res = await app.request("/api/trips?limit=2");
     const body = await res.json();
-    expect(body.nextCursor).toBe(last.toISOString());
+    expect(body.nextCursor).toBe(`${last.toISOString()}_t2`);
   });
 
   it("returns nextCursor null when fewer than limit rows come back (last page)", async () => {

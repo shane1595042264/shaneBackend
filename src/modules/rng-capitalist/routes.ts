@@ -3,7 +3,7 @@ import { zValidator } from "@/modules/shared/zod-validator";
 import { z } from "zod";
 import { db } from "@/db/client";
 import { rngDecisions, rngBanList } from "@/db/schema";
-import { desc, gt, lt, eq, and } from "drizzle-orm";
+import { desc, gt, eq, and } from "drizzle-orm";
 import { scrapeProductUrl } from "./scraper";
 import { classifyProduct } from "./classifier";
 import { generateText } from "@/modules/shared/llm";
@@ -12,6 +12,7 @@ import { createLinkToken, exchangePublicToken, getCurrentBalance, getLastMonthSp
 import { requireAuth } from "@/modules/auth/middleware";
 import { createPATRateLimit } from "@/modules/shared/rate-limit";
 import { trimmedOptional } from "@/modules/shared/validators";
+import { encodeKeysetCursor, keysetBefore, keysetCursorParam, parseKeysetCursor } from "@/modules/shared/keyset";
 
 type AuthEnv = { Variables: { userId: string } };
 export const rngRoutes = new Hono<AuthEnv>();
@@ -185,30 +186,31 @@ rngRoutes.get("/budget", plaidRateLimit, async (c) => {
 });
 
 // Opt-in keyset pagination: pass ?limit=N (1..100) and optionally
-// ?cursor=<ISO createdAt of the last row from the previous page>. With no
+// ?cursor=<the nextCursor from the previous page>. With no
 // params the endpoint returns the latest 100 (legacy behavior) and nextCursor
 // is null — the frontend (rng-api.ts fetchHistory) reads only .decisions and
 // passes no params, so it is unaffected. Malformed params 400 via zValidator.
 // Mirrors the tea-entries/loans/trips list contract (SHAN-335/336).
 export const historyQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).optional(),
-  // Cursor is the ISO createdAt of the last row from the previous page. Validate
-  // the ISO shape so a malformed cursor is rejected with 400 rather than
-  // silently swallowed. nextCursor is always toISOString() (UTC Z), so valid
-  // cursors round-trip unchanged.
-  cursor: z.string().datetime().optional(),
+  // Cursor is the compound keyset cursor (`<iso>_<id>`) that nextCursor emits
+  // — see modules/shared/keyset.ts. The shape is validated here so a malformed
+  // cursor is a 400 rather than a silent page 1; bare ISO cursors minted
+  // before SHAN-513 still parse.
+  cursor: keysetCursorParam.optional(),
 });
 
 rngRoutes.get("/history", zValidator("query", historyQuerySchema), async (c) => {
   const userId = c.get("userId");
   const { limit, cursor } = c.req.valid("query");
   const conditions = [eq(rngDecisions.userId, userId)];
-  if (cursor) conditions.push(lt(rngDecisions.createdAt, new Date(cursor)));
+  const keyset = parseKeysetCursor(cursor);
+  if (keyset) conditions.push(keysetBefore(rngDecisions.createdAt, rngDecisions.id, keyset));
   const rows = await db
     .select()
     .from(rngDecisions)
     .where(and(...conditions))
-    .orderBy(desc(rngDecisions.createdAt))
+    .orderBy(desc(rngDecisions.createdAt), desc(rngDecisions.id))
     .limit(limit ?? 100);
   const decisions = rows.map((d) => ({
     ...d,
@@ -218,9 +220,10 @@ rngRoutes.get("/history", zValidator("query", historyQuerySchema), async (c) => 
   }));
   // Only surface a cursor when the caller opted into paging (?limit) and a full
   // page came back — a partial/legacy page means there's nothing more to fetch.
+  const last = rows[rows.length - 1];
   const nextCursor =
-    limit && rows.length === limit
-      ? rows[rows.length - 1].createdAt?.toISOString() ?? null
+    limit && rows.length === limit && last?.createdAt
+      ? encodeKeysetCursor(last.createdAt, last.id)
       : null;
   return c.json({ decisions, nextCursor });
 });

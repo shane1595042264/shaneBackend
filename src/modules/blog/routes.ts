@@ -51,6 +51,7 @@ import {
   togglePostReaction,
 } from "./reactions-repo";
 import { isAllowedEmoji } from "@/modules/journal/reactions-repo";
+import { encodeKeysetCursor, keysetCursorParam } from "@/modules/shared/keyset";
 
 const noInFlightUpload = (v: string) => !containsInFlightUpload(v);
 
@@ -124,7 +125,7 @@ const listQuery = z.object({
   // isoDate, SHAN-373), blog posts are ordered by a timestamp, so this really
   // is a datetime. Validated here so a malformed value 400s instead of
   // reaching Postgres and throwing "invalid input syntax for type timestamp".
-  cursor: z.string().datetime().optional(),
+  cursor: keysetCursorParam.optional(),
 });
 
 const createBody = z.object({
@@ -162,13 +163,12 @@ blogRoutes.get("/posts", optionalAuth, zValidator("query", listQuery), async (c)
     tag: query.tag,
     q: query.q,
     limit: query.limit,
-    cursorPublishedAt: query.cursor ? new Date(query.cursor) : undefined,
+    cursor: query.cursor,
     includeDraftsForAuthorId: viewerId,
   });
+  const last = posts[posts.length - 1];
   const nextCursor =
-    posts.length === query.limit
-      ? posts[posts.length - 1].publishedAt.toISOString()
-      : null;
+    posts.length === query.limit ? encodeKeysetCursor(last.publishedAt, last.id) : null;
   return c.json({ posts, nextCursor });
 });
 

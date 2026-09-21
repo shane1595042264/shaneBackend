@@ -82,7 +82,10 @@ export async function listVersions(
   const conditions = [eq(journalVersions.entryId, entryId)];
   // Keyset on versionNum rather than createdAt (the cursor column everywhere
   // else): it is unique per entry, dense from 1, and already the sort key, so
-  // it can't skip or repeat a row the way a shared timestamp can.
+  // it can't skip or repeat a row the way a bare timestamp can. The timestamp
+  // lists carry a row-id tiebreaker for the same reason now — see
+  // modules/shared/keyset.ts (SHAN-513) — but a dense sequence is still the
+  // better key when one exists, because it needs no subquery to compare.
   if (opts.cursor !== undefined) {
     conditions.push(lt(journalVersions.versionNum, opts.cursor));
   }

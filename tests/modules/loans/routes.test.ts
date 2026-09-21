@@ -154,7 +154,7 @@ describe("GET /api/loans", () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.entries).toHaveLength(2);
-    expect(body.nextCursor).toBe(last.createdAt.toISOString());
+    expect(body.nextCursor).toBe(`${last.createdAt.toISOString()}_${last.id}`);
   });
 
   it("returns nextCursor null when the page is not full", async () => {

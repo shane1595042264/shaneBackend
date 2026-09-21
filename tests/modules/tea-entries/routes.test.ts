@@ -224,8 +224,8 @@ describe("GET /api/tea-entries", () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.entries).toHaveLength(1);
-    // length === limit → nextCursor is the last row's createdAt.
-    expect(body.nextCursor).toBe(created.toISOString());
+    // length === limit → nextCursor is the last row's createdAt plus its id.
+    expect(body.nextCursor).toBe(`${created.toISOString()}_${VALID_UUID}`);
     expect(mockListForAuthor).toHaveBeenCalledWith("u1", {
       limit: 1,
       cursor: "2026-07-02T00:00:00.000Z",

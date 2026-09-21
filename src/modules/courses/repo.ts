@@ -19,7 +19,8 @@ export type CourseCategory = (typeof COURSE_CATEGORIES)[number];
 export const COURSE_DIFFICULTIES = ["intro", "intermediate", "advanced"] as const;
 export type CourseDifficulty = (typeof COURSE_DIFFICULTIES)[number];
 
-import { and, asc, desc, eq, getTableColumns, inArray, lt, sql } from "drizzle-orm";
+import { and, asc, desc, eq, getTableColumns, inArray, sql } from "drizzle-orm";
+import { keysetBefore, parseKeysetCursor } from "@/modules/shared/keyset";
 import { db } from "@/db/client";
 import { courseComments, courseCovers, courseRatings, courses, users } from "@/db/schema";
 
@@ -57,18 +58,14 @@ export async function listCourses(
   opts: { limit?: number; cursor?: string } = {},
 ): Promise<CourseRow[]> {
   const conditions = [];
-  if (opts.cursor) {
-    const cursorDate = new Date(opts.cursor);
-    if (!Number.isNaN(cursorDate.getTime())) {
-      conditions.push(lt(courses.createdAt, cursorDate));
-    }
-  }
+  const cursor = parseKeysetCursor(opts.cursor);
+  if (cursor) conditions.push(keysetBefore(courses.createdAt, courses.id, cursor));
 
   const query = db
     .select()
     .from(courses)
     .where(conditions.length ? and(...conditions) : undefined)
-    .orderBy(desc(courses.createdAt));
+    .orderBy(desc(courses.createdAt), desc(courses.id));
 
   const rows = opts.limit ? await query.limit(opts.limit) : await query;
   return rows as CourseRow[];

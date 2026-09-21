@@ -1,10 +1,11 @@
 import { Hono } from "hono";
 import { zValidator } from "@/modules/shared/zod-validator";
 import { z } from "zod";
-import { and, desc, eq, lt } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 import { db } from "@/db/client";
 import { loanEntries } from "@/db/schema";
 import { requireAuth } from "@/modules/auth/middleware";
+import { encodeKeysetCursor, keysetBefore, keysetCursorParam, parseKeysetCursor } from "@/modules/shared/keyset";
 
 type AuthEnv = { Variables: { userId: string } };
 export const loansRoutes = new Hono<AuthEnv>();
@@ -61,11 +62,11 @@ const createSchema = z.object({
 // trips list contract (SHAN-335).
 const listQuery = z.object({
   limit: z.coerce.number().int().min(1).max(100).optional(),
-  // Cursor is the ISO createdAt of the last row from the previous page. Validate
-  // the ISO shape here so a malformed cursor is rejected with 400 rather than
-  // silently swallowed downstream (which would resurface page 1). nextCursor is
-  // always toISOString() (UTC Z), so valid cursors round-trip unchanged.
-  cursor: z.string().datetime().optional(),
+  // Cursor is the compound keyset cursor (`<iso>_<id>`) that nextCursor emits
+  // — see modules/shared/keyset.ts. The shape is validated here so a malformed
+  // cursor is a 400 rather than a silent page 1; bare ISO cursors minted
+  // before SHAN-513 still parse.
+  cursor: keysetCursorParam.optional(),
 });
 
 const patchSchema = z
@@ -99,32 +100,29 @@ function serialize(row: typeof loanEntries.$inferSelect) {
  * GET /api/loans — the signed-in user's ledger, newest first.
  *
  * Opt-in keyset pagination: pass ?limit=N (1..100) and optionally
- * ?cursor=<ISO createdAt of the last item from the previous page>. With no
- * params the full list is returned and nextCursor is null (legacy behavior).
- * When a full page (length === limit) comes back, nextCursor is the createdAt
- * of the last row so the caller can fetch the next page.
+ * ?cursor=<the nextCursor from the previous page>. With no params the full
+ * list is returned and nextCursor is null (legacy behavior). When a full page
+ * (length === limit) comes back, nextCursor encodes the last row's createdAt
+ * and id so the next page can't skip a tie.
  */
 loansRoutes.get("/", zValidator("query", listQuery), async (c) => {
   const userId = c.get("userId");
   const { limit, cursor } = c.req.valid("query");
 
   const conditions = [eq(loanEntries.userId, userId)];
-  if (cursor) {
-    const cursorDate = new Date(cursor);
-    if (!Number.isNaN(cursorDate.getTime())) {
-      conditions.push(lt(loanEntries.createdAt, cursorDate));
-    }
-  }
+  const keyset = parseKeysetCursor(cursor);
+  if (keyset) conditions.push(keysetBefore(loanEntries.createdAt, loanEntries.id, keyset));
 
   const query = db
     .select()
     .from(loanEntries)
     .where(and(...conditions))
-    .orderBy(desc(loanEntries.createdAt));
+    .orderBy(desc(loanEntries.createdAt), desc(loanEntries.id));
 
   const rows = limit ? await query.limit(limit) : await query;
+  const last = rows[rows.length - 1];
   const nextCursor =
-    limit && rows.length === limit ? rows[rows.length - 1].createdAt.toISOString() : null;
+    limit && rows.length === limit ? encodeKeysetCursor(last.createdAt, last.id) : null;
 
   return c.json({ entries: rows.map(serialize), nextCursor });
 });
