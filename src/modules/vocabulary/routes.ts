@@ -87,12 +87,17 @@ vocabularyRoutes.get("/words", zValidator("query", wordsQuerySchema), async (c) 
     // "showing N of M" / compute page count. Mirrors the knowledge module's
     // GET /entries exactly (same vocabWords table) — the two CRUD paths had
     // disagreed on response shape. Parallel count query over the same WHERE.
+    // SHAN-515: same compound ordering as the knowledge module's GET /entries
+    // — same table, same limit/offset paging, so the two must agree or a word
+    // read through this route lands on a different page than the same row read
+    // through the other. See the comment there for why a bare `created_at`
+    // ORDER BY can duplicate and drop rows across pages.
     const [words, countResult] = await Promise.all([
       db
         .select()
         .from(vocabWords)
         .where(where)
-        .orderBy(desc(vocabWords.createdAt))
+        .orderBy(desc(vocabWords.createdAt), desc(vocabWords.id))
         .limit(limit)
         .offset(offset),
       db

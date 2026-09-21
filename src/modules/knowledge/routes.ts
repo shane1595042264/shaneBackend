@@ -364,12 +364,21 @@ knowledgeRoutes.get("/entries", zValidator("query", wordsQuerySchema), async (c)
 
     const where = conditions.length > 0 ? and(...conditions) : undefined;
 
+    // SHAN-515: `id` is the tiebreaker, not decoration. `created_at` is not
+    // unique and Postgres promises nothing about the relative order of rows
+    // that tie on the ORDER BY key, so page 1 and page 2 are free to place a
+    // tied row differently — which silently shows one entry twice and hides
+    // another entirely. SHAN-513 fixed this for the keyset endpoints; these
+    // limit/offset ones were the two it missed, and they page for real:
+    // knowledge/page.tsx and lib/knowledge-api.ts both walk offset 0, 100,
+    // 200 … over this route. Rows written in one transaction tie exactly,
+    // because Postgres now() is transaction-start time.
     const [entries, countResult] = await Promise.all([
       db
         .select()
         .from(vocabWords)
         .where(where)
-        .orderBy(desc(vocabWords.createdAt))
+        .orderBy(desc(vocabWords.createdAt), desc(vocabWords.id))
         .limit(limit)
         .offset(offset),
       db
