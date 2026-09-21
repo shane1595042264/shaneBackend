@@ -4,7 +4,14 @@ import { z } from "zod";
 import { optionalAuth, requireScope } from "@/modules/auth/middleware";
 import { encodeKeysetCursor, keysetCursorParam } from "@/modules/shared/keyset";
 import { extractTitle } from "./title";
-import { createTrip, listTrips, getTripBySlug, updateTripBySlug, deleteTripBySlug } from "./repo";
+import {
+  createTrip,
+  findDuplicateTrip,
+  listTrips,
+  getTripBySlug,
+  updateTripBySlug,
+  deleteTripBySlug,
+} from "./repo";
 
 export const tripsRoutes = new Hono();
 
@@ -13,6 +20,8 @@ const jsonCreateBody = z.object({
   html: z.string().min(1).max(10 * 1024 * 1024),
   title: z.string().min(1).max(200).optional(),
   filename: z.string().min(1).max(255).optional(),
+  // SHAN-514: opt out of duplicate detection and create a second copy anyway.
+  force: z.boolean().optional(),
 });
 
 const jsonPatchBody = z.object({
@@ -58,7 +67,7 @@ const listQuery = z.object({
  *
  * Two body shapes:
  *  - multipart/form-data with field `file` (.html upload from a dropzone)
- *  - application/json: { html, title?, filename? }
+ *  - application/json: { html, title?, filename?, force? }
  *
  * Title precedence: explicit body title > <title> > first <h1> > cleaned
  * filename > null.
@@ -66,6 +75,14 @@ const listQuery = z.object({
  * If the request is authed (browser session or PAT), the upload is
  * attributed to the user via owner_id. Anonymous uploads have owner_id
  * = null and display as "Anonymous" on the index.
+ *
+ * SHAN-514: an upload that duplicates an existing trip is refused with 409 and
+ * `code: "duplicate_trip"`, carrying the existing trip so the caller can link
+ * to it. Before this, a repeat upload was indistinguishable from a new trip:
+ * generateUniqueSlug() read the slug collision as "add a random suffix", so
+ * dropping the same file twice minted a second public URL with the same title
+ * and both ended up in sitemap.xml. Pass `force` to create the copy anyway --
+ * the open-pastebin contract is intact, it just stops being the accident.
  */
 tripsRoutes.post("/", optionalAuth, async (c) => {
   const userId = c.get("userId") as string | null;
@@ -74,6 +91,7 @@ tripsRoutes.post("/", optionalAuth, async (c) => {
   let html: string;
   let providedTitle: string | undefined;
   let sourceFilename: string | null = null;
+  let force = false;
 
   if (contentType.includes("multipart/form-data")) {
     const form = await c.req.formData();
@@ -90,6 +108,9 @@ tripsRoutes.post("/", optionalAuth, async (c) => {
     if (typeof titleField === "string" && titleField.trim()) {
       providedTitle = titleField.trim().slice(0, 200);
     }
+    // Multipart fields are always strings, so the boolean has to be spelled out.
+    const forceField = form.get("force");
+    force = forceField === "true" || forceField === "1";
   } else {
     const raw = await c.req.json().catch(() => null);
     const parsed = jsonCreateBody.safeParse(raw);
@@ -99,6 +120,7 @@ tripsRoutes.post("/", optionalAuth, async (c) => {
     html = parsed.data.html;
     providedTitle = parsed.data.title;
     sourceFilename = parsed.data.filename ?? null;
+    force = parsed.data.force ?? false;
   }
 
   const titleFromHtml = extractTitle(html);
@@ -106,6 +128,24 @@ tripsRoutes.post("/", optionalAuth, async (c) => {
     ? sourceFilename.replace(/\.html?$/i, "").replace(/[_-]+/g, " ").trim()
     : null;
   const title = providedTitle ?? titleFromHtml ?? filenameTitle ?? null;
+
+  if (!force) {
+    const existing = await findDuplicateTrip({ title, html });
+    if (existing) {
+      return c.json(
+        {
+          error: "This trip has already been uploaded",
+          code: "duplicate_trip",
+          existing: {
+            slug: existing.slug,
+            title: existing.title,
+            createdAt: existing.createdAt,
+          },
+        },
+        409,
+      );
+    }
+  }
 
   const trip = await createTrip({ ownerId: userId, title, html, sourceFilename });
 

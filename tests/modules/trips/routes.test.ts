@@ -1,12 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { Hono } from "hono";
 
-const { mockCreate, mockList, mockGet, mockUpdate, mockDelete } = vi.hoisted(() => ({
+const { mockCreate, mockList, mockGet, mockUpdate, mockDelete, mockFindDuplicate } = vi.hoisted(() => ({
   mockCreate: vi.fn(),
   mockList: vi.fn(),
   mockGet: vi.fn(),
   mockUpdate: vi.fn(),
   mockDelete: vi.fn(),
+  mockFindDuplicate: vi.fn(),
 }));
 
 vi.mock("@/modules/trips/repo", () => ({
@@ -15,6 +16,7 @@ vi.mock("@/modules/trips/repo", () => ({
   getTripBySlug: mockGet,
   updateTripBySlug: mockUpdate,
   deleteTripBySlug: mockDelete,
+  findDuplicateTrip: mockFindDuplicate,
 }));
 
 vi.mock("@/modules/auth/middleware", () => ({
@@ -35,7 +37,12 @@ vi.mock("@/modules/auth/middleware", () => ({
 
 import { tripsRoutes } from "@/modules/trips/routes";
 
-beforeEach(() => vi.clearAllMocks());
+beforeEach(() => {
+  vi.clearAllMocks();
+  // Default: nothing is a duplicate, so every pre-SHAN-514 test still
+  // describes a plain create. The duplicate cases opt in explicitly.
+  mockFindDuplicate.mockResolvedValue(null);
+});
 
 const app = new Hono().route("/api/trips", tripsRoutes);
 
@@ -155,6 +162,105 @@ describe("POST /api/trips (multipart)", () => {
       body: form,
     });
     expect(res.status).toBe(400);
+  });
+});
+
+describe("POST /api/trips duplicate detection (SHAN-514)", () => {
+  const existing = {
+    slug: "tokyo-trip",
+    title: "Tokyo Trip",
+    createdAt: new Date("2026-01-01T00:00:00.000Z"),
+  };
+
+  it("refuses a duplicate with 409 and points at the existing trip", async () => {
+    mockFindDuplicate.mockResolvedValue(existing);
+    const res = await app.request("/api/trips", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Test-User": "u1" },
+      body: JSON.stringify({ html: "<title>Tokyo Trip</title>" }),
+    });
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.code).toBe("duplicate_trip");
+    expect(body.existing.slug).toBe("tokyo-trip");
+    // The whole point: no second public URL gets minted.
+    expect(mockCreate).not.toHaveBeenCalled();
+  });
+
+  it("checks the resolved title, not the raw body title", async () => {
+    mockFindDuplicate.mockResolvedValue(null);
+    mockCreate.mockResolvedValue({
+      id: "t1", slug: "from-html", title: "From HTML", sourceFilename: null, createdAt: new Date(),
+    });
+    await app.request("/api/trips", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Test-User": "u1" },
+      body: JSON.stringify({ html: "<title>From HTML</title>" }),
+    });
+    expect(mockFindDuplicate).toHaveBeenCalledWith({
+      title: "From HTML",
+      html: "<title>From HTML</title>",
+    });
+  });
+
+  it("force:true in a JSON body creates the copy anyway", async () => {
+    mockFindDuplicate.mockResolvedValue(existing);
+    mockCreate.mockResolvedValue({
+      id: "t2", slug: "tokyo-trip-ab12", title: "Tokyo Trip", sourceFilename: null, createdAt: new Date(),
+    });
+    const res = await app.request("/api/trips", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Test-User": "u1" },
+      body: JSON.stringify({ html: "<title>Tokyo Trip</title>", force: true }),
+    });
+    expect(res.status).toBe(201);
+    expect(mockCreate).toHaveBeenCalled();
+    // force short-circuits the lookup entirely rather than ignoring its result.
+    expect(mockFindDuplicate).not.toHaveBeenCalled();
+  });
+
+  it("force as a multipart field creates the copy anyway", async () => {
+    mockFindDuplicate.mockResolvedValue(existing);
+    mockCreate.mockResolvedValue({
+      id: "t2", slug: "tokyo-trip-ab12", title: "Tokyo Trip",
+      sourceFilename: "itinerary.html", createdAt: new Date(),
+    });
+    const form = new FormData();
+    form.append("file", new File(["<title>Tokyo Trip</title>"], "itinerary.html", { type: "text/html" }));
+    form.append("force", "true");
+    const res = await app.request("/api/trips", {
+      method: "POST",
+      headers: { "X-Test-User": "u1" },
+      body: form,
+    });
+    expect(res.status).toBe(201);
+    expect(mockCreate).toHaveBeenCalled();
+  });
+
+  it("a multipart upload without force is still checked", async () => {
+    mockFindDuplicate.mockResolvedValue(existing);
+    const form = new FormData();
+    form.append("file", new File(["<title>Tokyo Trip</title>"], "itinerary.html", { type: "text/html" }));
+    const res = await app.request("/api/trips", {
+      method: "POST",
+      headers: { "X-Test-User": "u1" },
+      body: form,
+    });
+    expect(res.status).toBe(409);
+    expect(mockCreate).not.toHaveBeenCalled();
+  });
+
+  it("ignores a force field that is not an affirmative string", async () => {
+    mockFindDuplicate.mockResolvedValue(existing);
+    const form = new FormData();
+    form.append("file", new File(["<title>Tokyo Trip</title>"], "itinerary.html", { type: "text/html" }));
+    form.append("force", "false");
+    const res = await app.request("/api/trips", {
+      method: "POST",
+      headers: { "X-Test-User": "u1" },
+      body: form,
+    });
+    expect(res.status).toBe(409);
   });
 });
 

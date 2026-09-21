@@ -16,8 +16,14 @@ vi.mock("@/db/schema", () => ({
 vi.mock("drizzle-orm", () => ({
   eq: vi.fn((c: unknown, v: unknown) => ({ c, v })),
   and: vi.fn((...args: unknown[]) => ({ and: args })),
+  or: vi.fn((...args: unknown[]) => ({ or: args })),
+  asc: vi.fn((c: unknown) => ({ c, dir: "asc" })),
   desc: vi.fn((c: unknown) => ({ c, dir: "desc" })),
   lt: vi.fn((c: unknown, v: unknown) => ({ c, v, op: "lt" })),
+  sql: vi.fn((strings: TemplateStringsArray, ...params: unknown[]) => ({
+    fragments: [...strings],
+    params,
+  })),
 }));
 // Deterministic slug so createTrip's collision probe doesn't touch the db.
 vi.mock("@/modules/trips/slug", () => ({
@@ -34,7 +40,13 @@ function chain(rows: unknown[]) {
   return c;
 }
 
-import { createTrip, updateTripBySlug } from "@/modules/trips/repo";
+import { or } from "drizzle-orm";
+import {
+  createTrip,
+  findDuplicateTrip,
+  normalizeTitle,
+  updateTripBySlug,
+} from "@/modules/trips/repo";
 
 beforeEach(() => vi.clearAllMocks());
 
@@ -96,5 +108,68 @@ describe("updateTripBySlug", () => {
 
     expect(trip).toBeNull();
     expect(mockSelect).not.toHaveBeenCalled();
+  });
+});
+
+describe("normalizeTitle (SHAN-514)", () => {
+  it("trims, collapses internal whitespace and lowercases", () => {
+    expect(normalizeTitle("  Europe   Trip\nItinerary ")).toBe("europe trip itinerary");
+  });
+
+  it("treats two spellings of the same title as equal", () => {
+    expect(normalizeTitle("Tokyo Trip")).toBe(normalizeTitle("tokyo  trip"));
+  });
+
+  it("leaves a title that is already normal alone", () => {
+    expect(normalizeTitle("tokyo trip")).toBe("tokyo trip");
+  });
+});
+
+describe("findDuplicateTrip (SHAN-514)", () => {
+  const match = {
+    slug: "europe-trip",
+    title: "Europe Trip",
+    createdAt: new Date("2026-05-24T05:15:31.501Z"),
+  };
+
+  it("returns the matching trip", async () => {
+    mockSelect.mockReturnValue(chain([match]));
+
+    const found = await findDuplicateTrip({ title: "Europe Trip", html: "<h1>Europe</h1>" });
+
+    expect(found).toEqual(match);
+  });
+
+  it("returns null when nothing matches", async () => {
+    mockSelect.mockReturnValue(chain([]));
+
+    const found = await findDuplicateTrip({ title: "Brand New", html: "<h1>New</h1>" });
+
+    expect(found).toBeNull();
+  });
+
+  it("matches on both the title and the html hash when a title is present", async () => {
+    mockSelect.mockReturnValue(chain([]));
+
+    await findDuplicateTrip({ title: "Europe Trip", html: "<h1>Europe</h1>" });
+
+    expect((or as any).mock.calls[0]).toHaveLength(2);
+  });
+
+  it("matches on the html hash alone when the title is null", async () => {
+    mockSelect.mockReturnValue(chain([]));
+
+    await findDuplicateTrip({ title: null, html: "<h1>Europe</h1>" });
+
+    // An untitled upload is not an identity — only identical bytes count.
+    expect((or as any).mock.calls[0]).toHaveLength(1);
+  });
+
+  it("does not build a title arm for a whitespace-only title", async () => {
+    mockSelect.mockReturnValue(chain([]));
+
+    await findDuplicateTrip({ title: "   ", html: "<h1>Europe</h1>" });
+
+    expect((or as any).mock.calls[0]).toHaveLength(1);
   });
 });

@@ -1,4 +1,5 @@
-import { and, desc, eq } from "drizzle-orm";
+import { createHash } from "node:crypto";
+import { and, asc, desc, eq, or, sql } from "drizzle-orm";
 import { db } from "@/db/client";
 import { trips, users } from "@/db/schema";
 import { keysetBefore, parseKeysetCursor } from "@/modules/shared/keyset";
@@ -34,6 +35,72 @@ async function ownerNameFor(ownerId: string | null): Promise<string | null> {
   if (!ownerId) return null;
   const [row] = await db.select({ name: users.name }).from(users).where(eq(users.id, ownerId)).limit(1);
   return row?.name ?? null;
+}
+
+export interface DuplicateTrip {
+  slug: string;
+  title: string | null;
+  createdAt: Date;
+}
+
+/**
+ * Normalize a title the way duplicate detection compares them: trimmed,
+ * internal whitespace collapsed, lowercased. Exported so the SQL side and any
+ * caller that wants to explain a match agree on one definition.
+ */
+export function normalizeTitle(title: string): string {
+  return title.trim().replace(/\s+/g, " ").toLowerCase();
+}
+
+/**
+ * Find an existing trip that the given upload is a duplicate of (SHAN-514).
+ *
+ * Two trips count as the same trip when either holds:
+ *  - their normalized titles are equal — the ordinary "dropped the same file
+ *    on /trips/new twice" case, where `<title>` extraction yields the same
+ *    string both times;
+ *  - their HTML is byte-identical — catches the same re-upload when the
+ *    second one carried a title override, so the titles differ but the
+ *    itinerary does not.
+ *
+ * Returns the OLDEST match, so the caller points the uploader at the original
+ * rather than at whichever copy happens to sort first. A null title never
+ * matches on the title arm: "untitled" is not an identity.
+ *
+ * Scaling note: `md5(html)` is evaluated per row, so this is O(corpus bytes)
+ * per upload. That is nothing for a personal site holding a handful of trips.
+ * If the table ever grows, store the digest in a column at insert time and
+ * compare against that instead of recomputing here.
+ */
+export async function findDuplicateTrip(input: {
+  title: string | null;
+  html: string;
+}): Promise<DuplicateTrip | null> {
+  const htmlHash = createHash("md5").update(input.html, "utf8").digest("hex");
+
+  const matches = [sql`md5(${trips.html}) = ${htmlHash}`];
+  if (input.title !== null) {
+    const normalized = normalizeTitle(input.title);
+    // Mirror normalizeTitle() in SQL so the comparison is done by the DB
+    // rather than by pulling every title into memory. The whitespace class is
+    // spelled `[[:space:]]` rather than `\s` on purpose: drizzle's `sql` tag
+    // reads the COOKED template strings, so a lone backslash would be eaten
+    // and leave a regex that collapses runs of the letter "s".
+    if (normalized) {
+      matches.push(
+        sql`lower(btrim(regexp_replace(${trips.title}, '[[:space:]]+', ' ', 'g'))) = ${normalized}`,
+      );
+    }
+  }
+
+  const [row] = await db
+    .select({ slug: trips.slug, title: trips.title, createdAt: trips.createdAt })
+    .from(trips)
+    .where(or(...matches))
+    .orderBy(asc(trips.createdAt), asc(trips.id))
+    .limit(1);
+
+  return row ?? null;
 }
 
 export async function createTrip(input: {
