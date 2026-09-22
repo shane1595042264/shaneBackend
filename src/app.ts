@@ -26,6 +26,7 @@ import { blogRoutes } from "@/modules/blog/routes";
 import { isoDate } from "@/modules/shared/validators";
 import { notFoundHandler, errorHandler } from "@/modules/shared/http-errors";
 import { conditionalGet } from "@/modules/shared/conditional-get";
+import { crawlerPolicy, ROBOTS_TXT } from "@/modules/shared/crawler-policy";
 import { getVersionInfo } from "@/modules/shared/version";
 import { isAdminAuthed } from "@/modules/shared/admin-auth";
 
@@ -35,6 +36,12 @@ const app = new Hono();
 // Middleware
 // ---------------------------------------------------------------------------
 app.use("*", logger());
+
+// SHAN-520: X-Robots-Tag on every response. Registered before conditionalGet
+// on purpose — middleware unwinds in reverse, so first here means last out,
+// which is the only position that sees the Response conditionalGet
+// substitutes in. See modules/shared/crawler-policy.
+app.use("*", crawlerPolicy);
 
 app.use(
   "*",
@@ -79,6 +86,17 @@ app.get("/health", async (c) => {
     return c.json({ status: "unhealthy", timestamp: new Date().toISOString(), error: "database connection failed", ...version }, 503);
   }
 });
+
+// ---------------------------------------------------------------------------
+// robots.txt
+//
+// SHAN-520: this used to 404, which robots.txt semantics read as "crawl
+// anything". Kept here next to /health rather than in a module because, like
+// /health, it is a property of the origin and not of any one feature.
+// conditionalGet leaves it alone: it only tags application/json, so this
+// answers with no ETag.
+// ---------------------------------------------------------------------------
+app.get("/robots.txt", (c) => c.text(ROBOTS_TXT));
 
 // ---------------------------------------------------------------------------
 // API routes
