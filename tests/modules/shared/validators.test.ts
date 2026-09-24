@@ -8,6 +8,11 @@ import {
   trimmedOptional,
   trimmedNullish,
   trimmedLabels,
+  pageOffset,
+  int4Positive,
+  int4PositiveParam,
+  MAX_PAGE_OFFSET,
+  PG_INT4_MAX,
 } from "@/modules/shared/validators";
 
 describe("containsInFlightUpload", () => {
@@ -152,5 +157,81 @@ describe("trimmedLabels", () => {
 
   it("enforces the per-entry length cap", () => {
     expect(schema.safeParse(["abcdefghijk"]).success).toBe(false);
+  });
+});
+
+// SHAN-529: every value below reached Postgres before the bounds existed and
+// threw there ("invalid input syntax for type bigint", "out of range for type
+// integer"), which the global error handler turned into a 500. The point of
+// these cases is that the schema rejects them first, so the caller gets a 400.
+describe("pageOffset", () => {
+  it("defaults to 0 when the param is absent", () => {
+    expect(pageOffset.parse(undefined)).toBe(0);
+  });
+
+  it("coerces the query string a browser actually sends", () => {
+    expect(pageOffset.parse("200")).toBe(200);
+  });
+
+  it("accepts the bound itself", () => {
+    expect(pageOffset.parse(String(MAX_PAGE_OFFSET))).toBe(MAX_PAGE_OFFSET);
+  });
+
+  it("rejects an offset past the bound", () => {
+    expect(pageOffset.safeParse(String(MAX_PAGE_OFFSET + 1)).success).toBe(false);
+  });
+
+  it("rejects exponent notation that Number() happily calls an integer", () => {
+    // Number("1e30") is an integer to JS, so .int() passed it straight through
+    // to the OFFSET parameter, where Postgres rejected "1e+30" as bigint.
+    expect(pageOffset.safeParse("1e30").success).toBe(false);
+  });
+
+  it("rejects values above the bigint range", () => {
+    expect(pageOffset.safeParse("9223372036854775807").success).toBe(false);
+    expect(pageOffset.safeParse("99999999999999999999").success).toBe(false);
+  });
+
+  it("still rejects a negative offset and a non-number", () => {
+    expect(pageOffset.safeParse("-1").success).toBe(false);
+    expect(pageOffset.safeParse("abc").success).toBe(false);
+  });
+
+  it("stays inside int4 so the bound can never overflow a column", () => {
+    expect(MAX_PAGE_OFFSET).toBeLessThanOrEqual(PG_INT4_MAX);
+  });
+});
+
+describe("int4PositiveParam", () => {
+  it("coerces a version number arriving as a path/query string", () => {
+    expect(int4PositiveParam.parse("3")).toBe(3);
+  });
+
+  it("accepts the largest value an int4 column can hold", () => {
+    expect(int4PositiveParam.parse(String(PG_INT4_MAX))).toBe(PG_INT4_MAX);
+  });
+
+  it("rejects one past the int4 ceiling", () => {
+    expect(int4PositiveParam.safeParse(String(PG_INT4_MAX + 1)).success).toBe(false);
+    expect(int4PositiveParam.safeParse("3000000000").success).toBe(false);
+  });
+
+  it("keeps the existing positivity contract", () => {
+    expect(int4PositiveParam.safeParse("0").success).toBe(false);
+    expect(int4PositiveParam.safeParse("-2").success).toBe(false);
+  });
+});
+
+describe("int4Positive", () => {
+  it("accepts an in-range JSON body number", () => {
+    expect(int4Positive.parse(7)).toBe(7);
+  });
+
+  it("rejects an out-of-int4-range body number", () => {
+    expect(int4Positive.safeParse(3_000_000_000).success).toBe(false);
+  });
+
+  it("does not coerce, so a string body value still fails as before", () => {
+    expect(int4Positive.safeParse("7").success).toBe(false);
   });
 });

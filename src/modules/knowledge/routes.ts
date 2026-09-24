@@ -15,6 +15,7 @@ import {
   trimmedOptional,
   trimmedNullish,
   trimmedLabels,
+  pageOffset,
 } from "@/modules/shared/validators";
 import {
   createComment as createKnowledgeComment,
@@ -48,7 +49,9 @@ const wordsQuerySchema = z.object({
   // 120 to match the per-location bound on PUT /entries.
   location: z.string().min(1).max(120).optional(),
   limit: z.coerce.number().int().min(1).max(500).default(100),
-  offset: z.coerce.number().int().min(0).default(0),
+  // SHAN-529: bounded — an unbounded offset let 1e30 through to the OFFSET
+  // parameter and Postgres threw, turning a bad request into a 500.
+  offset: pageOffset,
 });
 
 const wordIdQuerySchema = z.object({

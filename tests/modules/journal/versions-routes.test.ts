@@ -119,6 +119,23 @@ describe("GET /api/journal/entries/:date/versions", () => {
     expect(mockListV).not.toHaveBeenCalled();
   });
 
+  it("rejects a cursor past the int4 ceiling with 400 instead of reaching the query", async () => {
+    // SHAN-529: version_num is an int4 column. Before the bound, 3000000000
+    // passed z.coerce.number().int().min(1) and Postgres threw "value
+    // \"3000000000\" is out of range for type integer" — a 500 for a bad request.
+    mockGetByDate.mockResolvedValue({ entry: { id: "e1" }, currentVersion: { versionNum: 1 } });
+    const res = await app.request("/api/journal/entries/2026-04-29/versions?cursor=3000000000");
+    expect(res.status).toBe(400);
+    expect(mockListV).not.toHaveBeenCalled();
+  });
+
+  it("still accepts a cursor at the int4 ceiling", async () => {
+    mockGetByDate.mockResolvedValue({ entry: { id: "e1" }, currentVersion: { versionNum: 1 } });
+    mockListV.mockResolvedValue([]);
+    const res = await app.request("/api/journal/entries/2026-04-29/versions?cursor=2147483647");
+    expect(res.status).toBe(200);
+  });
+
   it("returns 404 when entry doesn't exist", async () => {
     mockGetByDate.mockResolvedValue(null);
     const res = await app.request("/api/journal/entries/2026-04-29/versions");
@@ -146,6 +163,12 @@ describe("GET /api/journal/entries/:date/versions/:num", () => {
   it("rejects non-numeric :num with 400", async () => {
     const res = await app.request("/api/journal/entries/2026-04-29/versions/abc");
     expect(res.status).toBe(400);
+  });
+
+  it("rejects a :num past the int4 ceiling with 400, not a 500 from Postgres", async () => {
+    const res = await app.request("/api/journal/entries/2026-04-29/versions/3000000000");
+    expect(res.status).toBe(400);
+    expect(mockGetV).not.toHaveBeenCalled();
   });
 
   it("rejects calendar-invalid :date (2026-02-30) with 400 before the entry lookup", async () => {
@@ -195,6 +218,17 @@ describe("POST /api/journal/entries/:date/revert", () => {
       body: JSON.stringify({ target_version_num: 2 }),
     });
     expect(res.status).toBe(409);
+  });
+
+  it("returns 400 when target_version_num is past the int4 ceiling (SHAN-529)", async () => {
+    mockGetByDate.mockResolvedValue({ entry: { authorId: "u1", id: "e1" }, currentVersion: { versionNum: 5 } });
+    const res = await app.request("/api/journal/entries/2026-04-29/revert", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Test-User": "u1", "If-Match": "5" },
+      body: JSON.stringify({ target_version_num: 3_000_000_000 }),
+    });
+    expect(res.status).toBe(400);
+    expect(mockRevert).not.toHaveBeenCalled();
   });
 
   it("returns 428 if If-Match missing", async () => {

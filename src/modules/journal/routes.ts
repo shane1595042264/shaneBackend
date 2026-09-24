@@ -55,6 +55,8 @@ import {
   IN_FLIGHT_UPLOAD_MESSAGE,
   MAX_MARKDOWN_BODY,
   MAX_MARKDOWN_BODY_MESSAGE,
+  int4Positive,
+  int4PositiveParam,
 } from "@/modules/shared/validators";
 import { createPATRateLimit } from "@/modules/shared/rate-limit";
 import { journalAccessRoutes } from "./access-routes";
@@ -128,9 +130,12 @@ const uuidParam = z.object({ id: z.string().uuid() });
 // Pagination for the version list. The cursor is the versionNum of the last row
 // on the previous page; the list is descending, so the next page is everything
 // below it. z.coerce because it arrives as a query string.
+// SHAN-529: bounded to the int4 range — journal_versions.version_num is an int4
+// column, so a larger cursor throws "out of range for type integer" and 500s
+// rather than returning an empty page.
 const versionsQuery = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(50),
-  cursor: z.coerce.number().int().min(1).optional(),
+  cursor: int4PositiveParam.optional(),
 });
 
 const listQuery = z.object({
@@ -248,10 +253,10 @@ journalRoutes.delete(
   }
 );
 
-const revertBody = z.object({ target_version_num: z.number().int().positive() });
+const revertBody = z.object({ target_version_num: int4Positive });
 const versionNumParam = z.object({
   date: isoDate,
-  num: z.coerce.number().int().positive(),
+  num: int4PositiveParam,
 });
 
 // Ungated on purpose: a constant 405 for everyone discloses nothing, and
@@ -507,7 +512,9 @@ journalRoutes.get(
 );
 
 const suggestBody = z.object({
-  base_version_num: z.number().int().positive(),
+  // Looked up against journal_versions.version_num (int4), so the same bound
+  // as revertBody applies — SHAN-529.
+  base_version_num: int4Positive,
   proposed_content: z
     .string()
     .trim()

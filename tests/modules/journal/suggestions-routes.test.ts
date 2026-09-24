@@ -154,6 +154,20 @@ describe("POST /api/journal/entries/:date/suggestions", () => {
     expect(res.status).toBe(404);
   });
 
+  // SHAN-529: base_version_num is looked up against journal_versions.version_num,
+  // an int4 column. Unbounded, 3000000000 reached Postgres and threw there.
+  it("returns 400 when base_version_num is past the int4 ceiling (SHAN-529)", async () => {
+    mockGetByDate.mockResolvedValue({ entry: { id: "e1", authorId: "owner" }, currentVersion: { versionNum: 1 } });
+    const res = await app.request("/api/journal/entries/2026-05-03/suggestions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Test-User": "stranger" },
+      body: JSON.stringify({ base_version_num: 3_000_000_000, proposed_content: "edit" }),
+    });
+    expect(res.status).toBe(400);
+    expect(mockGetVersion).not.toHaveBeenCalled();
+    expect(mockCreateSug).not.toHaveBeenCalled();
+  });
+
   // SHAN-398: proposed_content persists to the unbounded journal_suggestions
   // text column. Cap it at 100k chars, rejecting oversized payloads before the
   // repo (or the base-version lookup) runs.

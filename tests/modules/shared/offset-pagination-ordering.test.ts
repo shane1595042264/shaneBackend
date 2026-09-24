@@ -181,3 +181,47 @@ describe("GET /api/vocabulary/words — deterministic page order", () => {
     expect(orderByCalls[0]).toEqual(EXPECTED_ORDER);
   });
 });
+
+// SHAN-529: the same two routes, same query param, different failure. `offset`
+// was `z.coerce.number().int().min(0)` with no ceiling, so Zod waved through
+// anything JS calls an integer — 1e30, 2^63 — and drizzle handed it to Postgres
+// as the OFFSET parameter, which threw (`invalid input syntax for type bigint:
+// "1e+30"`). The global handler turned that into `500 Internal Server Error`
+// for what is plainly a client mistake. Both URLs below returned 500 on prod
+// before the bound; they must now 400 without the query ever running.
+const OVERFLOW_OFFSETS = [
+  ["exponent notation", "1e30"],
+  ["bigint max", "9223372036854775807"],
+  ["past bigint", "99999999999999999999"],
+  ["past the page bound", "1000001"],
+] as const;
+
+describe.each([
+  ["knowledge", "/api/knowledge/entries"],
+  ["vocabulary", "/api/vocabulary/words"],
+])("GET %s — offset bounds", (_name, path) => {
+  it.each(OVERFLOW_OFFSETS)("400s on an offset with %s", async (_label, offset) => {
+    stubList(ROWS);
+
+    const res = await app.request(`${path}?offset=${offset}`);
+
+    expect(res.status).toBe(400);
+    expect(mockSelect).not.toHaveBeenCalled();
+  });
+
+  it("still serves an offset at the bound", async () => {
+    stubList(ROWS);
+
+    const res = await app.request(`${path}?offset=1000000`);
+
+    expect(res.status).toBe(200);
+  });
+
+  it("still serves a realistic page offset", async () => {
+    stubList(ROWS);
+
+    const res = await app.request(`${path}?limit=100&offset=200`);
+
+    expect(res.status).toBe(200);
+  });
+});

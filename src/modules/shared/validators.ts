@@ -97,3 +97,38 @@ export const trimmedLabels = (maxLen: number, maxItems: number) =>
     .max(maxItems)
     .optional()
     .transform((v) => v?.map((s) => s.trim()).filter((s) => s.length > 0));
+
+// SHAN-529: the numeric counterpart to isoDate above. `z.coerce.number().int()`
+// accepts anything JS calls an integer, including 1e30 and 9223372036854775807,
+// so an unbounded schema hands Postgres a value it cannot represent and the
+// query throws — `invalid input syntax for type bigint: "1e+30"` for an OFFSET,
+// `value "3000000000" is out of range for type integer` for a version_num
+// comparison. Both surface as a 500, which reads as a server fault for what is
+// really a bad request. Bounding here keeps the failure a 400 with a message.
+
+// Largest value an int4 Postgres column (e.g. journal_versions.version_num,
+// blog_versions.version_num) can hold. Any comparison above it throws.
+export const PG_INT4_MAX = 2_147_483_647;
+
+// Upper bound for the offset-paginated lists (knowledge entries, vocabulary
+// words). 1,000,000 is 10,000 pages at the default size of 100 (2,000 at the
+// 500 maximum) — orders of magnitude past any real dataset here — and stays
+// inside int4, so it can never overflow the OFFSET parameter or anything
+// derived from it. A deeper offset is a typo or a probe, not paging.
+export const MAX_PAGE_OFFSET = 1_000_000;
+
+// Offset for an offset-paginated list query. Coerced because it arrives as a
+// query string.
+export const pageOffset = z.coerce
+  .number()
+  .int()
+  .min(0)
+  .max(MAX_PAGE_OFFSET)
+  .default(0);
+
+// Positive integer destined for an int4 column, arriving as a query/path string.
+export const int4PositiveParam = z.coerce.number().int().min(1).max(PG_INT4_MAX);
+
+// Same bound for a JSON body field, which is already a number — no coercion, so
+// a string body value still fails the type check as it does today.
+export const int4Positive = z.number().int().min(1).max(PG_INT4_MAX);

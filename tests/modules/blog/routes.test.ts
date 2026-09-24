@@ -238,6 +238,31 @@ describe("GET /api/blog/posts/:slug/versions", () => {
     mockGetVersion.mockResolvedValue(null);
     expect((await app.request("/api/blog/posts/hello-world/versions/99")).status).toBe(404);
   });
+
+  // SHAN-529: blog_versions.version_num is an int4 column, so a larger number
+  // threw "out of range for type integer" inside the query and surfaced as a
+  // 500. Bounded in the schema, it is a plain 400 and the repo is never called.
+  it("400s on a :num past the int4 ceiling instead of 500ing in Postgres", async () => {
+    mockGetPostBySlug.mockResolvedValue(postRow());
+    const res = await app.request("/api/blog/posts/hello-world/versions/3000000000");
+    expect(res.status).toBe(400);
+    expect(mockGetVersion).not.toHaveBeenCalled();
+  });
+
+  it("400s on a ?cursor= past the int4 ceiling", async () => {
+    mockGetPostBySlug.mockResolvedValue(postRow());
+    const res = await app.request("/api/blog/posts/hello-world/versions?cursor=3000000000");
+    expect(res.status).toBe(400);
+    expect(mockListVersions).not.toHaveBeenCalled();
+  });
+
+  it("still accepts a :num at the int4 ceiling", async () => {
+    mockGetPostBySlug.mockResolvedValue(postRow());
+    mockGetVersion.mockResolvedValue(null);
+    const res = await app.request("/api/blog/posts/hello-world/versions/2147483647");
+    expect(res.status).toBe(404);
+    expect(mockGetVersion).toHaveBeenCalled();
+  });
 });
 
 describe("POST /api/blog/posts", () => {
@@ -420,6 +445,13 @@ describe("POST /api/blog/posts/:slug/revert", () => {
     mockRevert.mockRejectedValue(new VersionConflictError(9));
     const res = await revert({ target_version_num: 1 }, { "If-Match": "3" });
     expect(res.status).toBe(409);
+  });
+
+  it("400s on a target_version_num past the int4 ceiling (SHAN-529)", async () => {
+    mockGetPostBySlug.mockResolvedValue(postRow());
+    const res = await revert({ target_version_num: 3_000_000_000 }, { "If-Match": "3" });
+    expect(res.status).toBe(400);
+    expect(mockRevert).not.toHaveBeenCalled();
   });
 });
 

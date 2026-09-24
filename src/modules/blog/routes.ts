@@ -22,6 +22,8 @@ import {
   MAX_MARKDOWN_BODY_MESSAGE,
   trimmedRequired,
   trimmedLabels,
+  int4Positive,
+  int4PositiveParam,
 } from "@/modules/shared/validators";
 import {
   createPost,
@@ -106,8 +108,11 @@ const slugParam = z.object({
     .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/, { message: "Invalid slug" }),
 });
 
+// SHAN-529: bounded to the int4 range because blog_versions.version_num is an
+// int4 column — a larger value throws "out of range for type integer" mid-query
+// instead of simply missing.
 const versionNumParam = slugParam.extend({
-  num: z.coerce.number().int().positive(),
+  num: int4PositiveParam,
 });
 
 const bodyContent = z
@@ -149,10 +154,11 @@ const updateBody = z.object({
 
 const versionsQuery = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(50),
-  cursor: z.coerce.number().int().min(1).optional(),
+  // Same int4 bound as versionNumParam — the cursor IS a version_num.
+  cursor: int4PositiveParam.optional(),
 });
 
-const revertBody = z.object({ target_version_num: z.number().int().positive() });
+const revertBody = z.object({ target_version_num: int4Positive });
 
 // ── Public reads ───────────────────────────────────────────────────
 

@@ -11,6 +11,7 @@ import {
   trimmedRequired,
   trimmedOptional,
   trimmedLabels,
+  pageOffset,
 } from "@/modules/shared/validators";
 
 export const vocabularyRoutes = new Hono();
@@ -41,7 +42,9 @@ const wordsQuerySchema = z.object({
   label: z.string().max(100).optional(),
   search: z.string().max(255).optional(),
   limit: z.coerce.number().int().min(1).max(500).default(100),
-  offset: z.coerce.number().int().min(0).default(0),
+  // SHAN-529: bounded, in lockstep with the knowledge module's identical query
+  // over the same table — both fed Postgres an OFFSET it could not parse.
+  offset: pageOffset,
 });
 
 const wordIdQuerySchema = z.object({
