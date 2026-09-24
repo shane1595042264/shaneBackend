@@ -10,13 +10,25 @@ The single chokepoint for every LLM call in the backend. Provider fallback chain
 2. **Google Gemini** — `gemini-3.6-flash` (the 2.0 models were retired by Google in 2026-08, SHAN-437). Requires `GOOGLE_AI_API_KEY`. Free tier with daily quota. Thinking model: llm.ts joins non-thought parts and treats an empty answer as a failure so the chain continues.
 3. **Groq** — `openai/gpt-oss-120b` → `openai/gpt-oss-20b` (the llama models were retired by Groq in 2026-08, SHAN-437). Requires `GROQ_API_KEY`. Free tier with per-minute rate limits and retry-after handling baked in.
 
+### Transient failures vs. real ones (SHAN-527)
+
+Every provider call is bounded by `PROVIDER_TIMEOUT_MS` (60s) — `AbortSignal.timeout` on the two raw `fetch` call sites and the `timeout` option on the Anthropic client. Neither Bun nor undici applies a default request timeout and the Anthropic SDK's own default is 10 minutes, so without this a provider that accepts the connection and then goes quiet wedges the caller (an HTTP handler or a cron job) indefinitely. 60s is deliberately looser than the 10s the HTML scrapers use because Gemini 3.x burns hidden thinking tokens before its first visible one.
+
+Gemini failures are triaged rather than treated alike, because with the Anthropic account out of credits Gemini is in practice the *primary* provider and dropping it demotes every classification to a free-tier `gpt-oss` model:
+
+- **5xx, or the request never landing (timeout / dropped connection)** — the model is momentarily overloaded, which is Gemini's most common failure and clears on its own. Retried in place up to `GEMINI_MAX_ATTEMPTS` (3) with exponential backoff from `GEMINI_RETRY_BASE_MS` (400ms), so attempts land at t=0, +400ms, +800ms.
+- **429 / `quota`** — the free-tier allowance is gone and no amount of backoff brings a daily quota back. Moves to the next model in the list, then falls through to Groq. Never retried in place.
+- **Anything else (400, a retired model 404, an empty answer)** — about the request we sent, not the provider's mood. Falls through immediately; retrying only adds latency.
+
+Retry classification reads `ProviderHttpError.status`, not a regex over the message, because provider error bodies contain digits of their own. `ProviderNetworkError` wraps *only* the `fetch` call, so a bug in our own response parsing can never be mistaken for a flaky network and retried three times.
+
 If every provider in the chain fails, throws:
 
 ```
-new Error(`All LLM providers failed. Anthropic: ${anthropicError}; Groq: ${groqError}`);
+new Error(`All LLM providers failed. Anthropic: ${anthropicError}; Gemini: ${geminiError}; Groq: ${groqError}`);
 ```
 
-Callers that want HTTP 502-on-exhaustion semantics match on `err.message.includes("All LLM providers failed")` — see `modules/knowledge/routes.ts` for the canonical pattern. Don't restructure this error message without updating those matchers.
+Callers that want HTTP 502-on-exhaustion semantics match on `err.message.includes("All LLM providers failed")` — see `modules/knowledge/routes.ts` for the canonical pattern. Don't restructure this error message without updating those matchers; the prefix is load-bearing in `knowledge/routes.ts` (x2), `vocabulary/routes.ts` and `trip-groups/routes.ts`, and `tests/app-admin-error-sanitization.test.ts` asserts the whole string is scrubbed before it reaches a client (these errors embed upstream bodies, including API keys — log them server-side only, per SHAN-351).
 
 `generateText` returns `{ text, modelUsed, usage }`. The `modelUsed` is the actual provider/model that succeeded — log it (or surface it in observability) so you can tell when fallbacks are kicking in.
 

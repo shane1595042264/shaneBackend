@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 // Mock the Anthropic SDK before importing the module under test
 vi.mock("@anthropic-ai/sdk", () => {
@@ -163,5 +163,173 @@ describe("generateText", () => {
         prompt: "Prompt",
       })
     ).rejects.toThrow("GROQ_API_KEY not set");
+  });
+});
+
+// SHAN-527: the chain has to survive a provider that is momentarily overloaded
+// rather than spending its last fallback on the first blip, and it has to bound
+// every request so a stalled provider cannot wedge the caller forever.
+describe("generateText provider resilience", () => {
+  let mockCreate: ReturnType<typeof vi.fn>;
+  const ORIGINAL_ENV = { ...process.env };
+
+  /** Minimal stand-in for the parts of Response that llm.ts actually reads. */
+  function httpResponse(status: number, body: unknown) {
+    return {
+      ok: status >= 200 && status < 300,
+      status,
+      text: async () => (typeof body === "string" ? body : JSON.stringify(body)),
+      json: async () => body,
+    };
+  }
+
+  function geminiOk(text: string) {
+    return httpResponse(200, {
+      candidates: [{ content: { parts: [{ text }] } }],
+      usageMetadata: { promptTokenCount: 7, candidatesTokenCount: 11 },
+    });
+  }
+
+  function groqOk(text: string) {
+    return httpResponse(200, {
+      choices: [{ message: { content: text } }],
+      usage: { prompt_tokens: 3, completion_tokens: 4 },
+    });
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    const instance = new (Anthropic as unknown as new () => { messages: { create: ReturnType<typeof vi.fn> } })();
+    mockCreate = instance.messages.create;
+    // Every case here is about what happens AFTER Anthropic is unavailable,
+    // which is the site's real steady state while the account has no credits.
+    mockCreate.mockRejectedValue(new Error("400 credit balance is too low"));
+  });
+
+  afterEach(() => {
+    process.env = { ...ORIGINAL_ENV };
+    vi.unstubAllGlobals();
+  });
+
+  it("retries Gemini after a 503 and returns the retry's answer", async () => {
+    process.env.GOOGLE_AI_API_KEY = "test-gemini-key";
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(httpResponse(503, { error: { message: "model overloaded" } }))
+      .mockResolvedValueOnce(geminiOk("recovered"));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await generateText({ system: "S", prompt: "P" });
+
+    expect(result.text).toBe("recovered");
+    expect(result.modelUsed).toBe("gemini-3.6-flash");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("gives up on Gemini after the retry budget and falls through to Groq", async () => {
+    process.env.GOOGLE_AI_API_KEY = "test-gemini-key";
+    process.env.GROQ_API_KEY = "test-groq-key";
+    const fetchMock = vi.fn().mockImplementation((url: string) => {
+      if (String(url).includes("generativelanguage")) {
+        return Promise.resolve(httpResponse(503, { error: { message: "overloaded" } }));
+      }
+      return Promise.resolve(groqOk("groq answer"));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await generateText({ system: "S", prompt: "P" });
+
+    expect(result.text).toBe("groq answer");
+    const geminiCalls = fetchMock.mock.calls.filter((c) =>
+      String(c[0]).includes("generativelanguage")
+    );
+    expect(geminiCalls).toHaveLength(3);
+  });
+
+  it("does not retry a Gemini 400, which is about the request not the load", async () => {
+    process.env.GOOGLE_AI_API_KEY = "test-gemini-key";
+    process.env.GROQ_API_KEY = "test-groq-key";
+    const fetchMock = vi.fn().mockImplementation((url: string) => {
+      if (String(url).includes("generativelanguage")) {
+        return Promise.resolve(httpResponse(400, { error: { message: "bad request" } }));
+      }
+      return Promise.resolve(groqOk("groq answer"));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await generateText({ system: "S", prompt: "P" });
+
+    const geminiCalls = fetchMock.mock.calls.filter((c) =>
+      String(c[0]).includes("generativelanguage")
+    );
+    expect(geminiCalls).toHaveLength(1);
+  });
+
+  it("does not retry a Gemini 429, because backoff cannot restore a quota", async () => {
+    process.env.GOOGLE_AI_API_KEY = "test-gemini-key";
+    process.env.GROQ_API_KEY = "test-groq-key";
+    const fetchMock = vi.fn().mockImplementation((url: string) => {
+      if (String(url).includes("generativelanguage")) {
+        return Promise.resolve(httpResponse(429, { error: { message: "quota exceeded" } }));
+      }
+      return Promise.resolve(groqOk("groq answer"));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await generateText({ system: "S", prompt: "P" });
+
+    const geminiCalls = fetchMock.mock.calls.filter((c) =>
+      String(c[0]).includes("generativelanguage")
+    );
+    expect(geminiCalls).toHaveLength(1);
+  });
+
+  it("retries Gemini when the request never lands at all", async () => {
+    process.env.GOOGLE_AI_API_KEY = "test-gemini-key";
+    const fetchMock = vi
+      .fn()
+      .mockRejectedValueOnce(Object.assign(new Error("timed out"), { name: "TimeoutError" }))
+      .mockResolvedValueOnce(geminiOk("second try"));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await generateText({ system: "S", prompt: "P" });
+
+    expect(result.text).toBe("second try");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("bounds the Gemini request with an abort signal", async () => {
+    process.env.GOOGLE_AI_API_KEY = "test-gemini-key";
+    const fetchMock = vi.fn().mockResolvedValue(geminiOk("ok"));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await generateText({ system: "S", prompt: "P" });
+
+    expect(fetchMock.mock.calls[0][1].signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it("bounds the Groq request with an abort signal", async () => {
+    process.env.GROQ_API_KEY = "test-groq-key";
+    delete process.env.GOOGLE_AI_API_KEY;
+    const fetchMock = vi.fn().mockResolvedValue(groqOk("ok"));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await generateText({ system: "S", prompt: "P" });
+
+    expect(result.text).toBe("ok");
+    expect(fetchMock.mock.calls[0][1].signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it("names every provider, Gemini included, when the whole chain is exhausted", async () => {
+    process.env.GOOGLE_AI_API_KEY = "test-gemini-key";
+    delete process.env.GROQ_API_KEY;
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(httpResponse(400, { error: { message: "gemini is unhappy" } }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(generateText({ system: "S", prompt: "P" })).rejects.toThrow(
+      /^All LLM providers failed\..*Gemini: .*gemini is unhappy.*Groq: .*GROQ_API_KEY not set/s
+    );
   });
 });
