@@ -2,6 +2,7 @@ import { and, desc, eq, lt, sql } from "drizzle-orm";
 import { db } from "@/db/client";
 import { journalEntries, journalVersions, users } from "@/db/schema";
 import { hashContent } from "./entries-repo";
+import { VersionNotFoundError } from "@/modules/shared/domain-errors";
 
 export class VersionConflictError extends Error {
   constructor(public currentVersionNum: number) {
@@ -122,7 +123,7 @@ export async function revertToVersion(
   ifMatchVersionNum: number
 ) {
   const target = await getVersion(entryId, targetVersionNum);
-  if (!target) throw new Error("Target version not found");
+  if (!target) throw new VersionNotFoundError();
   return appendDirectVersion({
     entryId,
     editorId,

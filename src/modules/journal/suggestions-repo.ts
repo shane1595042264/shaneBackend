@@ -3,6 +3,7 @@ import { db } from "@/db/client";
 import { journalEntries, journalVersions, journalSuggestions, users } from "@/db/schema";
 import { hashContent } from "./entries-repo";
 import { VersionConflictError } from "./versions-repo";
+import { SuggestionNotPendingError } from "@/modules/shared/domain-errors";
 
 function attachProposer<T extends { proposerId: string }>(
   row: T & { proposerName: string | null; proposerAvatarUrl: string | null }
@@ -113,7 +114,7 @@ export async function approveSuggestion(suggestionId: string, authorId: string, 
       .from(journalSuggestions)
       .where(eq(journalSuggestions.id, suggestionId))
       .limit(1);
-    if (!s || s.status !== "pending") throw new Error("Suggestion not pending");
+    if (!s || s.status !== "pending") throw new SuggestionNotPendingError(s?.status ?? null);
 
     const [latest] = await tx
       .select({ id: journalVersions.id, versionNum: journalVersions.versionNum })
@@ -166,7 +167,7 @@ export async function rejectSuggestion(suggestionId: string, authorId: string, r
       .from(journalSuggestions)
       .where(eq(journalSuggestions.id, suggestionId))
       .limit(1);
-    if (!s || s.status !== "pending") throw new Error("Suggestion not pending");
+    if (!s || s.status !== "pending") throw new SuggestionNotPendingError(s?.status ?? null);
     await tx
       .update(journalSuggestions)
       .set({ status: "rejected", decidedBy: authorId, decidedAt: new Date(), rejectionReason: reason, updatedAt: new Date() })

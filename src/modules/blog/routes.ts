@@ -14,6 +14,7 @@ import { requireAuth, optionalAuth, requireScope } from "@/modules/auth/middlewa
 import { getUserTimezone } from "@/modules/auth/user-prefs";
 import { createPATRateLimit } from "@/modules/shared/rate-limit";
 import { readIfMatch } from "@/modules/shared/if-match";
+import { VersionNotFoundError } from "@/modules/shared/domain-errors";
 import { generateUniqueSlug } from "@/modules/trips/slug";
 import {
   containsInFlightUpload,
@@ -389,7 +390,9 @@ blogRoutes.post(
           409
         );
       }
-      if (err instanceof Error && err.message === "Target version not found") {
+      // SHAN-530: was a message-string match. The repo throws a typed error
+      // now, shared with the journal handler.
+      if (err instanceof VersionNotFoundError) {
         return c.json({ error: "Target version not found" }, 404);
       }
       throw err;

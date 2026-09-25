@@ -85,6 +85,35 @@ Compound cursors for the newest-first list endpoints (SHAN-513). Every list that
 - Unit tests compile the real SQL with `PgDialect`, and `scripts/keyset-dryrun.ts` runs the composed predicate against the real database in a rolled-back transaction — the mocked-drizzle tests cannot tell you the SQL is valid.
 - The public contract is documented in the frontend docs element (`lib/docs/content/conventions.ts`) — change one, change the other.
 
+## `domain-errors.ts` — `VersionNotFoundError` / `SuggestionNotPendingError`
+
+Typed errors a repo throws and a route maps to a status code (SHAN-530). Two
+of them today:
+
+- **`VersionNotFoundError`** — `revertToVersion` on both the journal and the
+  blog, when `target_version_num` names a version the record does not have.
+  Both revert handlers answer `404 { error: "Target version not found" }`.
+- **`SuggestionNotPendingError(currentStatus)`** — `approveSuggestion` /
+  `rejectSuggestion`, when the suggestion was decided between the route's read
+  and the transaction's re-read. 409 with `currentStatus`, or 404 when
+  `currentStatus` is null (the row is gone).
+
+**Why they live in `shared` and not next to the repo that throws them.** Every
+journal/blog route test partially mocks the repo module
+(`vi.mock("@/modules/journal/versions-repo", () => ({ ... }))`). A class
+exported from the repo is `undefined` under such a mock unless each factory
+remembers to restate it, and `err instanceof undefined` throws a TypeError
+*from inside the catch block* — a worse bug than the mapping gap it was meant
+to fix, and one that only shows up at request time. Twelve test files mock
+those two repos today; nothing mocks `shared`. `VersionConflictError` predates
+this file and stays duplicated in each `versions-repo`, because the route tests
+already restate it by hand.
+
+The rule this generalizes: if a route's `catch` needs `instanceof`, the class
+belongs somewhere the route tests do not mock. Matching on `err.message`
+instead (what the blog revert handler did before SHAN-530) survives the mocks
+but silently stops working the moment someone rewords the string.
+
 ## `embeddings.ts` (if present)
 
 Local embeddings via `@xenova/transformers`. CPU-only, no API key. Slow but free; used for pgvector similarity searches in the knowledge module. Don't try to wire this through `generateText` — it's not text generation.

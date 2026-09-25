@@ -7,6 +7,7 @@ import { and, desc, eq, lt, sql } from "drizzle-orm";
 import { db } from "@/db/client";
 import { blogPosts, blogVersions, users } from "@/db/schema";
 import { hashContent } from "./posts-repo";
+import { VersionNotFoundError } from "@/modules/shared/domain-errors";
 
 export class VersionConflictError extends Error {
   constructor(public currentVersionNum: number) {
@@ -124,7 +125,7 @@ export async function revertToVersion(
   ifMatchVersionNum: number
 ) {
   const target = await getVersion(postId, targetVersionNum);
-  if (!target) throw new Error("Target version not found");
+  if (!target) throw new VersionNotFoundError();
   return appendDirectVersion({
     postId,
     editorId,

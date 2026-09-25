@@ -1,8 +1,13 @@
 // src/modules/journal/routes.ts
 import { Hono } from "hono";
+import type { Context } from "hono";
 import { z } from "zod";
 import { zValidator } from "@/modules/shared/zod-validator";
 import { readIfMatch } from "@/modules/shared/if-match";
+import {
+  SuggestionNotPendingError,
+  VersionNotFoundError,
+} from "@/modules/shared/domain-errors";
 import { requireAuth, optionalAuth, requireScope } from "@/modules/auth/middleware";
 import { getUserTimezone } from "@/modules/auth/user-prefs";
 import { listEntries, getEntryByDate, createEntry, softDeleteEntry } from "./entries-repo";
@@ -483,6 +488,11 @@ journalRoutes.post(
       if (err instanceof VersionConflictError) {
         return c.json({ error: "Version conflict", currentVersionNum: err.currentVersionNum }, 409);
       }
+      // SHAN-530: asking for a version number the entry does not have is a
+      // 404-shaped client mistake, not an outage. Matches the blog handler.
+      if (err instanceof VersionNotFoundError) {
+        return c.json({ error: "Target version not found" }, 404);
+      }
       throw err;
     }
   }
@@ -601,6 +611,20 @@ journalRoutes.get("/suggestions/:id", optionalAuth, requireJournalMembership, zV
   return c.json({ suggestion: row });
 });
 
+/**
+ * SHAN-530: shared reply for a suggestion that is no longer pending by the
+ * time the write transaction reads it. `currentStatus` is null when the row
+ * has vanished, which is the 404 the route's own existence check would have
+ * given had it lost the race by a hair less.
+ */
+function notPendingResponse(c: Context, err: SuggestionNotPendingError) {
+  if (err.currentStatus === null) return c.json({ error: "Not found" }, 404);
+  return c.json(
+    { error: "Suggestion is no longer pending", currentStatus: err.currentStatus },
+    409
+  );
+}
+
 journalRoutes.patch(
   "/suggestions/:id/approve",
   requireAuth,
@@ -646,6 +670,10 @@ journalRoutes.patch(
       if (err instanceof VersionConflictError) {
         return c.json({ error: "Version conflict", currentVersionNum: err.currentVersionNum }, 409);
       }
+      // SHAN-530: someone decided the suggestion between the read above and
+      // the transaction below it. A decided suggestion is a 409; one that has
+      // vanished entirely is a 404, same as the `!s` check above.
+      if (err instanceof SuggestionNotPendingError) return notPendingResponse(c, err);
       throw err;
     }
   }
@@ -673,7 +701,15 @@ journalRoutes.patch(
     if (!entryRow || entryRow.authorId !== userId) return c.json({ error: "Only the entry author can reject" }, 403);
 
     const reason = c.req.valid("json").reason;
-    const updated = await rejectSuggestion(id, userId, reason);
+    let updated;
+    try {
+      updated = await rejectSuggestion(id, userId, reason);
+    } catch (err) {
+      // SHAN-530: same race as approve. This path had no catch at all, so a
+      // double-click on Reject answered 500.
+      if (err instanceof SuggestionNotPendingError) return notPendingResponse(c, err);
+      throw err;
+    }
     await recordActivity({
       entryId: s.entryId,
       entryDate: entryRow.date,

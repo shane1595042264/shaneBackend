@@ -91,6 +91,7 @@ function chain(rows: unknown[]) {
 
 import { journalRoutes } from "@/modules/journal/routes";
 import { VersionConflictError } from "@/modules/journal/versions-repo";
+import { SuggestionNotPendingError } from "@/modules/shared/domain-errors";
 
 beforeEach(() => vi.clearAllMocks());
 const app = new Hono().route("/api/journal", journalRoutes);
@@ -283,6 +284,32 @@ describe("PATCH /api/journal/suggestions/:id/approve", () => {
     });
     expect(res.status).toBe(404);
   });
+
+  // SHAN-530: the repo re-reads the suggestion inside the transaction, so a
+  // suggestion decided between the route's read and that re-read threw a plain
+  // Error and surfaced as a 500. It is a state conflict, which is a 409.
+  it("409s rather than 500s when the suggestion is no longer pending", async () => {
+    mockGetSug.mockResolvedValue({ id: "s1", entryId: "e1", status: "pending" });
+    mockSelect.mockReturnValue(chain([{ authorId: "owner" }]));
+    mockApprove.mockRejectedValue(new SuggestionNotPendingError("approved"));
+    const res = await app.request(`/api/journal/suggestions/${SID}/approve`, {
+      method: "PATCH",
+      headers: { "X-Test-User": "owner", "If-Match": "1" },
+    });
+    expect(res.status).toBe(409);
+    expect((await res.json()).currentStatus).toBe("approved");
+  });
+
+  it("404s when the suggestion vanished inside the transaction", async () => {
+    mockGetSug.mockResolvedValue({ id: "s1", entryId: "e1", status: "pending" });
+    mockSelect.mockReturnValue(chain([{ authorId: "owner" }]));
+    mockApprove.mockRejectedValue(new SuggestionNotPendingError(null));
+    const res = await app.request(`/api/journal/suggestions/${SID}/approve`, {
+      method: "PATCH",
+      headers: { "X-Test-User": "owner", "If-Match": "1" },
+    });
+    expect(res.status).toBe(404);
+  });
 });
 
 describe("PATCH /api/journal/suggestions/:id/reject", () => {
@@ -324,6 +351,21 @@ describe("PATCH /api/journal/suggestions/:id/reject", () => {
     });
     expect(res.status).toBe(200);
     expect(mockReject).toHaveBeenCalledWith(SID, "owner", undefined);
+  });
+
+  // SHAN-530: reject had no catch at all, so a second Reject on an already
+  // decided suggestion answered 500 instead of 409.
+  it("409s rather than 500s when the suggestion is no longer pending", async () => {
+    mockGetSug.mockResolvedValue({ id: "s1", entryId: "e1", status: "pending" });
+    mockSelect.mockReturnValue(chain([{ authorId: "owner" }]));
+    mockReject.mockRejectedValue(new SuggestionNotPendingError("rejected"));
+    const res = await app.request(`/api/journal/suggestions/${SID}/reject`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", "X-Test-User": "owner" },
+      body: JSON.stringify({}),
+    });
+    expect(res.status).toBe(409);
+    expect((await res.json()).currentStatus).toBe("rejected");
   });
 
   // SHAN-430: a genuine reason is trimmed of incidental padding before persisting.

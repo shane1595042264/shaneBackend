@@ -47,6 +47,7 @@ vi.mock("@/modules/auth/middleware", () => ({
 
 import { journalRoutes } from "@/modules/journal/routes";
 import { VersionConflictError } from "@/modules/journal/versions-repo";
+import { VersionNotFoundError } from "@/modules/shared/domain-errors";
 
 beforeEach(() => vi.clearAllMocks());
 
@@ -218,6 +219,22 @@ describe("POST /api/journal/entries/:date/revert", () => {
       body: JSON.stringify({ target_version_num: 2 }),
     });
     expect(res.status).toBe(409);
+  });
+
+  // SHAN-530: the mirror of blog's "404s rather than 500s when the target
+  // version does not exist". Asking for version 99 of a six-version entry used
+  // to reach the global handler and come back as a 500, which a client cannot
+  // tell apart from the backend being down.
+  it("404s rather than 500s when the target version does not exist", async () => {
+    mockGetByDate.mockResolvedValue({ entry: { authorId: "u1", id: "e1" }, currentVersion: { versionNum: 5 } });
+    mockRevert.mockRejectedValue(new VersionNotFoundError());
+    const res = await app.request("/api/journal/entries/2026-04-29/revert", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Test-User": "u1", "If-Match": "5" },
+      body: JSON.stringify({ target_version_num: 99 }),
+    });
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: "Target version not found" });
   });
 
   it("returns 400 when target_version_num is past the int4 ceiling (SHAN-529)", async () => {

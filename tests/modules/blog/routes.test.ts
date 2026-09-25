@@ -80,6 +80,7 @@ vi.mock("@/modules/auth/middleware", () => ({
 
 import { blogRoutes } from "@/modules/blog/routes";
 import { VersionConflictError } from "@/modules/blog/versions-repo";
+import { VersionNotFoundError } from "@/modules/shared/domain-errors";
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -435,7 +436,7 @@ describe("POST /api/blog/posts/:slug/revert", () => {
 
   it("404s rather than 500s when the target version does not exist", async () => {
     mockGetPostBySlug.mockResolvedValue(postRow());
-    mockRevert.mockRejectedValue(new Error("Target version not found"));
+    mockRevert.mockRejectedValue(new VersionNotFoundError());
     const res = await revert({ target_version_num: 99 }, { "If-Match": "3" });
     expect(res.status).toBe(404);
   });
