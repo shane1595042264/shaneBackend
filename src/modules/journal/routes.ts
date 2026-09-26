@@ -734,24 +734,43 @@ journalRoutes.patch(
   async (c) => {
     const userId = c.get("userId") as string;
     const id = c.req.valid("param").id;
+
+    // SHAN-536: this handler used to be one `try` with a bare `catch` returning
+    // 403 "Cannot withdraw", so an unknown id, someone else's suggestion, an
+    // already-decided one, a dropped connection and a failure in the post-commit
+    // date lookup below all came back identical — and the infrastructure ones
+    // never reached the global handler to be logged. Read first and answer each
+    // case the way approve and reject do.
+    const s = await getSuggestion(id);
+    if (!s) return c.json({ error: "Not found" }, 404);
+    if (s.proposerId !== userId) return c.json({ error: "Only the proposer can withdraw" }, 403);
+
+    let updated;
     try {
-      const updated = await withdrawSuggestion(id, userId);
-      const entryDate = await entryDateById(updated.entryId);
-      if (entryDate) {
-        await recordActivity({
-          entryId: updated.entryId,
-          entryDate,
-          action: "suggestion.withdraw",
-          targetType: "suggestion",
-          targetId: id,
-          actorId: userId,
-          actorTokenId: actorTokenId(c),
-        });
-      }
-      return c.json({ suggestion: { ...updated, status: "withdrawn" } });
-    } catch {
-      return c.json({ error: "Cannot withdraw" }, 403);
+      updated = await withdrawSuggestion(id, userId);
+    } catch (err) {
+      // The author decided it between the read above and the transaction.
+      if (err instanceof SuggestionNotPendingError) return notPendingResponse(c, err);
+      throw err;
     }
+    // Outside the try on purpose, matching reject. recordActivity swallows its
+    // own failures, but this date lookup is a live query: under the old bare
+    // catch a dropped connection here answered 403 "Cannot withdraw" for a row
+    // that was already withdrawn, which is the one wrong answer a client cannot
+    // recover from by retrying.
+    const entryDate = await entryDateById(updated.entryId);
+    if (entryDate) {
+      await recordActivity({
+        entryId: updated.entryId,
+        entryDate,
+        action: "suggestion.withdraw",
+        targetType: "suggestion",
+        targetId: id,
+        actorId: userId,
+        actorTokenId: actorTokenId(c),
+      });
+    }
+    return c.json({ suggestion: { ...updated, status: "withdrawn" } });
   }
 );
 

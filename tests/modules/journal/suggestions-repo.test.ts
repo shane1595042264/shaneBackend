@@ -203,12 +203,31 @@ describe("rejectSuggestion", () => {
 });
 
 describe("withdrawSuggestion", () => {
+  // SHAN-536: the thrown type is load-bearing now — the route maps
+  // SuggestionNotPendingError to 404/409 and lets anything else become a 500,
+  // so a plain Error here would silently turn a race back into an outage
+  // report. currentStatus is null when the WHERE (id + proposerId) matched
+  // nothing at all.
   it("only the proposer can withdraw", async () => {
     const tx = {
       select: vi.fn(() => chain([])),
     };
     mockTransaction.mockImplementation(async (fn: any) => fn(tx));
-    await expect(withdrawSuggestion("s1", "wrong-user")).rejects.toThrow();
+    await expect(withdrawSuggestion("s1", "wrong-user")).rejects.toMatchObject({
+      name: "SuggestionNotPendingError",
+      currentStatus: null,
+    });
+  });
+
+  it("reports the current status when it is already decided", async () => {
+    const tx = {
+      select: vi.fn(() => chain([{ id: "s1", entryId: "e1", proposerId: "u2", status: "approved" }])),
+    };
+    mockTransaction.mockImplementation(async (fn: any) => fn(tx));
+    await expect(withdrawSuggestion("s1", "u2")).rejects.toMatchObject({
+      name: "SuggestionNotPendingError",
+      currentStatus: "approved",
+    });
   });
 
   it("sets status=withdrawn and decrements pendingSuggestionCount", async () => {

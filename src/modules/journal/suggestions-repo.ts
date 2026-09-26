@@ -183,6 +183,14 @@ export async function rejectSuggestion(suggestionId: string, authorId: string, r
   });
 }
 
+/**
+ * The proposerId filter stays in the WHERE as a last-line guard even though the
+ * route checks ownership before calling: a suggestion that is not yours reads
+ * as absent here, so a route that ever forgets the check still cannot withdraw
+ * someone else's work. That also means `null` from this throw covers two cases
+ * (gone, or never yours), both of which the route has already answered more
+ * precisely by the time it can see the error.
+ */
 export async function withdrawSuggestion(suggestionId: string, proposerId: string) {
   return db.transaction(async (tx) => {
     const [s] = await tx
@@ -190,7 +198,10 @@ export async function withdrawSuggestion(suggestionId: string, proposerId: strin
       .from(journalSuggestions)
       .where(and(eq(journalSuggestions.id, suggestionId), eq(journalSuggestions.proposerId, proposerId)))
       .limit(1);
-    if (!s || s.status !== "pending") throw new Error("Cannot withdraw");
+    // SHAN-536: was a plain Error("Cannot withdraw"), which the route turned
+    // into 403 for every cause including a dead connection. Same typed error
+    // approve and reject throw since SHAN-530.
+    if (!s || s.status !== "pending") throw new SuggestionNotPendingError(s?.status ?? null);
     await tx
       .update(journalSuggestions)
       .set({ status: "withdrawn", updatedAt: new Date() })

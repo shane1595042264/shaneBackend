@@ -383,24 +383,88 @@ describe("PATCH /api/journal/suggestions/:id/reject", () => {
   });
 });
 
+// SHAN-536: withdraw was the last suggestion handler wrapped in a bare catch
+// that answered 403 for everything. The case this block replaces asserted that
+// behaviour ("403 when withdrawSuggestion throws"), so it could not tell a
+// non-proposer from an outage either. Each cause now gets its own answer, and
+// `mockSelect` is set explicitly in every case — vi.clearAllMocks() clears calls
+// but not implementations, so these used to inherit whichever chain the reject
+// suite happened to leave behind.
 describe("PATCH /api/journal/suggestions/:id/withdraw", () => {
-  it("withdraws when caller is proposer", async () => {
-    mockWithdraw.mockResolvedValue({ id: "s1", status: "pending" });
+  // Empty row set => entryDateById returns null => the activity write is
+  // skipped, which keeps these tests about the status code.
+  const noEntryDate = () => mockSelect.mockReturnValue(chain([]));
+
+  it("withdraws when caller is the proposer", async () => {
+    mockGetSug.mockResolvedValue({ id: "s1", entryId: "e1", proposerId: "stranger", status: "pending" });
+    noEntryDate();
+    mockWithdraw.mockResolvedValue({ id: "s1", entryId: "e1", status: "pending" });
     const res = await app.request(`/api/journal/suggestions/${SID}/withdraw`, {
       method: "PATCH",
       headers: { "X-Test-User": "stranger" },
     });
     expect(res.status).toBe(200);
+    expect((await res.json()).suggestion.status).toBe("withdrawn");
     expect(mockWithdraw).toHaveBeenCalledWith(SID, "stranger");
   });
 
-  it("403 when withdrawSuggestion throws (non-proposer)", async () => {
-    mockWithdraw.mockRejectedValue(new Error("Cannot withdraw"));
+  it("404s for an id that does not exist, without attempting the write", async () => {
+    mockGetSug.mockResolvedValue(null);
+    noEntryDate();
+    const res = await app.request(`/api/journal/suggestions/${SID}/withdraw`, {
+      method: "PATCH",
+      headers: { "X-Test-User": "stranger" },
+    });
+    expect(res.status).toBe(404);
+    expect(mockWithdraw).not.toHaveBeenCalled();
+  });
+
+  it("403s when the caller is not the proposer", async () => {
+    mockGetSug.mockResolvedValue({ id: "s1", entryId: "e1", proposerId: "stranger", status: "pending" });
+    noEntryDate();
     const res = await app.request(`/api/journal/suggestions/${SID}/withdraw`, {
       method: "PATCH",
       headers: { "X-Test-User": "wrong" },
     });
     expect(res.status).toBe(403);
+    expect(mockWithdraw).not.toHaveBeenCalled();
+  });
+
+  it("409s with currentStatus when the author decided it first", async () => {
+    mockGetSug.mockResolvedValue({ id: "s1", entryId: "e1", proposerId: "stranger", status: "pending" });
+    noEntryDate();
+    mockWithdraw.mockRejectedValue(new SuggestionNotPendingError("approved"));
+    const res = await app.request(`/api/journal/suggestions/${SID}/withdraw`, {
+      method: "PATCH",
+      headers: { "X-Test-User": "stranger" },
+    });
+    expect(res.status).toBe(409);
+    expect((await res.json()).currentStatus).toBe("approved");
+  });
+
+  it("404s when the suggestion vanished inside the transaction", async () => {
+    mockGetSug.mockResolvedValue({ id: "s1", entryId: "e1", proposerId: "stranger", status: "pending" });
+    noEntryDate();
+    mockWithdraw.mockRejectedValue(new SuggestionNotPendingError(null));
+    const res = await app.request(`/api/journal/suggestions/${SID}/withdraw`, {
+      method: "PATCH",
+      headers: { "X-Test-User": "stranger" },
+    });
+    expect(res.status).toBe(404);
+  });
+
+  // The regression that matters most: an infrastructure failure must not be
+  // dressed up as a refusal. A 403 tells the caller to stop and tells the logs
+  // nothing; a 500 is retryable and reaches the error handler.
+  it("does not answer 403 when the repo fails for an unrelated reason", async () => {
+    mockGetSug.mockResolvedValue({ id: "s1", entryId: "e1", proposerId: "stranger", status: "pending" });
+    noEntryDate();
+    mockWithdraw.mockRejectedValue(new Error("Connection terminated unexpectedly"));
+    const res = await app.request(`/api/journal/suggestions/${SID}/withdraw`, {
+      method: "PATCH",
+      headers: { "X-Test-User": "stranger" },
+    });
+    expect(res.status).toBe(500);
   });
 });
 
