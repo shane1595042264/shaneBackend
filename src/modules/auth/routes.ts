@@ -13,6 +13,33 @@ const GOOGLE_JWKS = createRemoteJWKSet(
   new URL("https://www.googleapis.com/oauth2/v3/certs")
 );
 
+/**
+ * jose error codes that mean "this credential is bad" — the caller's fault, and
+ * final. Everything else out of `jwtVerify` is treated as a failure to reach or
+ * read Google's key set (see the catch in `POST /google` below).
+ *
+ * SHAN-537: allowlisting the credential-side causes rather than the transport
+ * ones is deliberate and is the whole point of the fix. The credential-side
+ * failures of `jwtVerify` are a closed set (jose exports exactly these error
+ * classes); the transport failures are open-ended — any fetch/DNS/TLS error, a
+ * non-200 from googleapis.com, a future jose error code. Defaulting an
+ * unrecognized failure to "retry, and log it" can only ever cost a log line,
+ * whereas defaulting it to 401 tells a user that a credential Google minted a
+ * second ago is invalid, which is both wrong and unactionable.
+ */
+const INVALID_CREDENTIAL_CODES = new Set([
+  "ERR_JWS_SIGNATURE_VERIFICATION_FAILED",
+  "ERR_JWT_EXPIRED",
+  "ERR_JWT_CLAIM_VALIDATION_FAILED", // wrong audience / issuer
+  "ERR_JWT_INVALID",
+  "ERR_JWS_INVALID",
+  "ERR_JWKS_NO_MATCHING_KEY", // the token's kid is not in Google's live key set
+  "ERR_JWKS_MULTIPLE_MATCHING_KEYS",
+  "ERR_JOSE_ALG_NOT_ALLOWED",
+  "ERR_JOSE_NOT_SUPPORTED",
+  "ERR_JWK_INVALID",
+]);
+
 const googleAuthSchema = z.object({
   // Real Google ID tokens (JWTs) are ~1-2KB; 8KB is a generous cap that still
   // rejects multi-MB payloads before they reach zod + jwtVerify on this public,
@@ -33,7 +60,19 @@ authRoutes.post(
   async (c) => {
     const { credential } = c.req.valid("json");
 
-    // Verify Google ID token
+    // Verify Google ID token.
+    //
+    // SHAN-537: this catch used to return 401 "Invalid Google token" for every
+    // failure. `GOOGLE_JWKS` is a remote key set, so `jwtVerify` makes a live
+    // request to googleapis.com, and jose signals a failure to reach or read it
+    // three ways: JWKSTimeout, a bare JOSEError (non-200 response, or a body
+    // that will not parse as JSON), and a re-thrown raw fetch error for DNS,
+    // connection-refused and TLS failures. All three used to be reported to the
+    // user as a bad credential. That made a Google certs outage into a total
+    // login outage that read as user error, told every visitor their valid
+    // token was invalid, and produced no log lines at all, because `err` was
+    // never read and the handler returned instead of rethrowing. 401 also reads
+    // as final, so it stops the retry that would have succeeded.
     let payload: Record<string, unknown>;
     try {
       const { payload: p } = await jwtVerify(credential, GOOGLE_JWKS, {
@@ -42,7 +81,23 @@ authRoutes.post(
       });
       payload = p as Record<string, unknown>;
     } catch (err: any) {
-      return c.json({ error: "Invalid Google token" }, 401);
+      if (INVALID_CREDENTIAL_CODES.has(err?.code)) {
+        return c.json({ error: "Invalid Google token" }, 401);
+      }
+      // Could not reach or read Google's key set. Log the real cause (this is
+      // the only record a certs outage leaves) and tell the client it is worth
+      // retrying. Never return err.message — it can carry request internals.
+      console.error(
+        `[auth] POST /api/auth/google: could not verify against Google's key set (code=${err?.code ?? "none"}):`,
+        err
+      );
+      return c.json(
+        {
+          error: "Could not reach Google to verify your sign-in. Please try again.",
+          code: "google_keys_unavailable",
+        },
+        503
+      );
     }
 
     const googleId = payload.sub as string;
