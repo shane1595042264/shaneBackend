@@ -8,6 +8,7 @@ import { db } from "@/db/client";
 import { blogPosts, blogVersions, users } from "@/db/schema";
 import { hashContent } from "./posts-repo";
 import { VersionNotFoundError } from "@/modules/shared/domain-errors";
+import { countBodyWords } from "@/modules/shared/word-count";
 
 export class VersionConflictError extends Error {
   constructor(public currentVersionNum: number) {
@@ -60,6 +61,12 @@ export async function appendDirectVersion(input: AppendInput) {
         // Denormalized copy so the list query never joins blog_versions for
         // a title. Kept in step here, inside the same transaction.
         title: input.title,
+        // Likewise the reading-time input (SHAN-541). It belongs next to
+        // current_version_id rather than in its own update: a body change and
+        // the count of that body have to land together or a tile can advertise
+        // the previous revision's length. A revert comes through here too, so
+        // it re-counts the restored body for free.
+        wordCount: countBodyWords(input.content),
         editCount: sql`${blogPosts.editCount} + 1`,
         updatedAt: new Date(),
       })

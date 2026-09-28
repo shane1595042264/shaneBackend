@@ -113,6 +113,32 @@ describe("createPost", () => {
     expect(tx.update).toHaveBeenCalledTimes(1);
   });
 
+  it("stores a markdown-aware word count for the initial body (SHAN-541)", async () => {
+    const postValues = vi.fn(() => ({
+      returning: vi.fn(() => Promise.resolve([{ id: "p1" }])),
+    }));
+    const tx = {
+      insert: vi
+        .fn()
+        .mockReturnValueOnce({ values: postValues })
+        .mockReturnValueOnce({
+          values: vi.fn(() => ({ returning: vi.fn(() => Promise.resolve([{ id: "v1" }])) })),
+        }),
+      update: vi.fn(() => ({ set: vi.fn(() => ({ where: vi.fn(() => Promise.resolve()) })) })),
+    };
+    mockTransaction.mockImplementation(async (fn: any) => fn(tx));
+
+    await createPost({
+      slug: "s",
+      title: "t",
+      authorId: "u1",
+      // A whitespace split would say 8 here; only three of those are words.
+      content: ["# Heading", "", "- one", "- two", "", "```js", "const a = 1;", "```"].join("\n"),
+    });
+
+    expect(postValues).toHaveBeenCalledWith(expect.objectContaining({ wordCount: 3 }));
+  });
+
   it("defaults timezone, tags and status when omitted", async () => {
     const postValues = vi.fn(() => ({
       returning: vi.fn(() => Promise.resolve([{ id: "p1" }])),
@@ -216,6 +242,16 @@ describe("listPosts", () => {
     const rows = await listPosts({ limit: 20 });
     expect(rows[0].author).toEqual({ id: "u1", name: "Shane", avatarUrl: null });
     expect(rows[0]).not.toHaveProperty("authorName");
+  });
+
+  it("selects the denormalized word count so a tile has a reading time (SHAN-541)", async () => {
+    mockSelect.mockReturnValue(chain([]));
+    await listPosts({ limit: 20 });
+    // The projection, not the row: the excerpt in this same select is capped
+    // at 500 chars, so the count has to come off blog_posts or the tile is
+    // stuck at "1 min read" for every post.
+    const projection = mockSelect.mock.calls[0][0] as Record<string, unknown>;
+    expect(projection.wordCount).toEqual({ table: "blog_posts", column: "wordCount" });
   });
 
   it("escapes LIKE wildcards in the search term", async () => {

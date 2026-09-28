@@ -1,0 +1,1 @@
+ALTER TABLE "blog_posts" ADD COLUMN "word_count" integer DEFAULT 0 NOT NULL;

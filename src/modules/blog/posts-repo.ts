@@ -9,6 +9,7 @@ import { and, asc, desc, eq, or, ilike, sql } from "drizzle-orm";
 import { db } from "@/db/client";
 import { blogPosts, blogVersions, users } from "@/db/schema";
 import { keysetBefore, parseKeysetCursor } from "@/modules/shared/keyset";
+import { countBodyWords } from "@/modules/shared/word-count";
 
 const EXCERPT_SOURCE_LEN = 500;
 // When a search (q) matches deep in the body, start the excerpt this many
@@ -54,6 +55,9 @@ export async function createPost(input: {
         tags: input.tags ?? [],
         status: input.status ?? "published",
         coverImageUrl: input.coverImageUrl ?? null,
+        // Denormalized reading-time input (SHAN-541), set here and in
+        // appendDirectVersion, the only other place a body is written.
+        wordCount: countBodyWords(input.content),
       })
       .returning();
 
@@ -173,6 +177,9 @@ export async function listPosts(opts: {
       // Denormalized (SHAN-488) precisely so the index tile can show a count
       // without a correlated subquery per row.
       commentCount: blogPosts.commentCount,
+      // SHAN-541. Same reason: a tile's reading time cannot come from the
+      // 500-char excerpt below, which is ~80 words for every post.
+      wordCount: blogPosts.wordCount,
       publishedAt: blogPosts.publishedAt,
       createdAt: blogPosts.createdAt,
       updatedAt: blogPosts.updatedAt,

@@ -1583,6 +1583,17 @@ export const blogPosts = pgTable(
     // transaction as the insert/delete in blog/comments-repo.ts; the
     // decrement is floored at 0 so a racing double-delete can't go negative.
     commentCount: integer("comment_count").notNull().default(0),
+    // SHAN-541. Words in the current body, markdown control tokens excluded
+    // (see modules/shared/word-count.ts). Denormalized for the same reason as
+    // comment_count: the index tile needs a reading time, and the list query
+    // deliberately ships only a 500-char excerpt, which is about 80 words and
+    // therefore pinned every post at "1 min read". Written in the same
+    // transaction as `title` and `current_version_id`, in the only two places
+    // a body is ever written (blog/posts-repo.createPost and
+    // blog/versions-repo.appendDirectVersion, which reverts route through).
+    // 0 means "not counted yet" and renders as no reading time at all, which
+    // is honest where a floored estimate was not.
+    wordCount: integer("word_count").notNull().default(0),
     // Ordering key and keyset cursor for the public list. Separate from
     // created_at so a draft promoted to published later sorts by when it
     // went public, not when it was first typed.

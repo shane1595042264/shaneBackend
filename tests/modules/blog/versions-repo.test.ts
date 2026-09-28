@@ -91,6 +91,19 @@ describe("appendDirectVersion", () => {
     );
   });
 
+  it("recounts the denormalized word count from the new body (SHAN-541)", async () => {
+    const { setSpy } = txWith([{ id: "v1", versionNum: 1 }]);
+    await appendDirectVersion({
+      postId: "p1",
+      editorId: "u1",
+      title: "t",
+      // Markers and a fenced block, so a whitespace split would say 9.
+      content: ["# Heading", "", "- one", "- two", "", "```js", "const a = 1;", "```"].join("\n"),
+      ifMatchVersionNum: 1,
+    });
+    expect(setSpy).toHaveBeenCalledWith(expect.objectContaining({ wordCount: 3 }));
+  });
+
   it("throws VersionConflictError when If-Match is stale", async () => {
     txWith([{ id: "v5", versionNum: 5 }]);
     await expect(
@@ -115,6 +128,18 @@ describe("appendDirectVersion", () => {
         ifMatchVersionNum: 1,
       })
     ).rejects.toMatchObject({ currentVersionNum: 0 });
+  });
+});
+
+describe("revertToVersion", () => {
+  it("recounts the word count from the restored body, not the one being replaced", async () => {
+    // getVersion reads the target first, then appendDirectVersion runs.
+    mockSelect.mockReturnValue(chain([{ id: "v1", versionNum: 1, title: "Old", content: "four restored words here" }]));
+    const { setSpy } = txWith([{ id: "v3", versionNum: 3 }]);
+    await revertToVersion("p1", 1, "u1", 3);
+    expect(setSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ title: "Old", wordCount: 4 })
+    );
   });
 });
 
