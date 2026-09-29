@@ -10,6 +10,7 @@ import { postToBilibili } from "./bilibili";
 import { normalizeLocations, computeLongTermMemorized } from "./memorization";
 import { optionalAuth, requireAuth, requireScope } from "@/modules/auth/middleware";
 import { createPATRateLimit } from "@/modules/shared/rate-limit";
+import { likeContains } from "@/modules/shared/like";
 import {
   trimmedRequired,
   trimmedOptional,
@@ -348,7 +349,9 @@ knowledgeRoutes.get("/entries", zValidator("query", wordsQuerySchema), async (c)
       );
     }
     if (search) {
-      const pattern = `%${search}%`;
+      // SHAN-545: escaped, not interpolated. Wrapping the raw term in percent
+      // signs made a search for "_" or "%" match every row in the table.
+      const pattern = likeContains(search);
       conditions.push(
         or(
           ilike(vocabWords.word, pattern),

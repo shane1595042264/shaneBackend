@@ -7,6 +7,7 @@ import { desc, eq, and, or, ilike, sql, inArray } from "drizzle-orm";
 import { enrichWord } from "./ai-enricher";
 import { requireAuth, requireScope } from "@/modules/auth/middleware";
 import { createPATRateLimit } from "@/modules/shared/rate-limit";
+import { likeContains } from "@/modules/shared/like";
 import {
   trimmedRequired,
   trimmedOptional,
@@ -79,7 +80,9 @@ vocabularyRoutes.get("/words", zValidator("query", wordsQuerySchema), async (c) 
 
     const conditions = [];
     if (language) conditions.push(eq(vocabWords.language, language));
-    if (search) conditions.push(ilike(vocabWords.word, `%${search}%`));
+    // SHAN-545: `likeContains` escapes the LIKE metacharacters. Interpolating
+    // the raw term let a search for "_" or "%" return the whole table.
+    if (search) conditions.push(ilike(vocabWords.word, likeContains(search)));
     if (label) {
       conditions.push(sql`${vocabWords.labels}::jsonb @> ${JSON.stringify([label])}::jsonb`);
     }

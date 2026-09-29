@@ -10,6 +10,7 @@ import { db } from "@/db/client";
 import { blogPosts, blogVersions, users } from "@/db/schema";
 import { keysetBefore, parseKeysetCursor } from "@/modules/shared/keyset";
 import { countBodyWords } from "@/modules/shared/word-count";
+import { likeContains } from "@/modules/shared/like";
 
 const EXCERPT_SOURCE_LEN = 500;
 // When a search (q) matches deep in the body, start the excerpt this many
@@ -149,7 +150,8 @@ export async function listPosts(opts: {
   }
   if (opts.q) {
     // Escape LIKE wildcards so a literal % or _ is matched as itself.
-    const pattern = `%${opts.q.replace(/[\\%_]/g, (ch) => `\\${ch}`)}%`;
+    // Shared with the journal and the two vocab searches since SHAN-545.
+    const pattern = likeContains(opts.q);
     where.push(
       or(ilike(blogPosts.title, pattern), ilike(blogVersions.content, pattern))!
     );

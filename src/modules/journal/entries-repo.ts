@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { and, eq, desc, lt, gte, lte, or, ilike, sql } from "drizzle-orm";
 import { db } from "@/db/client";
 import { journalEntries, journalVersions, journalComments, journalAppends, users } from "@/db/schema";
+import { likeContains } from "@/modules/shared/like";
 
 const EXCERPT_SOURCE_LEN = 500;
 // When a content search (q) matches deep in the body, start the excerpt this many
@@ -85,7 +86,8 @@ export async function listEntries(opts: {
   if (opts.to) where.push(lte(journalEntries.date, opts.to));
   if (opts.q) {
     // Escape LIKE wildcards so a literal % or _ in the query doesn't act as a pattern.
-    const pattern = `%${opts.q.replace(/[\\%_]/g, (ch) => `\\${ch}`)}%`;
+    // Shared with the blog and the two vocab searches since SHAN-545.
+    const pattern = likeContains(opts.q);
     where.push(
       or(
         ilike(journalVersions.content, pattern),
