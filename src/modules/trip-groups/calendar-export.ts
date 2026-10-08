@@ -24,10 +24,28 @@ function nextDate(date: string): string {
   return d.toISOString().slice(0, 10);
 }
 
-function plusOneHour(time: string): string {
-  const [h, m] = time.split(":").map(Number);
-  const eh = Math.min(23, (h ?? 0) + 1);
-  return `${String(eh).padStart(2, "0")}:${String(m ?? 0).padStart(2, "0")}`;
+const pad2 = (n: number) => String(n).padStart(2, "0");
+
+/**
+ * Minutes past midnight for a 24h "H:MM"/"HH:MM" time, else null (SHAN-554).
+ * activity.time is free text (schema max(50), a plain text box in the day
+ * editor, a "hint" to the LLM), and whatever lands here is interpolated into
+ * a Google dateTime. One "9am" there 400s the insert after the previous
+ * export was already deleted, and every retry hits the same row.
+ */
+export function parseActivityTime(raw: string): number | null {
+  const m = /^\s*(\d{1,2}):([0-5]\d)\s*$/.exec(raw);
+  if (!m) return null;
+  const h = Number(m[1]);
+  return h > 23 ? null : h * 60 + Number(m[2]);
+}
+
+/** "YYYY-MM-DDTHH:MM:00" for `minutes` past midnight on `date`, rolling into later days. */
+function dateTimeAt(date: string, minutes: number): string {
+  let d = date;
+  for (let i = 0; i < Math.floor(minutes / 1440); i++) d = nextDate(d);
+  const m = minutes % 1440;
+  return `${d}T${pad2(Math.floor(m / 60))}:${pad2(m % 60)}:00`;
 }
 
 export function buildEventsFromItinerary(
@@ -45,15 +63,20 @@ export function buildEventsFromItinerary(
       skippedDays.push(day.day);
       continue;
     }
-    const timed = day.activities.filter((a) => a.time);
-    const untimed = day.activities.filter((a) => !a.time);
-
-    for (const a of timed) {
+    // A time that does not parse is exported as untimed, raw text kept in
+    // the all-day description, rather than sent to Google as a bad dateTime.
+    const untimed: typeof day.activities = [];
+    for (const a of day.activities) {
+      const start = a.time ? parseActivityTime(a.time) : null;
+      if (start === null) {
+        untimed.push(a);
+        continue;
+      }
       events.push({
         summary: a.title,
         description: [a.notes, `${groupTitle} — day ${day.day}`].filter(Boolean).join("\n"),
-        start: { dateTime: `${day.date}T${a.time}:00`, timeZone },
-        end: { dateTime: `${day.date}T${plusOneHour(a.time as string)}:00`, timeZone },
+        start: { dateTime: dateTimeAt(day.date, start), timeZone },
+        end: { dateTime: dateTimeAt(day.date, start + 60), timeZone },
         extendedProperties: tag,
       });
     }
@@ -64,7 +87,9 @@ export function buildEventsFromItinerary(
       summary: `${groupTitle}: ${day.title}`,
       description:
         untimed.length > 0
-          ? untimed.map((a) => `• ${a.title}${a.notes ? ` — ${a.notes}` : ""}`).join("\n")
+          ? untimed
+              .map((a) => `• ${a.time?.trim() ? `${a.time.trim()} ` : ""}${a.title}${a.notes ? ` — ${a.notes}` : ""}`)
+              .join("\n")
           : day.location ?? undefined,
       start: { date: day.date },
       end: { date: nextDate(day.date) },
