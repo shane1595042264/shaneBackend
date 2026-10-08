@@ -65,6 +65,14 @@ Global middleware (registered in `app.ts` right after `cors`) that gives every 2
 - **The 304 path copies everything except the body-describing headers** (`Content-Type`, `Content-Length`, `Content-Encoding`, ...), then clears the old response's headers before swapping `c.res`. Hono's `res` setter copies the previous response's headers onto the new one, so without that clear they would come straight back onto a bodiless reply.
 - The public contract is documented in the frontend docs element (`lib/docs/content/conventions.ts`) — change one, change the other.
 
+## `reject-nul.ts` — `rejectNul`
+
+Global middleware (registered in `app.ts` after `conditionalGet`) that answers 400 in the `zod-validator` envelope when the URL contains `%00` or an `application/json` (or `+json`) body has a NUL in any string or key (SHAN-553). Postgres `text`/`jsonb` cannot hold 0x00, so before this `?q=%00` on the blog and `/api/courses/%00` reached the query and 500'd.
+
+- **JSON is read via `c.req.text()`, never `formData()`.** Hono's body cache then feeds the handler's `c.req.json()` from the same bytes. Multipart is skipped on purpose: once `text` is cached, Hono rebuilds `formData()` from it without the Content-Type boundary and every upload breaks.
+- **Unparseable JSON passes through** so the route's own validator keeps answering it the way it did before.
+- The public contract is documented in the frontend docs element (`lib/docs/content/conventions.ts`) — change one, change the other.
+
 ## `if-match.ts` — `readIfMatch`
 
 Reads the optimistic-concurrency version off a request, accepting `If-Match` or `X-If-Match`, `If-Match` winning if both are sent. Every handler that gates a write on a version number must call this instead of reading the header directly — journal revert, journal suggestion approve, blog body-edit and blog revert all do.

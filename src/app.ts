@@ -26,6 +26,7 @@ import { blogRoutes } from "@/modules/blog/routes";
 import { isoDate } from "@/modules/shared/validators";
 import { notFoundHandler, errorHandler } from "@/modules/shared/http-errors";
 import { conditionalGet } from "@/modules/shared/conditional-get";
+import { rejectNul } from "@/modules/shared/reject-nul";
 import { crawlerPolicy, ROBOTS_TXT } from "@/modules/shared/crawler-policy";
 import { getVersionInfo } from "@/modules/shared/version";
 import { isAdminAuthed } from "@/modules/shared/admin-auth";
@@ -71,6 +72,11 @@ app.use(
 // headers before calling the next middleware, so registering it here is what
 // lets the 304 substituted below inherit them. See modules/shared/conditional-get.
 app.use("*", conditionalGet);
+
+// SHAN-553: a NUL byte in the URL or a JSON body is a 400, not the 500 that
+// Postgres's "invalid byte sequence 0x00" turns into. After cors so the 400
+// stays readable to a browser. See modules/shared/reject-nul.
+app.use("*", rejectNul);
 
 // ---------------------------------------------------------------------------
 // Health check
