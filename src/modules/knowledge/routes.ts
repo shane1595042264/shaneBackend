@@ -49,6 +49,10 @@ const wordsQuerySchema = z.object({
   // technique) — case-insensitive membership test against the jsonb array. Cap is
   // 120 to match the per-location bound on PUT /entries.
   location: z.string().min(1).max(120).optional(),
+  // SHAN-555: the inverse — cards NOT yet memorized at this location, so the
+  // reader can pull up what still needs practice wherever they are standing.
+  // A place no card has been memorized at matches every card.
+  excludeLocation: z.string().min(1).max(120).optional(),
   limit: z.coerce.number().int().min(1).max(500).default(100),
   // SHAN-529: bounded — an unbounded offset let 1e30 through to the OFFSET
   // parameter and Postgres threw, turning a bad request into a 500.
@@ -324,7 +328,7 @@ const createWordSchema = z.object({
 // List entries with optional filters
 knowledgeRoutes.get("/entries", zValidator("query", wordsQuerySchema), async (c) => {
   try {
-    const { language, label, search, category, app, location, limit, offset } =
+    const { language, label, search, category, app, location, excludeLocation, limit, offset } =
       c.req.valid("query");
 
     const conditions = [];
@@ -345,6 +349,18 @@ knowledgeRoutes.get("/entries", zValidator("query", wordsQuerySchema), async (c)
           SELECT 1
           FROM jsonb_array_elements_text(coalesce(${vocabWords.memorizationLocations}, '[]'::jsonb)) AS loc
           WHERE lower(loc) = lower(${location})
+        )`
+      );
+    }
+    if (excludeLocation) {
+      // Same case-insensitive membership test, negated. coalesce() keeps cards
+      // with a NULL array in the result: never memorized anywhere means not
+      // memorized here either.
+      conditions.push(
+        sql`NOT EXISTS (
+          SELECT 1
+          FROM jsonb_array_elements_text(coalesce(${vocabWords.memorizationLocations}, '[]'::jsonb)) AS loc
+          WHERE lower(loc) = lower(${excludeLocation})
         )`
       );
     }

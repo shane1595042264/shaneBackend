@@ -903,6 +903,66 @@ describe("GET /api/knowledge/entries — memorization location filter (SHAN-485)
   });
 });
 
+// SHAN-555: the inverse filter — cards not yet memorized at a location.
+describe("GET /api/knowledge/entries — excludeLocation filter (SHAN-555)", () => {
+  function selectChain(rows: unknown[]) {
+    const c: Record<string, unknown> = {};
+    const t = Promise.resolve(rows);
+    for (const m of ["from", "where", "orderBy", "limit", "offset"]) {
+      c[m] = vi.fn(() => c);
+    }
+    Object.assign(c, { then: (r: any, j: any) => t.then(r, j) });
+    return c;
+  }
+
+  function sqlFragments(): string[] {
+    return mockSql.mock.calls.map(([strings]) =>
+      Array.isArray((strings as TemplateStringsArray)?.raw)
+        ? (strings as TemplateStringsArray).raw.join("?")
+        : String(strings)
+    );
+  }
+
+  const sawNotExists = () =>
+    sqlFragments().some((s) => /NOT EXISTS/.test(s) && /lower\(loc\)/.test(s));
+
+  it("emits a NOT EXISTS membership filter bound to the excluded location", async () => {
+    mockSelect
+      .mockReturnValueOnce(selectChain([{ id: "u1", word: "build" }]))
+      .mockReturnValueOnce(selectChain([{ count: 1 }]));
+
+    const res = await app.request("/api/knowledge/entries?excludeLocation=Kitchen");
+    expect(res.status).toBe(200);
+    expect(sawNotExists()).toBe(true);
+    const call = mockSql.mock.calls.find(([s]) =>
+      /NOT EXISTS/.test(((s as TemplateStringsArray).raw ?? []).join("?"))
+    );
+    expect(call).toContain("Kitchen");
+  });
+
+  it("does NOT emit the exclusion when only ?location is given", async () => {
+    mockSelect
+      .mockReturnValueOnce(selectChain([]))
+      .mockReturnValueOnce(selectChain([{ count: 0 }]));
+
+    const res = await app.request("/api/knowledge/entries?location=Kitchen");
+    expect(res.status).toBe(200);
+    expect(sawNotExists()).toBe(false);
+  });
+
+  it("rejects an empty ?excludeLocation= via zod min(1)", async () => {
+    const res = await app.request("/api/knowledge/entries?excludeLocation=");
+    expect(res.status).toBe(400);
+    expect(mockSelect).not.toHaveBeenCalled();
+  });
+
+  it("rejects an over-cap ?excludeLocation= (121 chars) with 400 before querying", async () => {
+    const res = await app.request(`/api/knowledge/entries?excludeLocation=${"e".repeat(121)}`);
+    expect(res.status).toBe(400);
+    expect(mockSelect).not.toHaveBeenCalled();
+  });
+});
+
 describe("GET /api/knowledge/locations (SHAN-485)", () => {
   it("returns the distinct location names from the jsonb column", async () => {
     mockExecute.mockResolvedValueOnce({
