@@ -2,8 +2,9 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { Hono } from "hono";
 import { __resetRateLimitBuckets } from "@/modules/shared/rate-limit";
 
-const { mockSelect, mockInsert, mockDelete, mockUpdate, mockExecute, mockSql } = vi.hoisted(() => ({
+const { mockSelect, mockInsert, mockDelete, mockUpdate, mockExecute, mockTransaction, mockSql } = vi.hoisted(() => ({
   mockSelect: vi.fn(),
+  mockTransaction: vi.fn(),
   mockInsert: vi.fn(),
   mockDelete: vi.fn(),
   mockUpdate: vi.fn(),
@@ -33,6 +34,7 @@ vi.mock("@/db/client", () => ({
     delete: mockDelete,
     update: mockUpdate,
     execute: mockExecute,
+    transaction: mockTransaction,
   },
 }));
 
@@ -351,6 +353,88 @@ describe("PUT /api/knowledge/entries/:id — ownership (SHAN-222)", () => {
     const patch = setFn.mock.calls[0][0];
     expect(patch).not.toHaveProperty("memorizationLocations");
     expect(patch).not.toHaveProperty("longTermMemorized");
+  });
+
+  // SHAN-556: deltas are applied to the row as it stands, under FOR UPDATE, so a
+  // place practice mode recorded after the client loaded the card survives.
+  function deltaTransaction(storedLocations: unknown) {
+    const forFn = vi.fn(() => Promise.resolve([{ locations: storedLocations }]));
+    const setFn = vi.fn(() => ({
+      where: () => ({ returning: () => Promise.resolve([{ id: validId }]) }),
+    }));
+    const tx = {
+      select: () => ({ from: () => ({ where: () => ({ for: forFn }) }) }),
+      update: () => ({ set: setFn }),
+    };
+    mockTransaction.mockImplementation((fn: (t: typeof tx) => unknown) => fn(tx));
+    return { forFn, setFn };
+  }
+
+  it("adds a location on top of what the row holds now, under a row lock", async () => {
+    selectReturning([{ createdBy: "user-1" }]);
+    const { forFn, setFn } = deltaTransaction(["Gym"]);
+    const res = await app.request(`/api/knowledge/entries/${validId}`, {
+      method: "PUT",
+      headers: { ...jsonHeaders, "X-Test-User": "user-1" },
+      body: JSON.stringify({ addMemorizationLocations: ["PMG"] }),
+    });
+    expect(res.status).toBe(200);
+    expect(forFn).toHaveBeenCalledWith("update");
+    const patch = setFn.mock.calls[0][0];
+    expect(patch.memorizationLocations).toEqual(["Gym", "PMG"]);
+    expect(patch.longTermMemorized).toBe(false);
+    expect(mockUpdate).not.toHaveBeenCalled();
+  });
+
+  it("removes case-insensitively and re-derives long_term_memorized", async () => {
+    selectReturning([{ createdBy: "user-1" }]);
+    const { setFn } = deltaTransaction(["a", "b", "c", "d", "e", "f", "g"]);
+    const res = await app.request(`/api/knowledge/entries/${validId}`, {
+      method: "PUT",
+      headers: { ...jsonHeaders, "X-Test-User": "user-1" },
+      body: JSON.stringify({ removeMemorizationLocations: ["G"] }),
+    });
+    expect(res.status).toBe(200);
+    const patch = setFn.mock.calls[0][0];
+    expect(patch.memorizationLocations).toEqual(["a", "b", "c", "d", "e", "f"]);
+    expect(patch.longTermMemorized).toBe(false);
+  });
+
+  it("returns 404 when the row disappears before the lock is taken", async () => {
+    selectReturning([{ createdBy: "user-1" }]);
+    const tx = {
+      select: () => ({ from: () => ({ where: () => ({ for: () => Promise.resolve([]) }) }) }),
+      update: vi.fn(),
+    };
+    mockTransaction.mockImplementation((fn: (t: typeof tx) => unknown) => fn(tx));
+    const res = await app.request(`/api/knowledge/entries/${validId}`, {
+      method: "PUT",
+      headers: { ...jsonHeaders, "X-Test-User": "user-1" },
+      body: JSON.stringify({ addMemorizationLocations: ["PMG"] }),
+    });
+    expect(res.status).toBe(404);
+    expect(tx.update).not.toHaveBeenCalled();
+  });
+
+  it("rejects a full list combined with a delta (400)", async () => {
+    const res = await app.request(`/api/knowledge/entries/${validId}`, {
+      method: "PUT",
+      headers: { ...jsonHeaders, "X-Test-User": "user-1" },
+      body: JSON.stringify({ memorizationLocations: ["Gym"], addMemorizationLocations: ["PMG"] }),
+    });
+    expect(res.status).toBe(400);
+    expect(mockSelect).not.toHaveBeenCalled();
+  });
+
+  it("does not open a transaction for a plain edit", async () => {
+    selectReturning([{ createdBy: "user-1" }]);
+    captureUpdate();
+    await app.request(`/api/knowledge/entries/${validId}`, {
+      method: "PUT",
+      headers: { ...jsonHeaders, "X-Test-User": "user-1" },
+      body: JSON.stringify({ definition: "edited" }),
+    });
+    expect(mockTransaction).not.toHaveBeenCalled();
   });
 });
 

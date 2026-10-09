@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
+  applyLocationDelta,
   normalizeLocations,
   computeLongTermMemorized,
   LONG_TERM_THRESHOLD,
@@ -36,5 +37,24 @@ describe("computeLongTermMemorized (SHAN-339)", () => {
     const locations = normalizeLocations(["a", "A", "a ", "b", "B", " b", "a"]);
     expect(locations).toEqual(["a", "b"]);
     expect(computeLongTermMemorized(locations)).toBe(false);
+  });
+});
+
+describe("applyLocationDelta (SHAN-556)", () => {
+  it("keeps locations it was not asked to touch", () => {
+    // The point of a delta: a place another writer added stays put.
+    expect(applyLocationDelta(["Gym", "Home"], ["PMG"])).toEqual(["Gym", "Home", "PMG"]);
+  });
+
+  it("removes case-insensitively and ignores padding", () => {
+    expect(applyLocationDelta(["Gym", "Home"], [], [" gym "])).toEqual(["Home"]);
+  });
+
+  it("treats re-adding a held place in another casing as a no-op", () => {
+    expect(applyLocationDelta(["Cafe"], ["cafe", "  "])).toEqual(["Cafe"]);
+  });
+
+  it("starts from [] when the stored value is null", () => {
+    expect(applyLocationDelta(null, ["Home"])).toEqual(["Home"]);
   });
 });

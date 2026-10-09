@@ -7,7 +7,7 @@ import { desc, eq, and, or, ilike, sql, inArray } from "drizzle-orm";
 import { enrichWord } from "@/modules/vocabulary/ai-enricher";
 import { classifyNote, type ClassificationSource } from "./classifier";
 import { postToBilibili } from "./bilibili";
-import { normalizeLocations, computeLongTermMemorized } from "./memorization";
+import { applyLocationDelta, normalizeLocations, computeLongTermMemorized } from "./memorization";
 import { optionalAuth, requireAuth, requireScope } from "@/modules/auth/middleware";
 import { createPATRateLimit } from "@/modules/shared/rate-limit";
 import { likeContains } from "@/modules/shared/like";
@@ -525,7 +525,17 @@ const updateWordSchema = z.object({
   // been practiced. long_term_memorized is derived server-side, never trusted from
   // the client.
   memorizationLocations: z.array(z.string().max(120)).max(50).optional(),
-});
+  // SHAN-556: deltas applied to the row as it stands, under a row lock. The full
+  // list above is computed from whatever copy the client loaded, so sending it
+  // erased any place practice mode recorded in the meantime.
+  addMemorizationLocations: z.array(z.string().max(120)).max(50).optional(),
+  removeMemorizationLocations: z.array(z.string().max(120)).max(50).optional(),
+}).refine(
+  (b) =>
+    b.memorizationLocations === undefined ||
+    (b.addMemorizationLocations === undefined && b.removeMemorizationLocations === undefined),
+  { message: "Send memorizationLocations or the add/remove deltas, not both" }
+);
 
 // Manual edit of an entry. Ownership rule mirrors DELETE: caller must be the
 // creator, but legacy rows (createdBy IS NULL, predate the column) are editable
@@ -552,7 +562,12 @@ knowledgeRoutes.put(
 
     // Derive long_term_memorized from the (normalized) location set — never trust
     // a client-supplied flag. Only touch these columns when the caller sent them.
-    const { memorizationLocations, ...rest } = body;
+    const {
+      memorizationLocations,
+      addMemorizationLocations,
+      removeMemorizationLocations,
+      ...rest
+    } = body;
     const patch: Record<string, unknown> = { ...rest, updatedAt: new Date() };
     if (memorizationLocations !== undefined) {
       const locations = normalizeLocations(memorizationLocations);
@@ -560,11 +575,38 @@ knowledgeRoutes.put(
       patch.longTermMemorized = computeLongTermMemorized(locations);
     }
 
-    const [updated] = await db
-      .update(vocabWords)
-      .set(patch)
-      .where(eq(vocabWords.id, id))
-      .returning();
+    const isDelta =
+      addMemorizationLocations !== undefined || removeMemorizationLocations !== undefined;
+    const [updated] = isDelta
+      ? await db.transaction(async (tx) => {
+          // FOR UPDATE serializes this against practice's append (vocab-srs-repo),
+          // which takes the same lock, so neither can write from a stale read.
+          const [row] = await tx
+            .select({ locations: vocabWords.memorizationLocations })
+            .from(vocabWords)
+            .where(eq(vocabWords.id, id))
+            .for("update");
+          if (!row) return [];
+          const locations = applyLocationDelta(
+            row.locations,
+            addMemorizationLocations,
+            removeMemorizationLocations
+          );
+          return tx
+            .update(vocabWords)
+            .set({
+              ...patch,
+              memorizationLocations: locations,
+              longTermMemorized: computeLongTermMemorized(locations),
+            })
+            .where(eq(vocabWords.id, id))
+            .returning();
+        })
+      : await db
+          .update(vocabWords)
+          .set(patch)
+          .where(eq(vocabWords.id, id))
+          .returning();
 
     if (!updated) return c.json({ error: "Entry not found" }, 404);
     return c.json({ entry: updated });

@@ -3,7 +3,7 @@ import { db } from "@/db/client";
 import { vocabSrs, vocabReviews, vocabWords } from "@/db/schema";
 import { getSettings } from "./settings-repo";
 import { applyGrade, type SrsState } from "./vocab-srs";
-import { normalizeLocations, computeLongTermMemorized } from "@/modules/knowledge/memorization";
+import { applyLocationDelta, computeLongTermMemorized } from "@/modules/knowledge/memorization";
 
 export interface ApplyReviewInput {
   userId: string;
@@ -108,19 +108,25 @@ export async function applyReview(input: ApplyReviewInput): Promise<ApplyReviewR
 
   // 4. On crossing into memorized, feed SHAN-339 on the shared card.
   let longTermMemorized = false;
+  //    SHAN-556: read and write under a row lock. Without it, a concurrent edit
+  //    of the card's locations (the knowledge panel, or another review) could
+  //    land between the read and the write and one of the two would be lost.
   if (t.justMemorized) {
-    const [card] = await db
-      .select({ locations: vocabWords.memorizationLocations })
-      .from(vocabWords)
-      .where(eq(vocabWords.id, input.itemId))
-      .limit(1);
-    const existingLocs = Array.isArray(card?.locations) ? (card!.locations as string[]) : [];
-    const locations = normalizeLocations([...existingLocs, input.locationName]);
-    longTermMemorized = computeLongTermMemorized(locations);
-    await db
-      .update(vocabWords)
-      .set({ memorizationLocations: locations, longTermMemorized, updatedAt: now })
-      .where(eq(vocabWords.id, input.itemId));
+    longTermMemorized = await db.transaction(async (tx) => {
+      const [card] = await tx
+        .select({ locations: vocabWords.memorizationLocations })
+        .from(vocabWords)
+        .where(eq(vocabWords.id, input.itemId))
+        .limit(1)
+        .for("update");
+      const locations = applyLocationDelta(card?.locations, [input.locationName]);
+      const longTerm = computeLongTermMemorized(locations);
+      await tx
+        .update(vocabWords)
+        .set({ memorizationLocations: locations, longTermMemorized: longTerm, updatedAt: now })
+        .where(eq(vocabWords.id, input.itemId));
+      return longTerm;
+    });
   }
 
   return {

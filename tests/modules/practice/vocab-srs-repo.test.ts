@@ -1,29 +1,63 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-const { mockSelectLimit, mockInsertValues, mockUpsert, mockUpdate, mockGetSettings } = vi.hoisted(() => ({
+const {
+  mockSelectLimit,
+  mockSelectFor,
+  mockTransaction,
+  mockInsertValues,
+  mockUpsert,
+  mockUpdate,
+  mockGetSettings,
+} = vi.hoisted(() => ({
   mockSelectLimit: vi.fn(),
+  mockSelectFor: vi.fn(),
+  mockTransaction: vi.fn(),
   mockInsertValues: vi.fn(),
   mockUpsert: vi.fn(),
   mockUpdate: vi.fn(),
   mockGetSettings: vi.fn(),
 }));
 
-vi.mock("@/db/client", () => ({
-  db: {
-    select: () => ({ from: () => ({ where: () => ({ limit: () => mockSelectLimit() }) }) }),
-    insert: () => ({
-      values: () => {
-        // vocabReviews insert is awaited directly; vocabSrs insert chains .onConflictDoUpdate.
-        const p = Promise.resolve(mockInsertValues()) as Promise<unknown> & {
-          onConflictDoUpdate?: () => Promise<unknown>;
-        };
-        p.onConflictDoUpdate = () => mockUpsert();
-        return p;
-      },
+vi.mock("@/db/client", () => {
+  // The SRS read awaits .limit() directly; the card read inside the
+  // transaction chains .for("update") after it (SHAN-556).
+  const select = () => ({
+    from: () => ({
+      where: () => ({
+        limit: () => {
+          const p = mockSelectLimit();
+          return Object.assign(Promise.resolve(p), {
+            for: (strength: string) => {
+              mockSelectFor(strength);
+              return p;
+            },
+          });
+        },
+      }),
     }),
-    update: () => ({ set: () => ({ where: () => mockUpdate() }) }),
-  },
-}));
+  });
+  const update = () => ({ set: () => ({ where: () => mockUpdate() }) });
+  return {
+    db: {
+      transaction: (fn: (tx: unknown) => unknown) => {
+        mockTransaction();
+        return fn({ select, update });
+      },
+      select,
+      insert: () => ({
+        values: () => {
+          // vocabReviews insert is awaited directly; vocabSrs insert chains .onConflictDoUpdate.
+          const p = Promise.resolve(mockInsertValues()) as Promise<unknown> & {
+            onConflictDoUpdate?: () => Promise<unknown>;
+          };
+          p.onConflictDoUpdate = () => mockUpsert();
+          return p;
+        },
+      }),
+      update,
+    },
+  };
+});
 
 vi.mock("@/modules/practice/settings-repo", () => ({
   getSettings: (...a: unknown[]) => mockGetSettings(...a),
@@ -75,6 +109,9 @@ describe("applyReview", () => {
     expect(res.memorized).toBe(true);
     expect(res.longTermMemorized).toBe(false); // only 1 location so far
     expect(mockUpdate).toHaveBeenCalledTimes(1); // card write happened
+    // SHAN-556: the card read-modify-write holds a row lock in a transaction.
+    expect(mockTransaction).toHaveBeenCalledTimes(1);
+    expect(mockSelectFor).toHaveBeenCalledWith("update");
   });
 
   it("level 2 + remember when card already at 6 locations → long-term memorized flips", async () => {

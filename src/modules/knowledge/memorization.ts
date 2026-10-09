@@ -26,6 +26,21 @@ export function normalizeLocations(input: unknown): string[] {
   return result;
 }
 
+/**
+ * SHAN-556: apply an add/remove delta to the locations a card holds right now.
+ * Removals match case-insensitively; additions land after the survivors and go
+ * through normalizeLocations, so re-adding a held place (any casing) is a no-op.
+ */
+export function applyLocationDelta(
+  existing: unknown,
+  add: string[] = [],
+  remove: string[] = []
+): string[] {
+  const removeKeys = new Set(remove.map((l) => l.trim().toLowerCase()));
+  const kept = normalizeLocations(existing).filter((l) => !removeKeys.has(l.toLowerCase()));
+  return normalizeLocations([...kept, ...add]);
+}
+
 /** A card is long-term memorized once it has been practiced at 7+ distinct locations. */
 export function computeLongTermMemorized(locations: string[]): boolean {
   return locations.length >= LONG_TERM_THRESHOLD;
