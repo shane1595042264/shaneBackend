@@ -89,10 +89,11 @@ vi.mock("@/modules/trip-groups/unsplash", () => ({
 const {
   mockCreateNote, mockListNotes, mockGetNoteById, mockDeleteNoteById,
   mockCreateSection, mockListSections, mockGetSectionById, mockUpdateSection, mockDeleteSectionById,
+  mockApplySectionItemDelta,
 } = vi.hoisted(() => ({
   mockCreateNote: vi.fn(), mockListNotes: vi.fn(), mockGetNoteById: vi.fn(), mockDeleteNoteById: vi.fn(),
   mockCreateSection: vi.fn(), mockListSections: vi.fn(), mockGetSectionById: vi.fn(),
-  mockUpdateSection: vi.fn(), mockDeleteSectionById: vi.fn(),
+  mockUpdateSection: vi.fn(), mockDeleteSectionById: vi.fn(), mockApplySectionItemDelta: vi.fn(),
 }));
 
 vi.mock("@/modules/trip-groups/notes-sections-repo", () => ({
@@ -104,6 +105,7 @@ vi.mock("@/modules/trip-groups/notes-sections-repo", () => ({
   listSections: mockListSections,
   getSectionById: mockGetSectionById,
   updateSection: mockUpdateSection,
+  applySectionItemDelta: mockApplySectionItemDelta,
   deleteSectionById: mockDeleteSectionById,
 }));
 
@@ -1394,6 +1396,92 @@ describe("notes + sections (SHAN-283)", () => {
         items: [expect.objectContaining({ text: "adapter", addedBy: null })],
       }),
     );
+  });
+});
+
+describe("PUT /sections/:sectionId item deltas (SHAN-557)", () => {
+  const SECTION_ID = "bbbb2222-2222-2222-2222-222222222222";
+  const sectionRow = {
+    id: SECTION_ID, groupId: GROUP_ID, createdBy: USER_B, title: "Remember to bring",
+    kind: "todo", items: [{ id: "i1", text: "passport", done: true, addedBy: "Ava" }],
+    createdAt: new Date("2026-06-10T15:00:00Z"), updatedAt: new Date("2026-06-10T15:00:00Z"),
+  };
+  const put = (body: unknown, user = USER_A) =>
+    app.request(`/api/trip-groups/${SLUG}/sections/${SECTION_ID}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", "X-Test-User": user },
+      body: JSON.stringify(body),
+    });
+
+  beforeEach(() => {
+    mockGetGroupBySlug.mockResolvedValue(groupRow);
+    mockIsMember.mockResolvedValue(true);
+    mockGetSectionById.mockResolvedValue(sectionRow);
+  });
+
+  it("routes deltas to the locked merge, never the full-list overwrite", async () => {
+    const merged = {
+      ...sectionRow,
+      items: [...sectionRow.items, { id: "i2", text: "charger", done: false, addedBy: "Shane" }],
+    };
+    mockApplySectionItemDelta.mockResolvedValue(merged);
+    const res = await put({ addItems: [{ id: "i2", text: "  charger ", done: false, addedBy: "Shane" }] });
+    expect(res.status).toBe(200);
+    expect(mockApplySectionItemDelta).toHaveBeenCalledWith(
+      SECTION_ID,
+      { addItems: [{ id: "i2", text: "charger", done: false, addedBy: "Shane" }] },
+      undefined,
+    );
+    expect(mockUpdateSection).not.toHaveBeenCalled();
+    const body = await res.json();
+    expect(body.section.items).toEqual([
+      { id: "i1", text: "passport", done: true, addedBy: "Ava" },
+      { id: "i2", text: "charger", done: false, addedBy: "Shane" },
+    ]);
+  });
+
+  it("passes a title alongside a delta through to the same write", async () => {
+    mockApplySectionItemDelta.mockResolvedValue(sectionRow);
+    const res = await put({ title: " Packing ", setItemsDone: [{ id: "i1", done: false }] });
+    expect(res.status).toBe(200);
+    expect(mockApplySectionItemDelta).toHaveBeenCalledWith(
+      SECTION_ID,
+      { setItemsDone: [{ id: "i1", done: false }] },
+      "Packing",
+    );
+  });
+
+  it("400s when a body mixes the full items list with a delta", async () => {
+    const res = await put({ items: [], removeItemIds: ["i1"] });
+    expect(res.status).toBe(400);
+    expect(mockApplySectionItemDelta).not.toHaveBeenCalled();
+    expect(mockUpdateSection).not.toHaveBeenCalled();
+  });
+
+  it("400s when the merge would pass the 200-item cap", async () => {
+    mockApplySectionItemDelta.mockResolvedValue("too_many");
+    const res = await put({ addItems: [{ id: "i9", text: "one more", done: false }] });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toMatch(/200/);
+  });
+
+  it("404s when the section vanished between the check and the lock", async () => {
+    mockApplySectionItemDelta.mockResolvedValue(null);
+    const res = await put({ removeItemIds: ["i1"] });
+    expect(res.status).toBe(404);
+  });
+
+  it("rejects a whitespace-only added item like the full-list path does", async () => {
+    const res = await put({ addItems: [{ id: "i2", text: "   ", done: false }] });
+    expect(res.status).toBe(400);
+    expect(mockApplySectionItemDelta).not.toHaveBeenCalled();
+  });
+
+  it("non-members cannot send deltas", async () => {
+    mockIsMember.mockResolvedValue(false);
+    const res = await put({ removeItemIds: ["i1"] }, "cccccccc-cccc-cccc-cccc-cccccccccccc");
+    expect(res.status).toBe(403);
+    expect(mockApplySectionItemDelta).not.toHaveBeenCalled();
   });
 });
 

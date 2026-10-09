@@ -2,6 +2,7 @@
 import { asc, desc, eq } from "drizzle-orm";
 import { db } from "@/db/client";
 import { tripGroupNotes, tripGroupSections, users } from "@/db/schema";
+import { applyItemDelta, MAX_SECTION_ITEMS, type SectionItemDelta } from "./section-items";
 
 // ---------------------------------------------------------------------------
 // Notes
@@ -154,6 +155,35 @@ export async function updateSection(
     .where(eq(tripGroupSections.id, id))
     .returning(sectionColumns);
   return row ? toSection(row) : null;
+}
+
+/**
+ * SHAN-557: apply an item delta to the section as it is stored, under a row
+ * lock. A full items list is built from whatever copy the member's tab loaded,
+ * so writing it erased checks, adds and removals other members made since.
+ * Returns "too_many" without writing when the merge would pass the item cap.
+ */
+export async function applySectionItemDelta(
+  id: string,
+  delta: SectionItemDelta,
+  title?: string,
+): Promise<TripGroupSection | "too_many" | null> {
+  return db.transaction(async (tx) => {
+    const [current] = await tx
+      .select({ items: tripGroupSections.items })
+      .from(tripGroupSections)
+      .where(eq(tripGroupSections.id, id))
+      .for("update");
+    if (!current) return null;
+    const items = applyItemDelta((current.items as SectionItem[]) ?? [], delta);
+    if (items.length > MAX_SECTION_ITEMS) return "too_many";
+    const [row] = await tx
+      .update(tripGroupSections)
+      .set({ items, ...(title !== undefined ? { title } : {}), updatedAt: new Date() })
+      .where(eq(tripGroupSections.id, id))
+      .returning(sectionColumns);
+    return row ? toSection(row) : null;
+  });
 }
 
 export async function deleteSectionById(id: string): Promise<boolean> {

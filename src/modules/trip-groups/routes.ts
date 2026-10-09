@@ -55,10 +55,12 @@ import {
   listSections,
   getSectionById,
   updateSection,
+  applySectionItemDelta,
   deleteSectionById,
   type TripGroupNote,
   type TripGroupSection,
 } from "./notes-sections-repo";
+import { isItemDelta, MAX_SECTION_ITEMS } from "./section-items";
 
 type AuthEnv = { Variables: { userId: string } };
 
@@ -829,10 +831,25 @@ const createSectionBody = z.object({
   kind: z.enum(["todo"]).optional().default("todo"),
 });
 
-const updateSectionBody = z.object({
-  title: z.string().trim().min(1).max(200).optional(),
-  items: z.array(sectionItemSchema).max(200).optional(),
-});
+const itemIdSchema = z.string().min(1).max(64);
+
+const updateSectionBody = z
+  .object({
+    title: z.string().trim().min(1).max(200).optional(),
+    items: z.array(sectionItemSchema).max(MAX_SECTION_ITEMS).optional(),
+    // SHAN-557: deltas applied to the section as it stands, under a row lock.
+    // `items` is built from the copy the caller's tab loaded, so sending it
+    // undid any check, add or removal another member made in the meantime.
+    addItems: z.array(sectionItemSchema).max(MAX_SECTION_ITEMS).optional(),
+    removeItemIds: z.array(itemIdSchema).max(MAX_SECTION_ITEMS).optional(),
+    setItemsDone: z
+      .array(z.object({ id: itemIdSchema, done: z.boolean() }))
+      .max(MAX_SECTION_ITEMS)
+      .optional(),
+  })
+  .refine((b) => b.items === undefined || !isItemDelta(b), {
+    message: "Send items or the addItems/removeItemIds/setItemsDone deltas, not both",
+  });
 
 function sectionJson(s: TripGroupSection) {
   return {
@@ -902,7 +919,13 @@ tripGroupsRoutes.put(
     }
     const existing = await getSectionById(sectionId);
     if (!existing || existing.groupId !== group.id) return c.json({ error: "Not found" }, 404);
-    const section = await updateSection(sectionId, patch);
+    const { title, items, ...delta } = patch;
+    const section = isItemDelta(delta)
+      ? await applySectionItemDelta(sectionId, delta, title)
+      : await updateSection(sectionId, { title, items });
+    if (section === "too_many") {
+      return c.json({ error: `A section holds at most ${MAX_SECTION_ITEMS} items` }, 400);
+    }
     return section
       ? c.json({ section: sectionJson(section) })
       : c.json({ error: "Not found" }, 404);
