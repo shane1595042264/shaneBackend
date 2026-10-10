@@ -18,12 +18,14 @@ import {
   listSuggestions,
   getSuggestionById,
   resolveSuggestion,
+  approveSuggestion,
   type ItinerarySuggestion,
 } from "./repo";
 import {
   consolidateItinerary,
   itinerarySchema,
   computeChangedDays,
+  mergeSuggestedItinerary,
 } from "./consolidator";
 import {
   insertUserPhoto,
@@ -308,6 +310,7 @@ tripGroupsRoutes.post(
         authorId: userId,
         itinerary,
         changedDays: computeChangedDays(base, itinerary),
+        summaryChanged: base?.summary !== itinerary.summary,
         note: null,
       });
       return c.json({ suggestion: suggestionJson(suggestion), modelUsed }, 201);
@@ -442,12 +445,14 @@ tripGroupsRoutes.put(
       return c.json({ itinerary, itineraryGeneratedAt: itineraryGeneratedAt.toISOString() });
     }
 
-    const base = itinerarySchema.safeParse(group.itinerary);
+    const parsedBase = itinerarySchema.safeParse(group.itinerary);
+    const base = parsedBase.success ? parsedBase.data : null;
     const suggestion = await createSuggestion({
       groupId: group.id,
       authorId: userId,
       itinerary,
-      changedDays: computeChangedDays(base.success ? base.data : null, itinerary),
+      changedDays: computeChangedDays(base, itinerary),
+      summaryChanged: base?.summary !== itinerary.summary,
       note: "Manual edit",
     });
     return c.json({ suggestion: suggestionJson(suggestion) }, 201);
@@ -496,7 +501,11 @@ const suggestionIdParam = z.object({
   suggestionId: z.string().uuid(),
 });
 
-/** Owner approves: the proposed itinerary becomes the group itinerary. */
+/**
+ * Owner approves: the days (and summary) the suggestion changed are applied
+ * onto the itinerary as stored now, not the member's whole snapshot, so edits
+ * that landed after the suggestion was filed survive (SHAN-563).
+ */
 tripGroupsRoutes.post(
   "/:slug/itinerary/suggestions/:suggestionId/approve",
   zValidator("param", suggestionIdParam),
@@ -516,16 +525,29 @@ tripGroupsRoutes.post(
     if (!proposed.success) {
       return c.json({ error: "Stored suggestion no longer matches the itinerary schema" }, 422);
     }
-    // Claim pending status BEFORE applying — the status-guarded UPDATE makes
-    // concurrent approve/reject race-safe (loser gets null → 409).
-    const resolved = await resolveSuggestion(suggestionId, "approved", userId);
-    if (!resolved) return c.json({ error: "Suggestion already resolved" }, 409);
-    const { itineraryGeneratedAt } = await saveItinerary(group.id, proposed.data);
-    await autoFillLocationPhotos(group.id, proposed.data).catch(() => {});
+    // The status-guarded claim inside the transaction keeps concurrent
+    // approve/reject race-safe (the loser gets "resolved" → 409).
+    const result = await approveSuggestion(group.id, suggestionId, userId, (stored) => {
+      const current = itinerarySchema.safeParse(stored);
+      return mergeSuggestedItinerary(
+        current.success ? current.data : null,
+        proposed.data,
+        suggestion.changedDays,
+        suggestion.summaryChanged,
+      );
+    });
+    if (result === "resolved") return c.json({ error: "Suggestion already resolved" }, 409);
+    if (result === "invalid") {
+      return c.json(
+        { error: "Applying this suggestion to the current itinerary would leave it invalid" },
+        409,
+      );
+    }
+    await autoFillLocationPhotos(group.id, result.itinerary).catch(() => {});
     return c.json({
       suggestion: { id: suggestionId, status: "approved" },
-      itinerary: proposed.data,
-      itineraryGeneratedAt: itineraryGeneratedAt.toISOString(),
+      itinerary: result.itinerary,
+      itineraryGeneratedAt: result.itineraryGeneratedAt.toISOString(),
     });
   },
 );

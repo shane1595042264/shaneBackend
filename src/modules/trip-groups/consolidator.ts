@@ -158,3 +158,33 @@ export function computeChangedDays(
   }
   return changed.sort((a, b) => a - b);
 }
+
+/**
+ * SHAN-563: what approving a suggestion writes. The suggestion holds the whole
+ * itinerary as the member's tab saw it, so writing it as-is reverted every
+ * owner edit and every approved suggestion that landed after it was filed.
+ * Instead, only the days it changed (and the summary, if it changed that) are
+ * applied onto the itinerary as stored now. A changed day missing from the
+ * proposal was removed by it. Returns null when the result is not a valid
+ * itinerary, e.g. the suggestion removes the only days left.
+ */
+export function mergeSuggestedItinerary(
+  current: TripItinerary | null,
+  proposed: TripItinerary,
+  changedDays: number[],
+  summaryChanged: boolean,
+): TripItinerary | null {
+  if (!current) return proposed;
+  const days = new Map(current.days.map((d) => [d.day, d]));
+  const proposedByDay = new Map(proposed.days.map((d) => [d.day, d]));
+  for (const day of changedDays) {
+    const next = proposedByDay.get(day);
+    if (next) days.set(day, next);
+    else days.delete(day);
+  }
+  const merged = itinerarySchema.safeParse({
+    summary: summaryChanged ? proposed.summary : current.summary,
+    days: [...days.values()].sort((a, b) => a.day - b.day),
+  });
+  return merged.success ? merged.data : null;
+}

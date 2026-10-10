@@ -22,6 +22,7 @@ const {
   mockListSuggestions,
   mockGetSuggestionById,
   mockResolveSuggestion,
+  mockApproveSuggestion,
   mockInsertUserPhoto,
   mockInsertUnsplashPhoto,
   mockListPhotos,
@@ -46,6 +47,7 @@ const {
   mockListSuggestions: vi.fn(),
   mockGetSuggestionById: vi.fn(),
   mockResolveSuggestion: vi.fn(),
+  mockApproveSuggestion: vi.fn(),
   mockInsertUserPhoto: vi.fn(),
   mockInsertUnsplashPhoto: vi.fn(),
   mockListPhotos: vi.fn(),
@@ -71,6 +73,7 @@ vi.mock("@/modules/trip-groups/repo", () => ({
   listSuggestions: mockListSuggestions,
   getSuggestionById: mockGetSuggestionById,
   resolveSuggestion: mockResolveSuggestion,
+  approveSuggestion: mockApproveSuggestion,
 }));
 
 vi.mock("@/modules/trip-groups/photos-repo", () => ({
@@ -590,6 +593,7 @@ describe("itinerary suggestions (SHAN-273)", () => {
     authorName: "Ben",
     itinerary: ITIN,
     changedDays: [1],
+    summaryChanged: true,
     note: null,
     status: "pending",
     createdAt: new Date("2026-06-10T10:00:00Z"),
@@ -611,7 +615,12 @@ describe("itinerary suggestions (SHAN-273)", () => {
     expect(body.suggestion.status).toBe("pending");
     expect(mockSaveItinerary).not.toHaveBeenCalled();
     expect(mockCreateSuggestion).toHaveBeenCalledWith(
-      expect.objectContaining({ groupId: GROUP_ID, authorId: USER_B, changedDays: [1] }),
+      expect.objectContaining({
+        groupId: GROUP_ID,
+        authorId: USER_B,
+        changedDays: [1],
+        summaryChanged: true,
+      }),
     );
   });
 
@@ -655,18 +664,70 @@ describe("itinerary suggestions (SHAN-273)", () => {
     expect(byId["77777777-7777-7777-7777-777777777777"].conflictsWith).toEqual([]);
   });
 
+  // Runs the route's real merge callback against `stored`, the way the repo
+  // does inside its transaction, and reports what it would write.
+  function approveAgainst(stored: unknown) {
+    mockApproveSuggestion.mockImplementation(
+      async (_g: string, _s: string, _u: string, merge: (s: unknown) => unknown) => {
+        const itinerary = merge(stored);
+        if (itinerary === null) return "invalid";
+        return { itinerary, itineraryGeneratedAt: new Date("2026-06-10T12:00:00Z") };
+      },
+    );
+  }
+
   it("approve applies the suggestion itinerary and resolves it", async () => {
     mockGetGroupBySlug.mockResolvedValue(groupRow);
     mockGetSuggestionById.mockResolvedValue(suggestionRow);
-    mockResolveSuggestion.mockResolvedValue({ id: SUGG_ID, status: "approved", resolvedAt: new Date() });
-    mockSaveItinerary.mockResolvedValue({ itineraryGeneratedAt: new Date("2026-06-10T12:00:00Z") });
+    approveAgainst(null);
     const res = await app.request(
       `/api/trip-groups/${SLUG}/itinerary/suggestions/${SUGG_ID}/approve`,
       { method: "POST", headers: { "X-Test-User": USER_A } },
     );
     expect(res.status).toBe(200);
-    expect(mockResolveSuggestion).toHaveBeenCalledWith(SUGG_ID, "approved", USER_A);
-    expect(mockSaveItinerary).toHaveBeenCalledWith(GROUP_ID, enriched(ITIN));
+    expect(mockApproveSuggestion).toHaveBeenCalledWith(GROUP_ID, SUGG_ID, USER_A, expect.any(Function));
+    const body = await res.json();
+    expect(body.itinerary).toEqual(enriched(ITIN));
+    expect(mockSaveItinerary).not.toHaveBeenCalled();
+  });
+
+  it("approve keeps days the suggestion did not change (SHAN-563)", async () => {
+    // Filed against a one-day itinerary; since then the owner added day 2 and
+    // rewrote the summary. The suggestion only changed day 1.
+    const stored = {
+      summary: "Owner's newer summary.",
+      days: [
+        { day: 1, title: "Old day one", location: "Tokyo", activities: [] },
+        { day: 2, title: "Owner added", location: "Kyoto", activities: [] },
+      ],
+    };
+    mockGetGroupBySlug.mockResolvedValue(groupRow);
+    mockGetSuggestionById.mockResolvedValue({ ...suggestionRow, summaryChanged: false });
+    approveAgainst(stored);
+    const res = await app.request(
+      `/api/trip-groups/${SLUG}/itinerary/suggestions/${SUGG_ID}/approve`,
+      { method: "POST", headers: { "X-Test-User": USER_A } },
+    );
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.itinerary.summary).toBe("Owner's newer summary.");
+    expect(body.itinerary.days.map((d: any) => d.title)).toEqual(["Shibuya", "Owner added"]);
+  });
+
+  it("approve is 409 when the merge would leave no valid itinerary", async () => {
+    mockGetGroupBySlug.mockResolvedValue(groupRow);
+    // The suggestion removed day 2, which is all that is left now.
+    mockGetSuggestionById.mockResolvedValue({ ...suggestionRow, changedDays: [2] });
+    approveAgainst({
+      summary: "Only day two left.",
+      days: [{ day: 2, title: "Kyoto", location: "Kyoto", activities: [] }],
+    });
+    const res = await app.request(
+      `/api/trip-groups/${SLUG}/itinerary/suggestions/${SUGG_ID}/approve`,
+      { method: "POST", headers: { "X-Test-User": USER_A } },
+    );
+    expect(res.status).toBe(409);
+    expect((await res.json()).error).toMatch(/invalid/);
   });
 
   it("approve by non-owner is 403", async () => {
@@ -676,13 +737,13 @@ describe("itinerary suggestions (SHAN-273)", () => {
       { method: "POST", headers: { "X-Test-User": USER_B } },
     );
     expect(res.status).toBe(403);
-    expect(mockResolveSuggestion).not.toHaveBeenCalled();
+    expect(mockApproveSuggestion).not.toHaveBeenCalled();
   });
 
   it("approve of an already-resolved suggestion is 409 and does not write", async () => {
     mockGetGroupBySlug.mockResolvedValue(groupRow);
     mockGetSuggestionById.mockResolvedValue(suggestionRow);
-    mockResolveSuggestion.mockResolvedValue(null);
+    mockApproveSuggestion.mockResolvedValue("resolved");
     const res = await app.request(
       `/api/trip-groups/${SLUG}/itinerary/suggestions/${SUGG_ID}/approve`,
       { method: "POST", headers: { "X-Test-User": USER_A } },
@@ -942,7 +1003,43 @@ describe("PUT /api/trip-groups/:slug/itinerary (SHAN-276)", () => {
     expect(res.status).toBe(201);
     expect(mockSaveItinerary).not.toHaveBeenCalled();
     expect(mockCreateSuggestion).toHaveBeenCalledWith(
-      expect.objectContaining({ authorId: USER_B, changedDays: [1], note: "Manual edit" }),
+      expect.objectContaining({
+        authorId: USER_B,
+        changedDays: [1],
+        summaryChanged: true,
+        note: "Manual edit",
+      }),
+    );
+  });
+
+  it("member edit that keeps the summary records summaryChanged false (SHAN-563)", async () => {
+    mockGetGroupBySlug.mockResolvedValue({
+      ...groupRow,
+      itinerary: { ...ITIN, days: [{ ...ITIN.days[0], title: "Before" }] },
+    });
+    mockIsMember.mockResolvedValue(true);
+    mockCreateSuggestion.mockResolvedValue({
+      id: "44444444-4444-4444-4444-444444444444",
+      groupId: GROUP_ID,
+      authorId: USER_B,
+      authorName: "Ben",
+      itinerary: ITIN,
+      changedDays: [1],
+      summaryChanged: false,
+      note: "Manual edit",
+      status: "pending",
+      createdAt: new Date("2026-06-10T13:00:00Z"),
+      resolvedAt: null,
+      resolvedBy: null,
+    });
+    const res = await app.request(`/api/trip-groups/${SLUG}/itinerary`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", "X-Test-User": USER_B },
+      body: JSON.stringify({ itinerary: ITIN }),
+    });
+    expect(res.status).toBe(201);
+    expect(mockCreateSuggestion).toHaveBeenCalledWith(
+      expect.objectContaining({ changedDays: [1], summaryChanged: false }),
     );
   });
 

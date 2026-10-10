@@ -1,0 +1,1 @@
+ALTER TABLE "trip_itinerary_suggestions" ADD COLUMN "summary_changed" boolean DEFAULT false NOT NULL;

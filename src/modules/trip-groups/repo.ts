@@ -321,6 +321,7 @@ export interface ItinerarySuggestion {
   authorName: string | null;
   itinerary: unknown;
   changedDays: number[];
+  summaryChanged: boolean;
   note: string | null;
   status: string;
   createdAt: Date;
@@ -334,6 +335,7 @@ export async function createSuggestion(input: {
   authorId: string;
   itinerary: unknown;
   changedDays: number[];
+  summaryChanged: boolean;
   note: string | null;
 }): Promise<ItinerarySuggestion> {
   const [row] = await db
@@ -343,6 +345,7 @@ export async function createSuggestion(input: {
       authorId: input.authorId,
       itinerary: input.itinerary,
       changedDays: input.changedDays,
+      summaryChanged: input.summaryChanged,
       note: input.note,
     })
     .returning();
@@ -357,6 +360,7 @@ export async function createSuggestion(input: {
     authorName: u?.name ?? null,
     itinerary: row.itinerary,
     changedDays: (row.changedDays as number[]) ?? [],
+    summaryChanged: row.summaryChanged,
     note: row.note,
     status: row.status,
     createdAt: row.createdAt,
@@ -375,6 +379,7 @@ export async function listSuggestions(groupId: string): Promise<ItinerarySuggest
       authorName: users.name,
       itinerary: tripItinerarySuggestions.itinerary,
       changedDays: tripItinerarySuggestions.changedDays,
+      summaryChanged: tripItinerarySuggestions.summaryChanged,
       note: tripItinerarySuggestions.note,
       status: tripItinerarySuggestions.status,
       createdAt: tripItinerarySuggestions.createdAt,
@@ -398,6 +403,7 @@ export async function getSuggestionById(id: string): Promise<ItinerarySuggestion
       authorName: users.name,
       itinerary: tripItinerarySuggestions.itinerary,
       changedDays: tripItinerarySuggestions.changedDays,
+      summaryChanged: tripItinerarySuggestions.summaryChanged,
       note: tripItinerarySuggestions.note,
       status: tripItinerarySuggestions.status,
       createdAt: tripItinerarySuggestions.createdAt,
@@ -431,6 +437,50 @@ export async function resolveSuggestion(
     )
     .returning({ id: tripItinerarySuggestions.id, status: tripItinerarySuggestions.status });
   return row ? { ...row, resolvedAt: now } : null;
+}
+
+/**
+ * SHAN-563: approve a suggestion by merging it onto the itinerary as stored,
+ * with the group row locked so no other write lands between the read and the
+ * save. `merge` gets the stored blob and returns the itinerary to write, or
+ * null when the merge is not a valid itinerary; in that case nothing is
+ * written and the suggestion stays pending. "resolved" means another request
+ * approved or rejected it first.
+ */
+export async function approveSuggestion<T>(
+  groupId: string,
+  suggestionId: string,
+  resolvedBy: string,
+  merge: (stored: unknown) => T | null,
+): Promise<{ itinerary: T; itineraryGeneratedAt: Date } | "resolved" | "invalid"> {
+  return db.transaction(async (tx) => {
+    const [group] = await tx
+      .select({ itinerary: tripGroups.itinerary })
+      .from(tripGroups)
+      .where(eq(tripGroups.id, groupId))
+      .for("update");
+    const itinerary = merge(group?.itinerary ?? null);
+    if (itinerary === null) return "invalid";
+
+    const now = new Date();
+    const claimed = await tx
+      .update(tripItinerarySuggestions)
+      .set({ status: "approved", resolvedAt: now, resolvedBy })
+      .where(
+        and(
+          eq(tripItinerarySuggestions.id, suggestionId),
+          eq(tripItinerarySuggestions.status, "pending"),
+        ),
+      )
+      .returning({ id: tripItinerarySuggestions.id });
+    if (claimed.length === 0) return "resolved";
+
+    await tx
+      .update(tripGroups)
+      .set({ itinerary, itineraryGeneratedAt: now, updatedAt: now })
+      .where(eq(tripGroups.id, groupId));
+    return { itinerary, itineraryGeneratedAt: now };
+  });
 }
 
 /**

@@ -729,6 +729,9 @@ export const tripItinerarySuggestions = pgTable(
       .references(() => users.id, { onDelete: "restrict" }),
     itinerary: jsonb("itinerary").notNull(),
     changedDays: jsonb("changed_days").notNull().default([]),
+    // SHAN-563: changedDays covers days only, so approve needs to know
+    // whether the suggestion also rewrote the summary.
+    summaryChanged: boolean("summary_changed").notNull().default(false),
     note: text("note"),
     // "pending" | "approved" | "rejected"
     status: varchar("status", { length: 20 }).notNull().default("pending"),
