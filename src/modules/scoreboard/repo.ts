@@ -330,22 +330,36 @@ export async function listMatchPlayers(
 
 // Atomic increment clamped at zero so an over-eager -1 can't go negative
 // and two quick taps can't clobber each other with stale reads.
+//
+// SHAN-564: the live check happens here, under a share lock on the match row,
+// not in a separate read before the call. finishMatch takes the same row FOR
+// UPDATE, so a tap and a Finish serialize: the tap lands before the winner is
+// decided, or it sees a final match and writes nothing. Returns "final" when
+// the match is no longer live, null when the player is not in it.
 export async function incrementScore(
   matchId: string,
   playerId: string,
   delta: number,
-): Promise<{ score: number } | null> {
-  const [row] = await db
-    .update(scoreboardMatchPlayers)
-    .set({ score: sql`greatest(${scoreboardMatchPlayers.score} + ${delta}, 0)` })
-    .where(
-      and(
-        eq(scoreboardMatchPlayers.matchId, matchId),
-        eq(scoreboardMatchPlayers.playerId, playerId),
-      ),
-    )
-    .returning({ score: scoreboardMatchPlayers.score });
-  return (row as { score: number } | undefined) ?? null;
+): Promise<{ score: number } | "final" | null> {
+  return db.transaction(async (tx) => {
+    const [match] = await tx
+      .select({ status: scoreboardMatches.status })
+      .from(scoreboardMatches)
+      .where(eq(scoreboardMatches.id, matchId))
+      .for("share");
+    if (!match || match.status !== "live") return "final";
+    const [row] = await tx
+      .update(scoreboardMatchPlayers)
+      .set({ score: sql`greatest(${scoreboardMatchPlayers.score} + ${delta}, 0)` })
+      .where(
+        and(
+          eq(scoreboardMatchPlayers.matchId, matchId),
+          eq(scoreboardMatchPlayers.playerId, playerId),
+        ),
+      )
+      .returning({ score: scoreboardMatchPlayers.score });
+    return (row as { score: number } | undefined) ?? null;
+  });
 }
 
 // The winner is computed from the scores that were tapped in, never chosen
@@ -361,30 +375,46 @@ export function decideWinner(
   return leaders.length === 1 ? leaders[0].playerId : null;
 }
 
+// SHAN-564: the live match row is locked before the roster is read, so no
+// score tap can land between deciding the winner and freezing the match.
 export async function finishMatch(
   id: string,
   userId: string,
 ): Promise<ScoreboardMatchRow | null> {
-  const roster = await db
-    .select({
-      playerId: scoreboardMatchPlayers.playerId,
-      score: scoreboardMatchPlayers.score,
-    })
-    .from(scoreboardMatchPlayers)
-    .where(eq(scoreboardMatchPlayers.matchId, id));
-  const winnerPlayerId = decideWinner(roster as { playerId: string; score: number }[]);
-  const [row] = await db
-    .update(scoreboardMatches)
-    .set({ status: "final", winnerPlayerId, updatedAt: new Date() })
-    .where(
-      and(
-        eq(scoreboardMatches.id, id),
-        eq(scoreboardMatches.userId, userId),
-        eq(scoreboardMatches.status, "live"),
-      ),
-    )
-    .returning();
-  return (row as ScoreboardMatchRow | undefined) ?? null;
+  return db.transaction(async (tx) => {
+    const [live] = await tx
+      .select({ id: scoreboardMatches.id })
+      .from(scoreboardMatches)
+      .where(
+        and(
+          eq(scoreboardMatches.id, id),
+          eq(scoreboardMatches.userId, userId),
+          eq(scoreboardMatches.status, "live"),
+        ),
+      )
+      .for("update");
+    if (!live) return null;
+    const roster = await tx
+      .select({
+        playerId: scoreboardMatchPlayers.playerId,
+        score: scoreboardMatchPlayers.score,
+      })
+      .from(scoreboardMatchPlayers)
+      .where(eq(scoreboardMatchPlayers.matchId, id));
+    const winnerPlayerId = decideWinner(roster as { playerId: string; score: number }[]);
+    const [row] = await tx
+      .update(scoreboardMatches)
+      .set({ status: "final", winnerPlayerId, updatedAt: new Date() })
+      .where(
+        and(
+          eq(scoreboardMatches.id, id),
+          eq(scoreboardMatches.userId, userId),
+          eq(scoreboardMatches.status, "live"),
+        ),
+      )
+      .returning();
+    return (row as ScoreboardMatchRow | undefined) ?? null;
+  });
 }
 
 export async function reopenMatch(

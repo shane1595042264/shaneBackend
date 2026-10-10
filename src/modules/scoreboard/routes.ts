@@ -413,7 +413,12 @@ scoreboardRoutes.patch(
     if (match.status !== "live") {
       return c.json({ error: "Match is final. Reopen it to change scores." }, 409);
     }
+    // The check above is a fast path; incrementScore re-checks under the row
+    // lock, because a Finish can commit between the two (SHAN-564).
     const updated = await incrementScore(id, playerId, delta);
+    if (updated === "final") {
+      return c.json({ error: "Match is final. Reopen it to change scores." }, 409);
+    }
     if (!updated) return c.json({ error: "Player is not in this match" }, 404);
     return c.json({ match: await serializeMatchById(match) });
   },

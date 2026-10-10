@@ -419,6 +419,17 @@ describe("match writes", () => {
     expect(m.incrementScore).toHaveBeenCalledWith(MATCH_ID, P2, 1);
   });
 
+  it("score: 409 when a Finish commits after the fast-path check (SHAN-564)", async () => {
+    m.getMatchOwned.mockResolvedValue(MATCH_ROW);
+    m.incrementScore.mockResolvedValue("final");
+    const res = await req(
+      `/matches/${MATCH_ID}/score`, "PATCH",
+      { playerId: P1, delta: 1 },
+      "u1",
+    );
+    expect(res.status).toBe(409);
+  });
+
   it("score: 400 rejects a delta other than 1 or -1", async () => {
     const res = await req(
       `/matches/${MATCH_ID}/score`, "PATCH",

@@ -8,7 +8,15 @@ const { mockSelect, mockInsert, mockDelete, mockUpdate } = vi.hoisted(() => ({
 }));
 
 vi.mock("@/db/client", () => ({
-  db: { select: mockSelect, insert: mockInsert, delete: mockDelete, update: mockUpdate },
+  db: {
+    select: mockSelect,
+    insert: mockInsert,
+    delete: mockDelete,
+    update: mockUpdate,
+    // incrementScore and finishMatch lock the match row inside a transaction
+    // (SHAN-564); the tx shares the same select/update mocks.
+    transaction: (fn: (tx: unknown) => unknown) => fn({ select: mockSelect, update: mockUpdate }),
+  },
 }));
 vi.mock("@/db/schema", () => ({
   scoreboardGames: {
@@ -43,7 +51,7 @@ vi.mock("drizzle-orm", () => ({
 function chain(rows: unknown[]) {
   const c: Record<string, unknown> = {};
   const t = Promise.resolve(rows);
-  for (const m of ["from", "where", "orderBy", "limit", "innerJoin", "groupBy"]) {
+  for (const m of ["from", "where", "orderBy", "limit", "innerJoin", "groupBy", "for"]) {
     c[m] = vi.fn(() => c);
   }
   Object.assign(c, { then: (r: any, j: any) => t.then(r, j) });
@@ -183,18 +191,29 @@ describe("createMatch", () => {
 
 describe("incrementScore", () => {
   it("sets score via a greatest(score + delta, 0) SQL expression", async () => {
+    const lock = chain([{ status: "live" }]);
+    mockSelect.mockReturnValue(lock);
     const ch = updateChain([{ score: 2 }]);
     mockUpdate.mockReturnValue(ch);
     const out = await incrementScore("m1", "p1", 1);
     expect(out).toEqual({ score: 2 });
     const setArg = ch.set.mock.calls[0][0] as Record<string, { kind?: string }>;
     expect(setArg.score?.kind).toBe("sql");
+    // SHAN-564: the live check reads the match under a lock Finish also takes.
+    expect(lock.for).toHaveBeenCalledWith("share");
   });
 
   it("returns null when the player is not in the match", async () => {
+    mockSelect.mockReturnValue(chain([{ status: "live" }]));
     const ch = updateChain([]);
     mockUpdate.mockReturnValue(ch);
     expect(await incrementScore("m1", "p-x", 1)).toBeNull();
+  });
+
+  it("writes nothing once a Finish has committed (SHAN-564)", async () => {
+    mockSelect.mockReturnValue(chain([{ status: "final" }]));
+    expect(await incrementScore("m1", "p1", 1)).toBe("final");
+    expect(mockUpdate).not.toHaveBeenCalled();
   });
 });
 
@@ -271,7 +290,8 @@ describe("decideWinner", () => {
 
 describe("finishMatch", () => {
   it("updates only live rows, setting the computed winner + final status", async () => {
-    mockSelect.mockReturnValue(chain([
+    const lock = chain([{ id: "m1" }]);
+    mockSelect.mockReturnValueOnce(lock).mockReturnValueOnce(chain([
       { playerId: "p1", score: 1 },
       { playerId: "p2", score: 2 },
     ]));
@@ -287,10 +307,15 @@ describe("finishMatch", () => {
       (call) => call[1] === "live",
     )).toBe(true);
     expect(and).toHaveBeenCalled();
+    // SHAN-564: the match row is locked before the roster is read.
+    expect(lock.for).toHaveBeenCalledWith("update");
+    expect(mockSelect.mock.invocationCallOrder[0]).toBeLessThan(
+      mockSelect.mock.invocationCallOrder[1],
+    );
   });
 
   it("stores a null winner when the scores are level", async () => {
-    mockSelect.mockReturnValue(chain([
+    mockSelect.mockReturnValueOnce(chain([{ id: "m1" }])).mockReturnValueOnce(chain([
       { playerId: "p1", score: 2 },
       { playerId: "p2", score: 2 },
     ]));
@@ -302,11 +327,11 @@ describe("finishMatch", () => {
     expect(setArg).toMatchObject({ status: "final", winnerPlayerId: null });
   });
 
-  it("returns null when the match was already final", async () => {
-    mockSelect.mockReturnValue(chain([{ playerId: "p1", score: 1 }]));
-    const ch = updateChain([]);
-    mockUpdate.mockReturnValue(ch);
+  it("returns null without reading the roster when the match was already final", async () => {
+    mockSelect.mockReturnValueOnce(chain([]));
     expect(await finishMatch("m1", "u1")).toBeNull();
+    expect(mockSelect).toHaveBeenCalledTimes(1);
+    expect(mockUpdate).not.toHaveBeenCalled();
   });
 });
 
