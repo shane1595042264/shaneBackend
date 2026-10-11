@@ -1066,3 +1066,42 @@ describe("GET /api/knowledge/locations (SHAN-485)", () => {
     expect(await res.json()).toEqual({ locations: [] });
   });
 });
+
+// SHAN-566: edit, delete and bulk-delete ran requireAuth only, so a PAT minted
+// for reactions or comments could rewrite or wipe its owner's cards. They now
+// need knowledge:write like every other knowledge write; JWTs still bypass.
+describe("knowledge entry edit/delete scope gate (SHAN-566)", () => {
+  const validId = "11111111-1111-1111-1111-111111111111";
+  const patHeaders = (scopes: string) => ({
+    "Content-Type": "application/json",
+    "X-Test-User": "user-1",
+    "X-Test-Token": "pat-test",
+    "X-Test-Scopes": scopes,
+  });
+
+  const cases = [
+    { name: "PUT /entries/:id", path: `/api/knowledge/entries/${validId}`, method: "PUT", body: JSON.stringify({ definition: "edited" }) },
+    { name: "DELETE /entries/:id", path: `/api/knowledge/entries/${validId}`, method: "DELETE", body: undefined },
+    { name: "POST /entries/bulk-delete", path: "/api/knowledge/entries/bulk-delete", method: "POST", body: JSON.stringify({ ids: [validId] }) },
+  ];
+
+  for (const { name, path, method, body } of cases) {
+    it(`${name} returns 403 for a PAT without knowledge:write and touches nothing`, async () => {
+      selectReturning([{ id: validId, createdBy: "user-1" }]);
+      const res = await app.request(path, { method, headers: patHeaders("reactions:write,comments:write"), body });
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual({ error: "Token missing required scope: knowledge:write" });
+      expect(mockSelect).not.toHaveBeenCalled();
+      expect(mockUpdate).not.toHaveBeenCalled();
+      expect(mockDelete).not.toHaveBeenCalled();
+    });
+
+    it(`${name} succeeds for a PAT carrying knowledge:write`, async () => {
+      selectReturning([{ id: validId, createdBy: "user-1" }]);
+      updateReturning([{ id: validId, definition: "edited" }]);
+      deleteReturning([{ id: validId }]);
+      const res = await app.request(path, { method, headers: patHeaders("knowledge:write"), body });
+      expect(res.status).toBe(200);
+    });
+  }
+});

@@ -43,7 +43,7 @@ Current scopes:
 - `suggestions:write` — journal suggestion submit
 - `comments:write` — comments
 - `reactions:write` — reactions
-- `knowledge:write` — POST `/api/knowledge/notes` (Nibbler-style ingest)
+- `knowledge:write` — every knowledge and vocabulary write: POST `/api/knowledge/notes` (Nibbler-style ingest), entry create/edit/delete/bulk-delete/enrich, connections (edit and deletes since SHAN-566)
 
 ## PAT format and lifecycle
 

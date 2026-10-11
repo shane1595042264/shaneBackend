@@ -541,9 +541,13 @@ const updateWordSchema = z.object({
 // creator, but legacy rows (createdBy IS NULL, predate the column) are editable
 // by any signed-in user. Lets the new MarkdownEditor edit-mode in the UI
 // safely write back without exposing the row to drive-by vandalism.
+// SHAN-566: edit and both deletes need knowledge:write like every other
+// knowledge write; without it any PAT, even a reactions-only one, could
+// rewrite or wipe its owner's cards.
 knowledgeRoutes.put(
   "/entries/:id",
   requireAuth,
+  requireScope("knowledge:write"),
   zValidator("param", uuidParamSchema),
   zValidator("json", updateWordSchema),
   async (c) => {
@@ -616,7 +620,7 @@ knowledgeRoutes.put(
 // Delete an entry. Ownership rule: caller must be the creator. Legacy entries
 // (createdBy IS NULL, predate this column) are deletable by any authed user —
 // single-user app, no one else exists to lay claim.
-knowledgeRoutes.delete("/entries/:id", requireAuth, zValidator("param", uuidParamSchema), async (c) => {
+knowledgeRoutes.delete("/entries/:id", requireAuth, requireScope("knowledge:write"), zValidator("param", uuidParamSchema), async (c) => {
   const { id } = c.req.valid("param");
   const userId = c.get("userId") as string;
 
@@ -640,7 +644,7 @@ const bulkDeleteSchema = z.object({
   ids: z.array(z.string().uuid()).min(1).max(100),
 });
 
-knowledgeRoutes.post("/entries/bulk-delete", requireAuth, zValidator("json", bulkDeleteSchema), async (c) => {
+knowledgeRoutes.post("/entries/bulk-delete", requireAuth, requireScope("knowledge:write"), zValidator("json", bulkDeleteSchema), async (c) => {
   const { ids } = c.req.valid("json");
   const userId = c.get("userId") as string;
 
