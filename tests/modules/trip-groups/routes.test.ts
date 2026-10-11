@@ -152,14 +152,22 @@ vi.mock("@/modules/trip-groups/consolidator", async (importOriginal) => {
   return { ...actual, consolidateItinerary: mockConsolidateItinerary };
 });
 
-vi.mock("@/modules/auth/middleware", () => ({
-  requireAuth: async (c: any, next: any) => {
-    const u = c.req.header("X-Test-User");
-    if (!u) return c.json({ error: "auth" }, 401);
-    c.set("userId", u);
-    await next();
-  },
-}));
+// Fake only the token resolution; keep the real requireBrowserSession so the
+// PAT gate is exercised as shipped. X-Test-Scopes marks the caller as a PAT.
+vi.mock("@/modules/auth/middleware", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/modules/auth/middleware")>();
+  return {
+    ...actual,
+    requireAuth: async (c: any, next: any) => {
+      const u = c.req.header("X-Test-User");
+      if (!u) return c.json({ error: "auth" }, 401);
+      const scopes = c.req.header("X-Test-Scopes");
+      c.set("userId", u);
+      c.set("tokenScopes", scopes === undefined ? null : scopes.split(",").filter(Boolean));
+      await next();
+    },
+  };
+});
 
 import { tripGroupsRoutes } from "@/modules/trip-groups/routes";
 
@@ -1735,5 +1743,52 @@ describe("DELETE /api/trip-groups/:slug/itinerary (SHAN-286 reset)", () => {
     });
     expect(res.status).toBe(403);
     expect(mockClearItinerary).not.toHaveBeenCalled();
+  });
+});
+
+describe("PATs are rejected (SHAN-567)", () => {
+  const ALL_SCOPES = "entries:write,suggestions:write,comments:write,reactions:write,knowledge:write,practice:write,trips:write";
+
+  it("403s a PAT on create, whatever its scopes", async () => {
+    const res = await app.request("/api/trip-groups", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Test-User": USER_A, "X-Test-Scopes": ALL_SCOPES },
+      body: JSON.stringify({ title: "Tokyo 2026" }),
+    });
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: "Trip groups requires a browser session, not a PAT" });
+    expect(mockCreateTripGroup).not.toHaveBeenCalled();
+  });
+
+  it("403s a PAT on reads too", async () => {
+    const res = await app.request(`/api/trip-groups/${SLUG}`, {
+      headers: { "X-Test-User": USER_A, "X-Test-Scopes": "reactions:write" },
+    });
+    expect(res.status).toBe(403);
+    expect(mockGetGroupDetail).not.toHaveBeenCalled();
+  });
+
+  it("403s a PAT clearing an itinerary before any membership lookup", async () => {
+    const res = await app.request(`/api/trip-groups/${SLUG}/itinerary`, {
+      method: "DELETE",
+      headers: { "X-Test-User": USER_A, "X-Test-Scopes": "reactions:write" },
+    });
+    expect(res.status).toBe(403);
+    expect(mockGetGroupBySlug).not.toHaveBeenCalled();
+    expect(mockClearItinerary).not.toHaveBeenCalled();
+  });
+
+  it("lets a browser session (no scopes) through", async () => {
+    mockListGroupsForUser.mockResolvedValue([]);
+    const res = await app.request("/api/trip-groups", { headers: { "X-Test-User": USER_A } });
+    expect(res.status).toBe(200);
+  });
+
+  it("keeps the raw photo route public for an <img> with no auth", async () => {
+    mockGetPhotoBytes.mockResolvedValue(null);
+    const res = await app.request(
+      `/api/trip-groups/${SLUG}/itinerary/photos/33333333-3333-3333-3333-333333333333/raw`,
+    );
+    expect(res.status).toBe(404);
   });
 });

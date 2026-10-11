@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { zValidator } from "@/modules/shared/zod-validator";
 import { z } from "zod";
-import { requireAuth } from "@/modules/auth/middleware";
+import { requireAuth, requireBrowserSession } from "@/modules/auth/middleware";
 import {
   createTripGroup,
   listGroupsForUser,
@@ -70,7 +70,8 @@ type AuthEnv = { Variables: { userId: string } };
 /**
  * Trip-Groups routes — Phase 1 of SHAN-266.
  *
- * All endpoints require a browser JWT (PATs deferred). The user must be
+ * All endpoints require a browser JWT; PATs get 403 whatever their scopes
+ * (SHAN-567: requireAuth alone let every PAT through). The user must be
  * a member of the group to read its detail or post an idea. Anyone with
  * the slug can join via POST /:slug/join — invite-by-email lands in
  * Phase 2.
@@ -105,7 +106,7 @@ tripGroupsRoutes.get(
   },
 );
 
-tripGroupsRoutes.use("*", requireAuth);
+tripGroupsRoutes.use("*", requireAuth, requireBrowserSession("Trip groups"));
 
 const slugParam = z.object({
   slug: z.string().regex(/^[a-z0-9][a-z0-9-]{0,79}$/),

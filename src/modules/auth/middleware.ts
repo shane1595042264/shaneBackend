@@ -64,6 +64,21 @@ export function requireScope(scope: string) {
 }
 
 /**
+ * Reject PATs on routes that are browser-session only. Mount after
+ * requireAuth; JWTs (scopes === null) pass, any PAT gets 403 whatever
+ * its scopes. Use this for modules that have no PAT scope of their own,
+ * where requireAuth alone would let every token through.
+ */
+export function requireBrowserSession(feature: string) {
+  return createMiddleware<{ Variables: AuthVars }>(async (c, next) => {
+    if (c.get("tokenScopes") !== null) {
+      return c.json({ error: `${feature} requires a browser session, not a PAT` }, 403);
+    }
+    await next();
+  });
+}
+
+/**
  * Gate a route to admin-whitelisted users only (e.g. periodic-table element
  * writes, future moderation actions).
  *

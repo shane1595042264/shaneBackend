@@ -29,7 +29,7 @@ vi.mock("drizzle-orm", () => ({
 }));
 
 import { jwtVerify, SignJWT } from "jose";
-import { optionalAuth, requireAuth, requireScope, requireAdmin } from "@/modules/auth/middleware";
+import { optionalAuth, requireAuth, requireScope, requireAdmin, requireBrowserSession } from "@/modules/auth/middleware";
 
 const SECRET = new TextEncoder().encode("test-secret-min-32-bytes-long-xxxx");
 
@@ -118,6 +118,35 @@ describe("requireScope", () => {
   it("bypasses scope check for a JWT session (scopes is null)", async () => {
     const tok = await makeJwt("user-7");
     const app = new Hono().use(requireAuth).use(requireScope("entries:write")).get("/", (c) => c.text("ok"));
+    const res = await app.request("/", { headers: { Authorization: `Bearer ${tok}` } });
+    expect(res.status).toBe(200);
+  });
+});
+
+describe("requireBrowserSession", () => {
+  const app = new Hono()
+    .use(requireAuth)
+    .use(requireBrowserSession("Widgets"))
+    .get("/", (c) => c.text("ok"));
+
+  it("rejects a PAT even when it carries every scope", async () => {
+    mockLookupActiveToken.mockResolvedValue({
+      userId: "user-8",
+      scopes: ["entries:write", "suggestions:write", "comments:write", "reactions:write", "knowledge:write"],
+    });
+    const res = await app.request("/", { headers: { Authorization: "Bearer pat_abc" } });
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: "Widgets requires a browser session, not a PAT" });
+  });
+
+  it("rejects a PAT with no scopes", async () => {
+    mockLookupActiveToken.mockResolvedValue({ userId: "user-9", scopes: [] });
+    const res = await app.request("/", { headers: { Authorization: "Bearer pat_abc" } });
+    expect(res.status).toBe(403);
+  });
+
+  it("lets a JWT session through", async () => {
+    const tok = await makeJwt("user-10");
     const res = await app.request("/", { headers: { Authorization: `Bearer ${tok}` } });
     expect(res.status).toBe(200);
   });

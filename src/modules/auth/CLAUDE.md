@@ -6,6 +6,7 @@ JWT-for-browsers + PAT-for-external-apps under one middleware. Single-user app; 
 
 - `routes.ts` — `/api/auth/google` (OAuth), `/api/auth/me`, `/api/auth/tokens` (mint + list + revoke). PAT minting requires a JWT (a PAT cannot mint another PAT — security gate, deliberate).
 - `middleware.ts` — `optionalAuth`, `requireAuth`, `requireScope(scope)`, `requireAdmin()`. All populate the same Hono context vars.
+- `requireBrowserSession(feature)`: 403s every PAT after `requireAuth`. Use it for a module with no PAT scope of its own: `requireAuth` alone lets any PAT through, whatever its scopes (that is how trip-groups was open to every token until SHAN-567).
 - `tokens.ts` — `mintToken`, `lookupActiveToken`, `hashToken`, `listTokens`, `revokeToken`. Raw tokens are never persisted; only `tokenHash` (SHA-256 hex).
 - `config.ts` — JWT secret and Google OAuth client config. Read from env.
 
