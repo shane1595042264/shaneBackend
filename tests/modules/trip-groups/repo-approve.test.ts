@@ -28,7 +28,7 @@ vi.mock("@/db/client", () => {
   };
 });
 
-import { approveSuggestion } from "@/modules/trip-groups/repo";
+import { approveSuggestion, saveItineraryMerged } from "@/modules/trip-groups/repo";
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -61,5 +61,26 @@ describe("approveSuggestion (SHAN-563)", () => {
     mockReturning.mockResolvedValue([]);
     expect(await approveSuggestion("g1", "s1", "u1", () => ({ merged: true }))).toBe("resolved");
     expect(mockSet).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("saveItineraryMerged (SHAN-565)", () => {
+  it("merges onto the itinerary read under FOR UPDATE, then writes", async () => {
+    mockSelectFor.mockResolvedValue([{ itinerary: { stored: true } }]);
+    const merge = vi.fn(() => ({ merged: true }));
+
+    const result = await saveItineraryMerged("g1", merge);
+
+    expect(mockTransaction).toHaveBeenCalledTimes(1);
+    expect(mockSelectFor).toHaveBeenCalledWith("update");
+    expect(merge).toHaveBeenCalledWith({ stored: true });
+    expect(mockSet).toHaveBeenCalledWith(expect.objectContaining({ itinerary: { merged: true } }));
+    expect(result).toMatchObject({ itinerary: { merged: true } });
+  });
+
+  it("returns invalid without writing when the merge fails", async () => {
+    mockSelectFor.mockResolvedValue([{ itinerary: { stored: true } }]);
+    expect(await saveItineraryMerged("g1", () => null)).toBe("invalid");
+    expect(mockSet).not.toHaveBeenCalled();
   });
 });

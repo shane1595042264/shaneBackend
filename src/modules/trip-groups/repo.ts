@@ -224,6 +224,34 @@ export async function saveItinerary(
   return { itineraryGeneratedAt: now };
 }
 
+/**
+ * SHAN-565: owner manual edit that names the itinerary it started from.
+ * `merge` gets the stored blob, read with the group row locked, and returns
+ * the itinerary to write, or null when the merge is not a valid itinerary
+ * (nothing is written). Same shape as approveSuggestion, minus the claim.
+ */
+export async function saveItineraryMerged<T>(
+  groupId: string,
+  merge: (stored: unknown) => T | null,
+): Promise<{ itinerary: T; itineraryGeneratedAt: Date } | "invalid"> {
+  return db.transaction(async (tx) => {
+    const [group] = await tx
+      .select({ itinerary: tripGroups.itinerary })
+      .from(tripGroups)
+      .where(eq(tripGroups.id, groupId))
+      .for("update");
+    const itinerary = merge(group?.itinerary ?? null);
+    if (itinerary === null) return "invalid";
+
+    const now = new Date();
+    await tx
+      .update(tripGroups)
+      .set({ itinerary, itineraryGeneratedAt: now, updatedAt: now })
+      .where(eq(tripGroups.id, groupId));
+    return { itinerary, itineraryGeneratedAt: now };
+  });
+}
+
 /** True iff (groupId, userId) row exists in trip_group_members. */
 export async function isMember(groupId: string, userId: string): Promise<boolean> {
   const [row] = await db

@@ -13,6 +13,7 @@ import {
   getIdeaById,
   deleteIdeaById,
   saveItinerary,
+  saveItineraryMerged,
   clearItinerary,
   createSuggestion,
   listSuggestions,
@@ -417,12 +418,22 @@ tripGroupsRoutes.delete(
 
 const putItineraryBody = z.object({
   itinerary: itinerarySchema,
+  // SHAN-565: the itinerary the edit started from (null = there was none).
+  base: itinerarySchema.nullable().optional(),
 });
 
 /**
  * Manual itinerary edit (SHAN-276, Phase 6). Same write semantics as
  * consolidate: the owner writes directly; a non-owner member's edit lands
  * as a pending suggestion with server-computed changedDays.
+ *
+ * SHAN-565: browsers send the whole itinerary as their tab loaded it, so
+ * with no base every day the tab never touched was written back stale. When
+ * `base` is sent, the edit is only what changed from base to `itinerary`:
+ * the owner's changed days (and summary) are merged onto the stored
+ * itinerary under a row lock, and a member's suggestion records changedDays
+ * against base, so approving it applies only what the member touched.
+ * Without base the body is still taken as the whole itinerary.
  */
 tripGroupsRoutes.put(
   "/:slug/itinerary",
@@ -431,12 +442,37 @@ tripGroupsRoutes.put(
   async (c) => {
     const userId = c.get("userId");
     const { slug } = c.req.valid("param");
-    const { itinerary } = c.req.valid("json");
+    const { itinerary, base: sentBase } = c.req.valid("json");
     const group = await getGroupBySlug(slug);
     if (!group) return c.json({ error: "Not found" }, 404);
     const isOwner = group.ownerId === userId;
     if (!isOwner && !(await isMember(group.id, userId))) {
       return c.json({ error: "Not a member of this group" }, 403);
+    }
+
+    if (isOwner && sentBase !== undefined) {
+      const changedDays = computeChangedDays(sentBase, itinerary);
+      const summaryChanged = sentBase?.summary !== itinerary.summary;
+      const result = await saveItineraryMerged(group.id, (stored) => {
+        const current = itinerarySchema.safeParse(stored);
+        return mergeSuggestedItinerary(
+          current.success ? current.data : null,
+          itinerary,
+          changedDays,
+          summaryChanged,
+        );
+      });
+      if (result === "invalid") {
+        return c.json(
+          { error: "Applying this edit to the current itinerary would leave it invalid" },
+          409,
+        );
+      }
+      await autoFillLocationPhotos(group.id, result.itinerary).catch(() => {});
+      return c.json({
+        itinerary: result.itinerary,
+        itineraryGeneratedAt: result.itineraryGeneratedAt.toISOString(),
+      });
     }
 
     if (isOwner) {
@@ -445,8 +481,11 @@ tripGroupsRoutes.put(
       return c.json({ itinerary, itineraryGeneratedAt: itineraryGeneratedAt.toISOString() });
     }
 
-    const parsedBase = itinerarySchema.safeParse(group.itinerary);
-    const base = parsedBase.success ? parsedBase.data : null;
+    let base = sentBase;
+    if (base === undefined) {
+      const parsedBase = itinerarySchema.safeParse(group.itinerary);
+      base = parsedBase.success ? parsedBase.data : null;
+    }
     const suggestion = await createSuggestion({
       groupId: group.id,
       authorId: userId,

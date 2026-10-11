@@ -16,6 +16,7 @@ const {
   mockGetIdeaById,
   mockDeleteIdeaById,
   mockSaveItinerary,
+  mockSaveItineraryMerged,
   mockClearItinerary,
   mockConsolidateItinerary,
   mockCreateSuggestion,
@@ -41,6 +42,7 @@ const {
   mockGetIdeaById: vi.fn(),
   mockDeleteIdeaById: vi.fn(),
   mockSaveItinerary: vi.fn(),
+  mockSaveItineraryMerged: vi.fn(),
   mockClearItinerary: vi.fn(),
   mockConsolidateItinerary: vi.fn(),
   mockCreateSuggestion: vi.fn(),
@@ -68,6 +70,7 @@ vi.mock("@/modules/trip-groups/repo", () => ({
   getIdeaById: mockGetIdeaById,
   deleteIdeaById: mockDeleteIdeaById,
   saveItinerary: mockSaveItinerary,
+  saveItineraryMerged: mockSaveItineraryMerged,
   clearItinerary: mockClearItinerary,
   createSuggestion: mockCreateSuggestion,
   listSuggestions: mockListSuggestions,
@@ -1078,6 +1081,134 @@ describe("PUT /api/trip-groups/:slug/itinerary (SHAN-276)", () => {
       body: JSON.stringify({ itinerary: ITIN }),
     });
     expect(res.status).toBe(403);
+  });
+});
+
+describe("PUT /itinerary with a base merges instead of overwriting (SHAN-565)", () => {
+  const day = (n: number, title: string) => ({ day: n, title, location: null, activities: [] });
+  const LOADED = { summary: "Trip.", days: [day(1, "One"), day(2, "Two"), day(3, "Three")] };
+  // The tab edited day 3 only; days 1-2 are its stale copy.
+  const EDITED = { summary: "Trip.", days: [day(1, "One"), day(2, "Two"), day(3, "Three, edited")] };
+  // Meanwhile the owner changed day 2 and the summary.
+  const STORED = { summary: "Trip, renamed.", days: [day(1, "One"), day(2, "Two, owner"), day(3, "Three")] };
+
+  function runMerge() {
+    mockSaveItineraryMerged.mockImplementation(async (_id: string, merge: (s: unknown) => unknown) => {
+      const itinerary = merge(STORED);
+      return itinerary === null ? "invalid" : { itinerary, itineraryGeneratedAt: new Date("2026-10-10T00:00:00Z") };
+    });
+  }
+
+  it("owner edit applies only the days it changed onto the stored itinerary", async () => {
+    mockGetGroupBySlug.mockResolvedValue({ ...groupRow, itinerary: STORED });
+    runMerge();
+    const res = await app.request(`/api/trip-groups/${SLUG}/itinerary`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", "X-Test-User": USER_A },
+      body: JSON.stringify({ itinerary: EDITED, base: LOADED }),
+    });
+    expect(res.status).toBe(200);
+    expect(mockSaveItinerary).not.toHaveBeenCalled();
+    const body = await res.json();
+    expect(body.itinerary.summary).toBe("Trip, renamed.");
+    expect(body.itinerary.days.map((d: { title: string }) => d.title)).toEqual([
+      "One",
+      "Two, owner",
+      "Three, edited",
+    ]);
+  });
+
+  it("owner edit removing a day it loaded removes it from the stored itinerary", async () => {
+    mockGetGroupBySlug.mockResolvedValue({ ...groupRow, itinerary: STORED });
+    runMerge();
+    const res = await app.request(`/api/trip-groups/${SLUG}/itinerary`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", "X-Test-User": USER_A },
+      body: JSON.stringify({ itinerary: { ...LOADED, days: LOADED.days.slice(0, 2) }, base: LOADED }),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.itinerary.days.map((d: { day: number }) => d.day)).toEqual([1, 2]);
+    expect(body.itinerary.days[1].title).toBe("Two, owner");
+  });
+
+  it("409 when the merge would leave no valid itinerary", async () => {
+    mockGetGroupBySlug.mockResolvedValue({ ...groupRow, itinerary: STORED });
+    mockSaveItineraryMerged.mockResolvedValue("invalid");
+    const res = await app.request(`/api/trip-groups/${SLUG}/itinerary`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", "X-Test-User": USER_A },
+      body: JSON.stringify({ itinerary: EDITED, base: LOADED }),
+    });
+    expect(res.status).toBe(409);
+  });
+
+  it("member suggestion records changedDays against the base, not the stored itinerary", async () => {
+    mockGetGroupBySlug.mockResolvedValue({ ...groupRow, itinerary: STORED });
+    mockIsMember.mockResolvedValue(true);
+    mockCreateSuggestion.mockResolvedValue({
+      id: "44444444-4444-4444-4444-444444444444",
+      groupId: GROUP_ID,
+      authorId: USER_B,
+      authorName: "Ben",
+      itinerary: EDITED,
+      changedDays: [3],
+      summaryChanged: false,
+      note: "Manual edit",
+      status: "pending",
+      createdAt: new Date("2026-10-10T00:00:00Z"),
+      resolvedAt: null,
+      resolvedBy: null,
+    });
+    const res = await app.request(`/api/trip-groups/${SLUG}/itinerary`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", "X-Test-User": USER_B },
+      body: JSON.stringify({ itinerary: EDITED, base: LOADED }),
+    });
+    expect(res.status).toBe(201);
+    expect(mockSaveItineraryMerged).not.toHaveBeenCalled();
+    expect(mockCreateSuggestion).toHaveBeenCalledWith(
+      expect.objectContaining({ changedDays: [3], summaryChanged: false }),
+    );
+  });
+
+  it("base: null counts every proposed day as changed", async () => {
+    mockGetGroupBySlug.mockResolvedValue({ ...groupRow, itinerary: STORED });
+    mockIsMember.mockResolvedValue(true);
+    mockCreateSuggestion.mockResolvedValue({
+      id: "44444444-4444-4444-4444-444444444444",
+      groupId: GROUP_ID,
+      authorId: USER_B,
+      authorName: "Ben",
+      itinerary: EDITED,
+      changedDays: [1, 2, 3],
+      summaryChanged: true,
+      note: "Manual edit",
+      status: "pending",
+      createdAt: new Date("2026-10-10T00:00:00Z"),
+      resolvedAt: null,
+      resolvedBy: null,
+    });
+    const res = await app.request(`/api/trip-groups/${SLUG}/itinerary`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", "X-Test-User": USER_B },
+      body: JSON.stringify({ itinerary: EDITED, base: null }),
+    });
+    expect(res.status).toBe(201);
+    expect(mockCreateSuggestion).toHaveBeenCalledWith(
+      expect.objectContaining({ changedDays: [1, 2, 3], summaryChanged: true }),
+    );
+  });
+
+  it("rejects a base that fails the schema", async () => {
+    mockGetGroupBySlug.mockResolvedValue({ ...groupRow, itinerary: STORED });
+    const res = await app.request(`/api/trip-groups/${SLUG}/itinerary`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", "X-Test-User": USER_A },
+      body: JSON.stringify({ itinerary: EDITED, base: { summary: "", days: [] } }),
+    });
+    expect(res.status).toBe(400);
+    expect(mockSaveItineraryMerged).not.toHaveBeenCalled();
   });
 });
 
