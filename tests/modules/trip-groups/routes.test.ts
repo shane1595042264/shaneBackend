@@ -493,15 +493,24 @@ describe("POST /api/trip-groups/:slug/itinerary/consolidate", () => {
     expect(mockConsolidateItinerary).not.toHaveBeenCalled();
   });
 
+  // Runs the route's merge callback against `stored`, standing in for the
+  // row-locked read inside saveItineraryMerged.
+  function mergeOnto(stored: unknown) {
+    mockSaveItineraryMerged.mockImplementation(async (_id: string, merge: (s: unknown) => unknown) => {
+      const itinerary = merge(stored);
+      return itinerary === null
+        ? "invalid"
+        : { itinerary, itineraryGeneratedAt: new Date("2026-06-10T12:00:00Z") };
+    });
+  }
+
   it("consolidates, persists, and returns the itinerary for the owner", async () => {
     mockGetGroupDetail.mockResolvedValue(detailWithIdeas);
     mockConsolidateItinerary.mockResolvedValue({
       itinerary: ITINERARY,
       modelUsed: "claude-sonnet-4-20250514",
     });
-    mockSaveItinerary.mockResolvedValue({
-      itineraryGeneratedAt: new Date("2026-06-10T12:00:00Z"),
-    });
+    mergeOnto(null);
     const res = await app.request(`/api/trip-groups/${SLUG}/itinerary/consolidate`, {
       method: "POST",
       headers: { "X-Test-User": USER_A },
@@ -510,7 +519,8 @@ describe("POST /api/trip-groups/:slug/itinerary/consolidate", () => {
     const body = await res.json();
     expect(body.itinerary.summary).toBe(ITINERARY.summary);
     expect(body.itineraryGeneratedAt).toBe("2026-06-10T12:00:00.000Z");
-    expect(mockSaveItinerary).toHaveBeenCalledWith(GROUP_ID, ITINERARY);
+    expect(mockSaveItineraryMerged).toHaveBeenCalledWith(GROUP_ID, expect.any(Function));
+    expect(mockSaveItinerary).not.toHaveBeenCalled();
     // No stored itinerary → LLM gets no base to refine.
     expect(mockConsolidateItinerary).toHaveBeenCalledWith(
       expect.objectContaining({ existingItinerary: null }),
@@ -523,9 +533,7 @@ describe("POST /api/trip-groups/:slug/itinerary/consolidate", () => {
       itinerary: ITINERARY,
       modelUsed: "claude-sonnet-4-20250514",
     });
-    mockSaveItinerary.mockResolvedValue({
-      itineraryGeneratedAt: new Date("2026-06-10T12:00:00Z"),
-    });
+    mergeOnto(ITINERARY);
     const res = await app.request(`/api/trip-groups/${SLUG}/itinerary/consolidate`, {
       method: "POST",
       headers: { "X-Test-User": USER_A },
@@ -534,6 +542,64 @@ describe("POST /api/trip-groups/:slug/itinerary/consolidate", () => {
     expect(mockConsolidateItinerary).toHaveBeenCalledWith(
       expect.objectContaining({ existingItinerary: enriched(ITINERARY) }),
     );
+  });
+
+  describe("edits that land during the LLM call are kept (SHAN-568)", () => {
+    const day = (n: number, title: string) => ({ day: n, title, location: null, activities: [] });
+    // What the route read before calling the model.
+    const BASE = { summary: "Trip.", days: [day(1, "One"), day(2, "Two"), day(3, "Three")] };
+    // The model refined day 1 and added day 4; days 2-3 are its copy of BASE.
+    const AI = {
+      summary: "Trip.",
+      days: [day(1, "One, refined"), day(2, "Two"), day(3, "Three"), day(4, "Four")],
+    };
+    // Meanwhile the owner approved a suggestion for day 3 and renamed the trip.
+    const STORED = { summary: "Trip, renamed.", days: [day(1, "One"), day(2, "Two"), day(3, "Three, approved")] };
+
+    it("applies only the days the model changed onto the itinerary as stored now", async () => {
+      mockGetGroupDetail.mockResolvedValue({ ...detailWithIdeas, itinerary: BASE });
+      mockConsolidateItinerary.mockResolvedValue({ itinerary: enriched(AI), modelUsed: "m" });
+      mergeOnto(STORED);
+      const res = await app.request(`/api/trip-groups/${SLUG}/itinerary/consolidate`, {
+        method: "POST",
+        headers: { "X-Test-User": USER_A },
+      });
+      expect(res.status).toBe(200);
+      expect(mockSaveItinerary).not.toHaveBeenCalled();
+      const body = await res.json();
+      expect(body.itinerary.summary).toBe("Trip, renamed.");
+      expect(body.itinerary.days.map((d: { title: string }) => d.title)).toEqual([
+        "One, refined",
+        "Two",
+        "Three, approved",
+        "Four",
+      ]);
+    });
+
+    it("a reset during the call leaves the model's itinerary as the whole result", async () => {
+      mockGetGroupDetail.mockResolvedValue({ ...detailWithIdeas, itinerary: BASE });
+      mockConsolidateItinerary.mockResolvedValue({ itinerary: enriched(AI), modelUsed: "m" });
+      mergeOnto(null);
+      const res = await app.request(`/api/trip-groups/${SLUG}/itinerary/consolidate`, {
+        method: "POST",
+        headers: { "X-Test-User": USER_A },
+      });
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.itinerary.days).toHaveLength(4);
+    });
+
+    it("409 when the merge would leave no valid itinerary", async () => {
+      mockGetGroupDetail.mockResolvedValue({ ...detailWithIdeas, itinerary: BASE });
+      mockConsolidateItinerary.mockResolvedValue({ itinerary: enriched(AI), modelUsed: "m" });
+      mockSaveItineraryMerged.mockResolvedValue("invalid");
+      const res = await app.request(`/api/trip-groups/${SLUG}/itinerary/consolidate`, {
+        method: "POST",
+        headers: { "X-Test-User": USER_A },
+      });
+      expect(res.status).toBe(409);
+      expect(mockSaveItinerary).not.toHaveBeenCalled();
+    });
   });
 
   it("maps LLM-chain exhaustion to 502 and does not persist", async () => {
@@ -547,6 +613,7 @@ describe("POST /api/trip-groups/:slug/itinerary/consolidate", () => {
     });
     expect(res.status).toBe(502);
     expect(mockSaveItinerary).not.toHaveBeenCalled();
+    expect(mockSaveItineraryMerged).not.toHaveBeenCalled();
   });
 
   it("maps invalid AI output to 502", async () => {
@@ -638,13 +705,17 @@ describe("itinerary suggestions (SHAN-273)", () => {
   it("owner consolidate still writes directly", async () => {
     mockGetGroupDetail.mockResolvedValue(memberDetail);
     mockConsolidateItinerary.mockResolvedValue({ itinerary: ITIN, modelUsed: "m" });
-    mockSaveItinerary.mockResolvedValue({ itineraryGeneratedAt: new Date("2026-06-10T11:00:00Z") });
+    mockSaveItineraryMerged.mockResolvedValue({
+      itinerary: ITIN,
+      itineraryGeneratedAt: new Date("2026-06-10T11:00:00Z"),
+    });
     const res = await app.request(`/api/trip-groups/${SLUG}/itinerary/consolidate`, {
       method: "POST",
       headers: { "X-Test-User": USER_A },
     });
     expect(res.status).toBe(200);
     expect(mockCreateSuggestion).not.toHaveBeenCalled();
+    expect(mockSaveItineraryMerged).toHaveBeenCalled();
   });
 
   it("non-member consolidate is 403", async () => {

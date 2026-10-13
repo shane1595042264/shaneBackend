@@ -294,15 +294,32 @@ tripGroupsRoutes.post(
       });
 
       if (isOwner) {
-        const { itineraryGeneratedAt } = await saveItinerary(detail.id, itinerary);
-        // Best-effort auto photo fill (SHAN-280) — never fails the write.
-        const parsed = itinerarySchema.safeParse(itinerary);
-        if (parsed.success) {
-          await autoFillLocationPhotos(detail.id, parsed.data).catch(() => {});
+        // SHAN-568: the LLM call takes seconds, and an approve or manual edit
+        // can land meanwhile. Overwriting with the result reverted them, so
+        // only the days (and summary) the model changed from `base` are
+        // merged onto the itinerary as stored now, under a row lock.
+        const changedDays = computeChangedDays(base, itinerary);
+        const summaryChanged = base?.summary !== itinerary.summary;
+        const result = await saveItineraryMerged(detail.id, (stored) => {
+          const current = itinerarySchema.safeParse(stored);
+          return mergeSuggestedItinerary(
+            current.success ? current.data : null,
+            itinerary,
+            changedDays,
+            summaryChanged,
+          );
+        });
+        if (result === "invalid") {
+          return c.json(
+            { error: "Applying this consolidation to the current itinerary would leave it invalid" },
+            409,
+          );
         }
+        // Best-effort auto photo fill (SHAN-280) — never fails the write.
+        await autoFillLocationPhotos(detail.id, result.itinerary).catch(() => {});
         return c.json({
-          itinerary,
-          itineraryGeneratedAt: itineraryGeneratedAt.toISOString(),
+          itinerary: result.itinerary,
+          itineraryGeneratedAt: result.itineraryGeneratedAt.toISOString(),
           modelUsed,
         });
       }
