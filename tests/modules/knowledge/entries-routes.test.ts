@@ -517,7 +517,7 @@ describe("POST /api/knowledge/entries/:id/enrich — no raw error leak (SHAN-344
   it("returns a generic 500 body (no raw driver text) when enrichment throws", async () => {
     const secret =
       "connection terminated: password authentication failed for user postgres";
-    selectReturning([{ id: validId, word: "build", language: "en" }]);
+    selectReturning([{ id: validId, word: "build", language: "en", createdBy: "user-1" }]);
     vi.mocked(enrichWord).mockRejectedValueOnce(new Error(secret));
 
     const res = await app.request(`/api/knowledge/entries/${validId}/enrich`, {
@@ -531,7 +531,7 @@ describe("POST /api/knowledge/entries/:id/enrich — no raw error leak (SHAN-344
   });
 
   it("maps LLM-provider exhaustion to a safe 502 without leaking provider internals", async () => {
-    selectReturning([{ id: validId, word: "build", language: "en" }]);
+    selectReturning([{ id: validId, word: "build", language: "en", createdBy: "user-1" }]);
     vi.mocked(enrichWord).mockRejectedValueOnce(
       new Error("All LLM providers failed. Anthropic: 401 invalid x-api-key; Groq: 429")
     );
@@ -544,6 +544,44 @@ describe("POST /api/knowledge/entries/:id/enrich — no raw error leak (SHAN-344
     const body = await res.json();
     expect(JSON.stringify(body)).not.toContain("x-api-key");
     expect(JSON.stringify(body)).not.toContain("Anthropic");
+  });
+
+  // SHAN-570: enrich rewrites the row, so it follows PUT's ownership rule.
+  it("returns 403 on another user's entry without calling the LLM or writing", async () => {
+    selectReturning([{ id: validId, word: "build", language: "en", createdBy: "user-2" }]);
+    const res = await app.request(`/api/knowledge/entries/${validId}/enrich`, {
+      method: "POST",
+      headers: { "X-Test-User": "user-1" },
+    });
+    expect(res.status).toBe(403);
+    expect(enrichWord).not.toHaveBeenCalled();
+    expect(mockUpdate).not.toHaveBeenCalled();
+  });
+
+  it("writes only the fields the enricher returned on a legacy unowned entry", async () => {
+    selectReturning([
+      { id: validId, word: "build", language: "en", createdBy: null, definition: "stale", labels: ["stale"] },
+    ]);
+    const setFn = vi.fn(() => ({ where: () => ({ returning: () => Promise.resolve([{ id: validId }]) }) }));
+    mockUpdate.mockImplementation(() => ({ set: setFn }));
+    vi.mocked(enrichWord).mockResolvedValueOnce({
+      definition: "",
+      pronunciation: "/bɪld/",
+      partOfSpeech: "",
+      exampleSentence: "",
+      labels: [],
+    });
+
+    const res = await app.request(`/api/knowledge/entries/${validId}/enrich`, {
+      method: "POST",
+      headers: { "X-Test-User": "user-1" },
+    });
+    expect(res.status).toBe(200);
+    const patch = setFn.mock.calls[0][0] as Record<string, unknown>;
+    expect(patch.pronunciation).toBe("/bɪld/");
+    for (const key of ["definition", "partOfSpeech", "exampleSentence", "labels"]) {
+      expect(patch).not.toHaveProperty(key);
+    }
   });
 });
 

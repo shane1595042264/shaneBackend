@@ -5,6 +5,7 @@ import { db } from "@/db/client";
 import { vocabWords, vocabConnections } from "@/db/schema";
 import { desc, eq, and, or, ilike, sql, inArray } from "drizzle-orm";
 import { enrichWord } from "./ai-enricher";
+import { enrichPatch } from "./enrich-patch";
 import { requireAuth, requireScope } from "@/modules/auth/middleware";
 import { createPATRateLimit } from "@/modules/shared/rate-limit";
 import { likeContains } from "@/modules/shared/like";
@@ -288,22 +289,20 @@ vocabularyRoutes.post(
   zValidator("param", uuidParamSchema),
   async (c) => {
     const { id } = c.req.valid("param");
+    const userId = c.get("userId") as string;
     const [word] = await db.select().from(vocabWords).where(eq(vocabWords.id, id));
     if (!word) return c.json({ error: "Word not found" }, 404);
+    // SHAN-570: enrich rewrites the row, so it takes PUT's ownership rule.
+    // Checked before the LLM call so a refused caller spends nothing.
+    if (word.createdBy !== null && word.createdBy !== userId) {
+      return c.json({ error: "You can only enrich words you created" }, 403);
+    }
 
     try {
       const enriched = await enrichWord(word.word, word.language);
       const [updated] = await db
         .update(vocabWords)
-        .set({
-          definition: enriched.definition || word.definition,
-          pronunciation: enriched.pronunciation || word.pronunciation,
-          partOfSpeech: enriched.partOfSpeech || word.partOfSpeech,
-          exampleSentence: enriched.exampleSentence || word.exampleSentence,
-          labels: enriched.labels.length > 0 ? enriched.labels : (word.labels as string[]),
-          aiMetadata: { enrichedAt: new Date().toISOString() },
-          updatedAt: new Date(),
-        })
+        .set(enrichPatch(enriched))
         .where(eq(vocabWords.id, id))
         .returning();
 

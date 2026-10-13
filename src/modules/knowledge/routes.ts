@@ -5,6 +5,7 @@ import { db } from "@/db/client";
 import { vocabWords, vocabConnections } from "@/db/schema";
 import { desc, eq, and, or, ilike, sql, inArray } from "drizzle-orm";
 import { enrichWord } from "@/modules/vocabulary/ai-enricher";
+import { enrichPatch } from "@/modules/vocabulary/enrich-patch";
 import { classifyNote, type ClassificationSource } from "./classifier";
 import { postToBilibili } from "./bilibili";
 import { applyLocationDelta, normalizeLocations, computeLongTermMemorized } from "./memorization";
@@ -674,22 +675,20 @@ knowledgeRoutes.post("/entries/bulk-delete", requireAuth, requireScope("knowledg
 // AI-enrich an existing entry
 knowledgeRoutes.post("/entries/:id/enrich", requireAuth, requireScope("knowledge:write"), zValidator("param", uuidParamSchema), async (c) => {
   const { id } = c.req.valid("param");
+  const userId = c.get("userId") as string;
   const [entry] = await db.select().from(vocabWords).where(eq(vocabWords.id, id));
   if (!entry) return c.json({ error: "Entry not found" }, 404);
+  // SHAN-570: enrich rewrites the row, so it takes PUT's ownership rule.
+  // Checked before the LLM call so a refused caller spends nothing.
+  if (entry.createdBy !== null && entry.createdBy !== userId) {
+    return c.json({ error: "You can only enrich entries you created" }, 403);
+  }
 
   try {
     const enriched = await enrichWord(entry.word, entry.language);
     const [updated] = await db
       .update(vocabWords)
-      .set({
-        definition: enriched.definition || entry.definition,
-        pronunciation: enriched.pronunciation || entry.pronunciation,
-        partOfSpeech: enriched.partOfSpeech || entry.partOfSpeech,
-        exampleSentence: enriched.exampleSentence || entry.exampleSentence,
-        labels: enriched.labels.length > 0 ? enriched.labels : (entry.labels as string[]),
-        aiMetadata: { enrichedAt: new Date().toISOString() },
-        updatedAt: new Date(),
-      })
+      .set(enrichPatch(enriched))
       .where(eq(vocabWords.id, id))
       .returning();
 

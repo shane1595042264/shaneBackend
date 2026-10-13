@@ -306,7 +306,7 @@ describe("POST /api/vocabulary/words/:id/enrich — auth gate", () => {
   it("returns a generic 500 body (no raw driver text) when enrichment throws", async () => {
     const secret =
       "connection terminated: password authentication failed for user postgres";
-    selectRows([{ id: validId, word: "build", language: "en" }]);
+    selectRows([{ id: validId, word: "build", language: "en", createdBy: "u-shane" }]);
     vi.mocked(enrichWord).mockRejectedValueOnce(new Error(secret));
 
     const res = await app.request(`/api/vocabulary/words/${validId}/enrich`, {
@@ -320,7 +320,7 @@ describe("POST /api/vocabulary/words/:id/enrich — auth gate", () => {
   });
 
   it("maps LLM-provider exhaustion to a safe 502 without leaking provider internals", async () => {
-    selectRows([{ id: validId, word: "build", language: "en" }]);
+    selectRows([{ id: validId, word: "build", language: "en", createdBy: "u-shane" }]);
     vi.mocked(enrichWord).mockRejectedValueOnce(
       new Error("All LLM providers failed. Anthropic: 401 invalid x-api-key; Groq: 429")
     );
@@ -333,6 +333,56 @@ describe("POST /api/vocabulary/words/:id/enrich — auth gate", () => {
     const body = await res.json();
     expect(JSON.stringify(body)).not.toContain("x-api-key");
     expect(JSON.stringify(body)).not.toContain("Anthropic");
+  });
+
+  // SHAN-570: enrich rewrites the row, so it follows PUT's ownership rule.
+  it("returns 403 on another user's word without calling the LLM or writing", async () => {
+    selectRows([{ id: validId, word: "build", language: "en", createdBy: "u-other" }]);
+    const res = await app.request(`/api/vocabulary/words/${validId}/enrich`, {
+      method: "POST",
+      headers: jwtHeaders("u-shane"),
+    });
+    expect(res.status).toBe(403);
+    expect(enrichWord).not.toHaveBeenCalled();
+    expect(mockUpdate).not.toHaveBeenCalled();
+  });
+
+  it("still enriches a legacy word with no owner", async () => {
+    selectRows([{ id: validId, word: "build", language: "en", createdBy: null }]);
+    updateReturning({ id: validId, word: "build", definition: "ai-def" });
+    const res = await app.request(`/api/vocabulary/words/${validId}/enrich`, {
+      method: "POST",
+      headers: jwtHeaders("u-shane"),
+    });
+    expect(res.status).toBe(200);
+  });
+
+  // SHAN-570: a blank enricher field must not be filled from the row read
+  // before the LLM call, or an edit saved meanwhile is reverted.
+  it("writes only the fields the enricher returned", async () => {
+    selectRows([
+      { id: validId, word: "build", language: "en", createdBy: "u-shane", pronunciation: "stale", labels: ["stale"] },
+    ]);
+    const setFn = vi.fn(() => ({ where: () => ({ returning: () => Promise.resolve([{ id: validId }]) }) }));
+    mockUpdate.mockImplementation(() => ({ set: setFn }));
+    vi.mocked(enrichWord).mockResolvedValueOnce({
+      definition: "fresh",
+      pronunciation: "",
+      partOfSpeech: "",
+      exampleSentence: "",
+      labels: [],
+    });
+
+    const res = await app.request(`/api/vocabulary/words/${validId}/enrich`, {
+      method: "POST",
+      headers: jwtHeaders("u-shane"),
+    });
+    expect(res.status).toBe(200);
+    const patch = setFn.mock.calls[0][0] as Record<string, unknown>;
+    expect(patch.definition).toBe("fresh");
+    for (const key of ["pronunciation", "partOfSpeech", "exampleSentence", "labels"]) {
+      expect(patch).not.toHaveProperty(key);
+    }
   });
 });
 
