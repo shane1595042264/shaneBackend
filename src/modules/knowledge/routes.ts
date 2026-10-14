@@ -21,6 +21,7 @@ import {
 } from "@/modules/shared/validators";
 import {
   createComment as createKnowledgeComment,
+  getComment as getKnowledgeComment,
   listForEntry as listKnowledgeComments,
   updateComment as updateKnowledgeComment,
   deleteComment as deleteKnowledgeComment,
@@ -886,6 +887,13 @@ knowledgeRoutes.post(
       .limit(1);
     if (!entry) return c.json({ error: "Entry not found" }, 404);
     const { content, parent_comment_id } = c.req.valid("json");
+    // SHAN-574: only a top-level comment on this entry can take a reply.
+    if (parent_comment_id) {
+      const parent = await getKnowledgeComment(parent_comment_id);
+      if (!parent || parent.entryId !== id || parent.parentCommentId !== null) {
+        return c.json({ error: "parent_comment_id must be a top-level comment on this entry" }, 400);
+      }
+    }
     const comment = await createKnowledgeComment({
       entryId: id,
       authorId: userId,

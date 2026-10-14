@@ -11,7 +11,9 @@ const {
   mockGetVersion,
   mockGetSug,
   mockSelect,
+  mockGetComment,
 } = vi.hoisted(() => ({
+  mockGetComment: vi.fn(),
   mockGetByDate: vi.fn(),
   mockCreateComment: vi.fn(),
   mockListComments: vi.fn(),
@@ -53,7 +55,7 @@ vi.mock("@/modules/journal/suggestions-repo", () => ({
 vi.mock("@/modules/journal/comments-repo", () => ({
   createComment: mockCreateComment,
   listForEntry: mockListComments,
-  getComment: vi.fn(),
+  getComment: mockGetComment,
   updateComment: mockUpdateComment,
   deleteComment: mockDeleteComment,
 }));
@@ -133,14 +135,34 @@ describe("POST /api/journal/entries/:date/comments", () => {
   it("creates a nested reply when parent_comment_id is provided", async () => {
     mockGetByDate.mockResolvedValue({ entry: { id: "e1" }, currentVersion: {} });
     mockCreateComment.mockResolvedValue({ id: "c2" });
-    await app.request("/api/journal/entries/2026-05-03/comments", {
+    mockGetComment.mockResolvedValue({ id: "00000000-0000-0000-0000-000000000001", entryId: "e1", parentCommentId: null });
+    const res = await app.request("/api/journal/entries/2026-05-03/comments", {
       method: "POST",
       headers: { "Content-Type": "application/json", "X-Test-User": "u1" },
       body: JSON.stringify({ content: "reply", parent_comment_id: "00000000-0000-0000-0000-000000000001" }),
     });
+    expect(res.status).toBe(201);
     expect(mockCreateComment).toHaveBeenCalledWith(expect.objectContaining({
       parentCommentId: "00000000-0000-0000-0000-000000000001",
     }));
+  });
+
+  // SHAN-574: the thread UI only draws replies under a top-level comment on
+  // the same entry, so any other parent would be a 201 for an invisible row.
+  it.each([
+    ["does not exist", null],
+    ["is on another entry", { id: "p1", entryId: "e-other", parentCommentId: null }],
+    ["is itself a reply", { id: "p1", entryId: "e1", parentCommentId: "p0" }],
+  ])("400s when the parent %s", async (_label, parent) => {
+    mockGetByDate.mockResolvedValue({ entry: { id: "e1" }, currentVersion: {} });
+    mockGetComment.mockResolvedValue(parent);
+    const res = await app.request("/api/journal/entries/2026-05-03/comments", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Test-User": "u1" },
+      body: JSON.stringify({ content: "reply", parent_comment_id: "00000000-0000-0000-0000-000000000001" }),
+    });
+    expect(res.status).toBe(400);
+    expect(mockCreateComment).not.toHaveBeenCalled();
   });
 
   it("401 without auth", async () => {

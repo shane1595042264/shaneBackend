@@ -11,6 +11,7 @@ import {
   serial,
   unique,
   index,
+  foreignKey,
   customType,
   boolean,
 } from "drizzle-orm/pg-core";
@@ -354,7 +355,16 @@ export const knowledgeComments = pgTable(
       .notNull()
       .defaultNow(),
   },
-  (t) => [index("knowledge_comments_entry_idx").on(t.entryId)]
+  (t) => [
+    index("knowledge_comments_entry_idx").on(t.entryId),
+    // SHAN-574: deleting a parent promotes its replies to top level instead
+    // of orphaning them under an id the thread UI can never draw.
+    foreignKey({
+      columns: [t.parentCommentId],
+      foreignColumns: [t.id],
+      name: "knowledge_comments_parent_comment_id_fk",
+    }).onDelete("set null"),
+  ]
 );
 
 // ------------------------------------------------------------------
@@ -502,6 +512,12 @@ export const journalComments = pgTable(
   },
   (t) => [
     index("journal_comments_entry_idx").on(t.entryId),
+    // SHAN-574: deleting a parent promotes its replies to top level.
+    foreignKey({
+      columns: [t.parentCommentId],
+      foreignColumns: [t.id],
+      name: "journal_comments_parent_comment_id_fk",
+    }).onDelete("set null"),
   ]
 );
 
@@ -1310,8 +1326,7 @@ export const courseComments = pgTable(
     courseId: uuid("course_id")
       .notNull()
       .references(() => courses.id, { onDelete: "cascade" }),
-    // Self-reference, deliberately no FK constraint (house pattern,
-    // matches journal_comments / knowledge_comments).
+    // Self-reference; the FK (SHAN-574) is in the table extras below.
     parentCommentId: uuid("parent_comment_id"),
     authorId: uuid("author_id")
       .notNull()
@@ -1321,7 +1336,15 @@ export const courseComments = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [index("course_comments_course_idx").on(t.courseId)],
+  (t) => [
+    index("course_comments_course_idx").on(t.courseId),
+    // SHAN-574: deleting a parent promotes its replies to top level.
+    foreignKey({
+      columns: [t.parentCommentId],
+      foreignColumns: [t.id],
+      name: "course_comments_parent_comment_id_fk",
+    }).onDelete("set null"),
+  ],
 );
 
 // ---------------------------------------------------------------------------

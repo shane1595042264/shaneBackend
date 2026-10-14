@@ -38,6 +38,7 @@ import {
   commentCounts,
   commentCountFor,
   createCourseComment,
+  getCourseComment,
   listCourseComments,
   updateCourseComment,
   deleteCourseComment,
@@ -475,6 +476,13 @@ coursesRoutes.post(
     const body = c.req.valid("json");
     const course = await getCourseById(id);
     if (!course) return c.json({ error: "Not found" }, 404);
+    // SHAN-574: only a top-level comment on this course can take a reply.
+    if (body.parent_comment_id) {
+      const parent = await getCourseComment(body.parent_comment_id);
+      if (!parent || parent.courseId !== id || parent.parentCommentId !== null) {
+        return c.json({ error: "parent_comment_id must be a top-level comment on this course" }, 400);
+      }
+    }
     const comment = await createCourseComment({
       courseId: id,
       authorId: userId,

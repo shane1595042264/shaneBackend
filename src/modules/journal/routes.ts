@@ -872,6 +872,15 @@ journalRoutes.post(
     const row = await getEntryByDate(date);
     if (!row) return c.json({ error: "Not found" }, 404);
     const { content, parent_comment_id } = c.req.valid("json");
+    // SHAN-574: threads are one level deep and the UI only draws replies
+    // under a top-level comment on the same entry; anything else is a 201
+    // for a comment nobody can see.
+    if (parent_comment_id) {
+      const parent = await getComment(parent_comment_id);
+      if (!parent || parent.entryId !== row.entry.id || parent.parentCommentId !== null) {
+        return c.json({ error: "parent_comment_id must be a top-level comment on this entry" }, 400);
+      }
+    }
     const authorTimezone = await getUserTimezone(userId);
     const comment = await createComment({
       entryId: row.entry.id,

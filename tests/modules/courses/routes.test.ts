@@ -596,6 +596,7 @@ describe("course comments", () => {
 
   it("POST creates with parent_comment_id", async () => {
     m.getCourseById.mockResolvedValue(courseRow);
+    m.getCourseComment.mockResolvedValue(comment);
     m.createCourseComment.mockResolvedValue(comment);
     const res = await app.request(`/api/courses/${courseRow.id}/comments`, {
       method: "POST",
@@ -609,6 +610,22 @@ describe("course comments", () => {
       content: "Great lecture",
       parentCommentId: comment.id,
     });
+  });
+
+  it.each([
+    ["does not exist", null],
+    ["is on another course", { courseId: "99999999-9999-4999-8999-999999999999", parentCommentId: null }],
+    ["is itself a reply", { courseId: courseRow.id, parentCommentId: "33333333-3333-4333-8333-333333333333" }],
+  ])("POST 400s when the parent %s (SHAN-574)", async (_label, parent) => {
+    m.getCourseById.mockResolvedValue(courseRow);
+    m.getCourseComment.mockResolvedValue(parent && { ...comment, ...parent });
+    const res = await app.request(`/api/courses/${courseRow.id}/comments`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Test-User": "viewer" },
+      body: JSON.stringify({ content: "reply", parent_comment_id: comment.id }),
+    });
+    expect(res.status).toBe(400);
+    expect(m.createCourseComment).not.toHaveBeenCalled();
   });
 
   it("POST 404s for an unknown course", async () => {
