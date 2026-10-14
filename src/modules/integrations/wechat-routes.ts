@@ -2,8 +2,21 @@ import { Hono } from "hono";
 import { zValidator } from "@/modules/shared/zod-validator";
 import { z } from "zod";
 import { processWeChatMessages } from "./wechat";
+import { isBearerAuthed } from "@/modules/shared/admin-auth";
 
 export const wechatRoutes = new Hono();
+
+// Both routes are machine-only. Fail closed: with WECHAT_INGEST_TOKEN unset
+// nothing gets in. The old inline check skipped itself when the variable was
+// unset, which it is in prod, so anyone could write rows that the public
+// activities feed then rendered in the journal sidebar (SHAN-572). Registered
+// before zValidator so an unauthenticated caller gets 401, not a schema 400.
+wechatRoutes.use("*", async (c, next) => {
+  if (!isBearerAuthed(c, "WECHAT_INGEST_TOKEN")) {
+    return c.json({ error: "Unauthorized" }, 401);
+  }
+  await next();
+});
 
 // Upper bounds only — no new .min() — so every currently-valid payload still
 // passes while oversized input is rejected with a clean 400 instead of silently
@@ -25,19 +38,11 @@ export const wechatBatchSchema = z.object({
 /**
  * POST /messages
  * Push WeChat messages into the activities table.
- * Auth: Bearer token via WECHAT_INGEST_TOKEN env var.
+ * Auth: Bearer token via WECHAT_INGEST_TOKEN env var (router-level guard).
  *
  * Body: { messages: [{ content, sender, chat, timestamp, messageType?, url? }] }
  */
 wechatRoutes.post("/messages", zValidator("json", wechatBatchSchema), async (c) => {
-  const expectedToken = process.env.WECHAT_INGEST_TOKEN;
-  if (expectedToken) {
-    const auth = c.req.header("Authorization");
-    if (auth !== `Bearer ${expectedToken}`) {
-      return c.json({ error: "Unauthorized" }, 401);
-    }
-  }
-
   const { messages } = c.req.valid("json");
   const inserted = await processWeChatMessages(messages);
 
@@ -46,7 +51,7 @@ wechatRoutes.post("/messages", zValidator("json", wechatBatchSchema), async (c) 
 
 /**
  * GET /today
- * Get all WeChat messages for today (for debugging).
+ * Get all WeChat messages for today (for debugging). Same token as ingest.
  */
 wechatRoutes.get("/today", async (c) => {
   const { db } = await import("@/db/client");
