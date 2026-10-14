@@ -63,6 +63,7 @@ import {
   MAX_MARKDOWN_BODY_MESSAGE,
   int4Positive,
   int4PositiveParam,
+  dropLoneSurrogates,
 } from "@/modules/shared/validators";
 import { createPATRateLimit } from "@/modules/shared/rate-limit";
 import { journalAccessRoutes } from "./access-routes";
@@ -839,12 +840,15 @@ const commentBody = z.object({
   // SHAN-577: pins a top-level comment to text on the page as an inline note.
   // `quote` is required and non-blank; the context strings may be empty (a
   // note on the first or last words of a part has nothing on one side).
+  // SHAN-578: the client cuts the context at 64 UTF-16 units, which can split
+  // an emoji, and a lone surrogate makes the jsonb insert 500. Dropping it
+  // leaves context that still matches the rendered text.
   anchor: z
     .object({
       target: z.union([z.literal("entry"), z.string().uuid()]),
-      quote: z.string().trim().min(1).max(1000),
-      prefix: z.string().max(64).default(""),
-      suffix: z.string().max(64).default(""),
+      quote: z.string().transform(dropLoneSurrogates).pipe(z.string().trim().min(1).max(1000)),
+      prefix: z.string().max(64).default("").transform(dropLoneSurrogates),
+      suffix: z.string().max(64).default("").transform(dropLoneSurrogates),
     })
     .strict()
     .optional(),
@@ -927,7 +931,7 @@ journalRoutes.post(
       detail: parent_comment_id
         ? { parentCommentId: parent_comment_id }
         : anchor
-          ? { anchorTarget: anchor.target, quote: anchor.quote.slice(0, 200) }
+          ? { anchorTarget: anchor.target, quote: dropLoneSurrogates(anchor.quote.slice(0, 200)) }
           : null,
     });
     return c.json({ comment }, 201);

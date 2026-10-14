@@ -13,7 +13,9 @@ const {
   mockSelect,
   mockGetComment,
   mockGetAppend,
+  mockRecordActivity,
 } = vi.hoisted(() => ({
+  mockRecordActivity: vi.fn().mockResolvedValue(undefined),
   mockGetAppend: vi.fn(),
   mockGetComment: vi.fn(),
   mockGetByDate: vi.fn(),
@@ -69,6 +71,11 @@ vi.mock("@/modules/journal/appends-repo", () => ({
   softDeleteAppend: vi.fn(),
 }));
 vi.mock("@/db/client", () => ({ db: { select: mockSelect } }));
+vi.mock("@/modules/journal/activity-repo", () => ({
+  recordActivity: mockRecordActivity,
+  listActivity: vi.fn(),
+  listActivityForEntry: vi.fn(),
+}));
 vi.mock("@/db/schema", () => ({
   journalEntries: {},
   journalVersions: {},
@@ -314,9 +321,35 @@ describe("POST /api/journal/entries/:date/comments with an anchor (SHAN-577)", (
       { target: "nope", quote: "q" },
       { target: "entry", quote: "q", prefix: "x".repeat(65) },
       { target: "entry", quote: "q", offset: 4 },
+      { target: "entry", quote: "\uD83D" },
     ]) {
       expect((await post({ content: "x", anchor })).status).toBe(400);
     }
     expect(mockCreateComment).not.toHaveBeenCalled();
+  });
+
+  // SHAN-578: a half emoji serializes to an escape Postgres refuses in jsonb.
+  it("drops the half of an emoji the 64-character context cut", async () => {
+    const res = await post({
+      content: "x",
+      anchor: { target: "entry", quote: "ring buffer", prefix: "\uDE00 before ", suffix: " after \uD83D" },
+    });
+    expect(res.status).toBe(201);
+    expect(mockCreateComment.mock.calls[0][0].anchor).toEqual({
+      target: "entry",
+      quote: "ring buffer",
+      prefix: " before ",
+      suffix: " after ",
+    });
+  });
+
+  it("keeps whole emoji and records a well-formed activity quote when 200 splits one", async () => {
+    const quote = `${"a".repeat(199)}\u{1F600}tail`;
+    const res = await post({ content: "x", anchor: { target: "entry", quote, prefix: "\u{1F600}", suffix: "" } });
+    expect(res.status).toBe(201);
+    expect(mockCreateComment.mock.calls[0][0].anchor.quote).toBe(quote);
+    expect(mockCreateComment.mock.calls[0][0].anchor.prefix).toBe("\u{1F600}");
+    const activity = mockRecordActivity.mock.calls.at(-1)?.[0];
+    expect(activity.detail.quote).toBe("a".repeat(199));
   });
 });

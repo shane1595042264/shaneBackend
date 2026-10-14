@@ -98,6 +98,18 @@ export const trimmedLabels = (maxLen: number, maxItems: number) =>
     .optional()
     .transform((v) => v?.map((s) => s.trim()).filter((s) => s.length > 0));
 
+// SHAN-578: a string cut at a UTF-16 index (String.slice) can keep half of an
+// emoji's surrogate pair. JSON.stringify writes that half as an escape like
+// \ud83d, and Postgres rejects it in a jsonb column ("invalid input syntax for
+// type json"), so the insert 500s. A `text` column would not throw, which is
+// why this only bites jsonb. Dropping the half rather than substituting U+FFFD
+// keeps the string a true substring of what it was cut from.
+const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g;
+
+export function dropLoneSurrogates(s: string): string {
+  return s.replace(LONE_SURROGATE, "");
+}
+
 // SHAN-529: the numeric counterpart to isoDate above. `z.coerce.number().int()`
 // accepts anything JS calls an integer, including 1e30 and 9223372036854775807,
 // so an unbounded schema hands Postgres a value it cannot represent and the

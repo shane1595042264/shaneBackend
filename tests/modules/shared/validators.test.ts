@@ -13,7 +13,29 @@ import {
   int4PositiveParam,
   MAX_PAGE_OFFSET,
   PG_INT4_MAX,
+  dropLoneSurrogates,
 } from "@/modules/shared/validators";
+
+describe("dropLoneSurrogates (SHAN-578)", () => {
+  it("keeps whole astral characters", () => {
+    expect(dropLoneSurrogates("a\u{1F600}b\u{20BB7}")).toBe("a\u{1F600}b\u{20BB7}");
+  });
+
+  it("drops the half a UTF-16 slice left at either end", () => {
+    const s = "ab\u{1F600}cd";
+    expect(dropLoneSurrogates(s.slice(0, 3))).toBe("ab");
+    expect(dropLoneSurrogates(s.slice(3))).toBe("cd");
+  });
+
+  it("drops a lone surrogate in the middle and leaves plain text alone", () => {
+    expect(dropLoneSurrogates("x\uD83Dy\uDE00z")).toBe("xyz");
+    expect(dropLoneSurrogates("plain text, 中文")).toBe("plain text, 中文");
+  });
+
+  it("returns only well-formed strings", () => {
+    expect(dropLoneSurrogates("\uDE00😀\uD83D").isWellFormed()).toBe(true);
+  });
+});
 
 describe("containsInFlightUpload", () => {
   it("flags the literal token format the editor produces", () => {
