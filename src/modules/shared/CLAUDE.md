@@ -32,6 +32,10 @@ Callers that want HTTP 502-on-exhaustion semantics match on `err.message.include
 
 `generateText` returns `{ text, modelUsed, usage }`. The `modelUsed` is the actual provider/model that succeeded — log it (or surface it in observability) so you can tell when fallbacks are kicking in.
 
+### `generateSmallText` — interactive calls (SHAN-575)
+
+For a call a person is actively waiting on (knowledge recite grading): Groq `gpt-oss-20b` → `gpt-oss-120b` → Gemini Flash, free tier only, no Anthropic (no credits) and **no 429 sleeps** (the main chain's Groq path waits up to 30s, which is fine for a background classifier and broken for a learner at a spinner). Honors `json` (Groq `response_format`) and `reasoningEffort` (gpt-oss reasoning budget; `"low"` measured 0.4-0.8s on a grading prompt). Throws `Small LLM chain failed: ...` on exhaustion, which is deliberately *not* the `All LLM providers failed` prefix: its caller falls back to local embeddings instead of answering 502.
+
 Pass `noFallback: true` to bypass the chain and throw on Anthropic failure directly. Useful for tests or when you specifically need Anthropic and don't want a different model's output to silently take over.
 
 ## `rate-limit.ts` — `createPATRateLimit`

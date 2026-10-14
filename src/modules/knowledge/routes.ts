@@ -9,6 +9,7 @@ import { enrichPatch } from "@/modules/vocabulary/enrich-patch";
 import { classifyNote, type ClassificationSource } from "./classifier";
 import { postToBilibili } from "./bilibili";
 import { applyLocationDelta, normalizeLocations, computeLongTermMemorized } from "./memorization";
+import { reciteRoutes } from "./recite-routes";
 import { optionalAuth, requireAuth, requireScope } from "@/modules/auth/middleware";
 import { createPATRateLimit } from "@/modules/shared/rate-limit";
 import { likeContains } from "@/modules/shared/like";
@@ -931,3 +932,8 @@ knowledgeRoutes.delete(
     return ok ? c.body(null, 204) : c.json({ error: "Not found or not authorized" }, 404);
   }
 );
+
+// SHAN-575: recite (POST /recite/deck, POST /entries/:id/recite). Its own file
+// because it is its own feature; mounted at the root so both paths read as
+// part of this API.
+knowledgeRoutes.route("/", reciteRoutes);

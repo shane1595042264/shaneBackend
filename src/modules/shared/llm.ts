@@ -24,6 +24,10 @@ export interface GenerateTextOptions {
   prompt: string;
   model?: string;
   maxTokens?: number;
+  /** Groq only: ask for a JSON object back (OpenAI `response_format`). */
+  json?: boolean;
+  /** Groq only: gpt-oss reasoning budget. "low" keeps a grading call under a second. */
+  reasoningEffort?: "low" | "medium" | "high";
 }
 
 export interface GenerateTextResult {
@@ -236,6 +240,8 @@ async function callGroqApi(
           { role: "system", content: options.system },
           { role: "user", content: options.prompt },
         ],
+        ...(options.json ? { response_format: { type: "json_object" } } : {}),
+        ...(options.reasoningEffort ? { reasoning_effort: options.reasoningEffort } : {}),
       }),
       signal: AbortSignal.timeout(PROVIDER_TIMEOUT_MS),
     });
@@ -304,6 +310,45 @@ async function generateWithGroq(
     }
   }
   throw new Error("All Groq models failed");
+}
+
+/**
+ * SHAN-575: a short, interactive call where a person is waiting on the answer
+ * (knowledge recite grading). Free tier only, smallest model first, and no
+ * sleeping: generateWithGroq waits up to 30s out a 429 because a background
+ * classifier can afford to, and a learner staring at a spinner cannot.
+ *
+ * Order: Groq gpt-oss-20b (measured 0.4-0.8s on a grading prompt), then
+ * gpt-oss-120b, then Gemini Flash. Anthropic is left out on purpose: the
+ * account has no credits (SHAN-437) and every recite attempt would pay its
+ * round trip just to fail. Throws "Small LLM chain failed: ..." when all three
+ * do, so the caller can fall back to something that needs no provider.
+ */
+export async function generateSmallText(
+  options: Omit<GenerateTextOptions, "model">
+): Promise<GenerateTextResult> {
+  const maxTokens = options.maxTokens ?? 600;
+  const errors: string[] = [];
+  const groqKey = process.env.GROQ_API_KEY;
+  if (groqKey) {
+    for (const model of ["openai/gpt-oss-20b", "openai/gpt-oss-120b"]) {
+      try {
+        const result = await callGroqApi(groqKey, model, { ...options, maxTokens });
+        if (result.text.trim()) return result;
+        errors.push(`Groq ${model}: empty answer`);
+      } catch (err) {
+        errors.push(forLog((err as Error).message));
+      }
+    }
+  } else {
+    errors.push("GROQ_API_KEY not set");
+  }
+  try {
+    return await generateWithGemini({ ...options, maxTokens });
+  } catch (err) {
+    errors.push(forLog((err as Error).message));
+  }
+  throw new Error(`Small LLM chain failed: ${errors.join("; ")}`);
 }
 
 export async function generateText(

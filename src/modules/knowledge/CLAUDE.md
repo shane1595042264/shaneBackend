@@ -22,6 +22,14 @@ Three accepted request shapes (zod `union` of `.strict()` objects so `text + not
 
 Response is always `{ entries: Entry[] }`. Partial-batch failures return `207 Multi-Status` with `failures: [{ index, text, error }]`. Total LLM-chain exhaustion returns `502`. Don't add a 409 path — cross-request dedup was deliberately removed when the Nibbler ingest contract shipped (same word from two books = two entries with different `source`).
 
+## Recite (SHAN-575): `recite.ts` + `recite-routes.ts`
+
+`POST /recite/deck {location, categories?}` saves the place to `practice_locations` (upsert, the list practice mode uses) and returns the caller's cards (created by them, or legacy ownerless) that have a definition and are NOT memorized there, `ORDER BY random()`, plus per-category `{total, remaining}`. `POST /entries/:id/recite {location, answer, attempt}` grades the typed definition; a pass appends the saved location's canonical name to `memorization_locations` under the same `FOR UPDATE` lock as `PUT /entries/:id` and practice's vocab SRS, a miss writes nothing and returns `hints[attempt-1]` (example or topics, opening words, word shapes).
+
+- Grading order: near-verbatim (normalized Levenshtein >= 92%) passes with no model call; then `generateSmallText` (Groq gpt-oss-20b first, JSON mode, low reasoning); then local MiniLM cosine >= 0.78. Only when the local model also fails does the route 503.
+- The prompt grades "defining facts", not "every fact". An every-fact prompt failed a correct dmesg paraphrase that left out "or controls" (measured on prod cards).
+- **Miss feedback is filtered, not trusted.** The model names the missing content despite being told not to ("It does not mention the kernel ring buffer"); `feedbackLeaks` replaces any miss feedback containing a reference content word the learner did not type. Hints are the only sanctioned way to give the answer away.
+
 ## Auth contract
 
 - Requires either a JWT (browser cookie/localStorage path) or a PAT with the `knowledge:write` scope. Anonymous → 401.
