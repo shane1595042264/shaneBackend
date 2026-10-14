@@ -1,9 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { Hono } from "hono";
 
-const { mockSelect, mockInsert, mockClassify, mockPostBilibili } = vi.hoisted(() => ({
+const { mockSelect, mockInsert, mockDelete, mockClassify, mockPostBilibili } = vi.hoisted(() => ({
   mockSelect: vi.fn(),
   mockInsert: vi.fn(),
+  mockDelete: vi.fn(),
   mockClassify: vi.fn(),
   mockPostBilibili: vi.fn().mockResolvedValue(undefined),
 }));
@@ -20,6 +21,7 @@ vi.mock("@/db/client", () => ({
   db: {
     select: mockSelect,
     insert: mockInsert,
+    delete: mockDelete,
   },
 }));
 
@@ -40,7 +42,10 @@ vi.mock("drizzle-orm", () => ({
 
 vi.mock("@/modules/auth/middleware", () => ({
   optionalAuth: async (_: any, next: any) => next(),
-  requireAuth: async (_: any, next: any) => next(),
+  requireAuth: async (c: any, next: any) => {
+    c.set("userId", "user-me");
+    return next();
+  },
   requireScope: () => async (_: any, next: any) => next(),
 }));
 
@@ -80,7 +85,7 @@ const validBody = {
 
 describe("POST /api/knowledge/connections — existence gating", () => {
   it("returns 201 when both word IDs exist", async () => {
-    mockSelect.mockReturnValue(selectChain([{ id: FROM_ID }, { id: TO_ID }]));
+    mockSelect.mockReturnValue(selectChain([{ id: FROM_ID, createdBy: "user-me" }, { id: TO_ID, createdBy: "user-me" }]));
     insertReturning([{ id: "c1", ...validBody }]);
     const res = await app.request("/api/knowledge/connections", {
       method: "POST",
@@ -138,7 +143,7 @@ describe("POST /api/knowledge/connections — existence gating", () => {
   });
 
   it("preserves 409 on duplicate connection (unique violation)", async () => {
-    mockSelect.mockReturnValue(selectChain([{ id: FROM_ID }, { id: TO_ID }]));
+    mockSelect.mockReturnValue(selectChain([{ id: FROM_ID, createdBy: "user-me" }, { id: TO_ID, createdBy: "user-me" }]));
     insertReturning(() => {
       const err: any = new Error("dup");
       err.code = "23505";
@@ -167,7 +172,7 @@ describe("POST /api/knowledge/connections — note bound (SHAN-412)", () => {
   });
 
   it("accepts a note at exactly 1000 chars", async () => {
-    mockSelect.mockReturnValue(selectChain([{ id: FROM_ID }, { id: TO_ID }]));
+    mockSelect.mockReturnValue(selectChain([{ id: FROM_ID, createdBy: "user-me" }, { id: TO_ID, createdBy: "user-me" }]));
     insertReturning([{ id: "c1", ...validBody }]);
     const res = await app.request("/api/knowledge/connections", {
       method: "POST",
@@ -176,5 +181,93 @@ describe("POST /api/knowledge/connections — note bound (SHAN-412)", () => {
     });
     expect(res.status).toBe(201);
     expect(mockInsert).toHaveBeenCalled();
+  });
+});
+
+// SHAN-573: same table as /api/vocabulary/connections, so the same ownership
+// rule (SHAN-426) must hold here or the vocabulary check is one path away.
+describe("POST /api/knowledge/connections — ownership (SHAN-573)", () => {
+  const post = () =>
+    app.request("/api/knowledge/connections", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(validBody),
+    });
+
+  it("returns 403 when the target entry belongs to someone else", async () => {
+    mockSelect.mockReturnValue(
+      selectChain([
+        { id: FROM_ID, createdBy: "user-me" },
+        { id: TO_ID, createdBy: "user-other" },
+      ])
+    );
+    const res = await post();
+    expect(res.status).toBe(403);
+    expect((await res.json()).error).toBe("You can only connect entries you created");
+    expect(mockInsert).not.toHaveBeenCalled();
+  });
+
+  it("returns 403 when the source entry belongs to someone else", async () => {
+    mockSelect.mockReturnValue(
+      selectChain([
+        { id: FROM_ID, createdBy: "user-other" },
+        { id: TO_ID, createdBy: "user-me" },
+      ])
+    );
+    expect((await post()).status).toBe(403);
+    expect(mockInsert).not.toHaveBeenCalled();
+  });
+
+  it("allows connecting own entries to legacy null-owner entries", async () => {
+    mockSelect.mockReturnValue(
+      selectChain([
+        { id: FROM_ID, createdBy: "user-me" },
+        { id: TO_ID, createdBy: null },
+      ])
+    );
+    insertReturning([{ id: "c1", ...validBody }]);
+    expect((await post()).status).toBe(201);
+    expect(mockInsert).toHaveBeenCalled();
+  });
+});
+
+describe("DELETE /api/knowledge/connections/:id — ownership (SHAN-573)", () => {
+  const CONN_ID = "33333333-3333-3333-3333-333333333333";
+  const del = () => app.request(`/api/knowledge/connections/${CONN_ID}`, { method: "DELETE" });
+
+  function deleteReturning(rows: unknown[]) {
+    mockDelete.mockImplementation(() => ({
+      where: () => ({ returning: () => Promise.resolve(rows) }),
+    }));
+  }
+
+  it("returns 404 for an unknown connection without deleting", async () => {
+    mockSelect.mockReturnValueOnce(selectChain([]));
+    const res = await del();
+    expect(res.status).toBe(404);
+    expect(mockDelete).not.toHaveBeenCalled();
+  });
+
+  it("returns 403 when either endpoint entry belongs to someone else", async () => {
+    mockSelect
+      .mockReturnValueOnce(selectChain([{ fromWordId: FROM_ID, toWordId: TO_ID }]))
+      .mockReturnValueOnce(selectChain([{ createdBy: "user-me" }, { createdBy: "user-other" }]));
+    const res = await del();
+    expect(res.status).toBe(403);
+    expect((await res.json()).error).toBe(
+      "You can only delete connections between entries you created"
+    );
+    expect(mockDelete).not.toHaveBeenCalled();
+  });
+
+  it("deletes when the caller owns both entries or they are legacy rows", async () => {
+    mockSelect
+      .mockReturnValueOnce(selectChain([{ fromWordId: FROM_ID, toWordId: TO_ID }]))
+      .mockReturnValueOnce(selectChain([{ createdBy: "user-me" }, { createdBy: null }]));
+    deleteReturning([{ id: CONN_ID }]);
+    const res = await del();
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true });
+    expect(mockDelete).toHaveBeenCalled();
   });
 });
