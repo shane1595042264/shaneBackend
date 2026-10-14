@@ -12,7 +12,9 @@ const {
   mockGetSug,
   mockSelect,
   mockGetComment,
+  mockGetAppend,
 } = vi.hoisted(() => ({
+  mockGetAppend: vi.fn(),
   mockGetComment: vi.fn(),
   mockGetByDate: vi.fn(),
   mockCreateComment: vi.fn(),
@@ -58,6 +60,13 @@ vi.mock("@/modules/journal/comments-repo", () => ({
   getComment: mockGetComment,
   updateComment: mockUpdateComment,
   deleteComment: mockDeleteComment,
+}));
+vi.mock("@/modules/journal/appends-repo", () => ({
+  createAppend: vi.fn(),
+  getAppend: mockGetAppend,
+  listAppendsForEntry: vi.fn(),
+  updateAppend: vi.fn(),
+  softDeleteAppend: vi.fn(),
 }));
 vi.mock("@/db/client", () => ({ db: { select: mockSelect } }));
 vi.mock("@/db/schema", () => ({
@@ -249,5 +258,65 @@ describe("DELETE /api/journal/comments/:id", () => {
       headers: { "X-Test-User": "stranger" },
     });
     expect(res.status).toBe(404);
+  });
+});
+
+describe("POST /api/journal/entries/:date/comments with an anchor (SHAN-577)", () => {
+  const APPEND = "33333333-3333-4333-8333-333333333333";
+  const post = (body: unknown) =>
+    app.request("/api/journal/entries/2026-05-03/comments", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Test-User": "u1" },
+      body: JSON.stringify(body),
+    });
+
+  beforeEach(() => {
+    mockGetByDate.mockResolvedValue({ entry: { id: "e1" }, currentVersion: {} });
+    mockCreateComment.mockResolvedValue({ id: "n1" });
+  });
+
+  it("stores a note on the entry body, filling empty context", async () => {
+    const res = await post({ content: "nice word", anchor: { target: "entry", quote: " ring buffer " } });
+    expect(res.status).toBe(201);
+    expect(mockCreateComment).toHaveBeenCalledWith(
+      expect.objectContaining({ anchor: { target: "entry", quote: "ring buffer", prefix: "", suffix: "" } })
+    );
+  });
+
+  it("stores a note on an append of this entry", async () => {
+    mockGetAppend.mockResolvedValue({ id: APPEND, entryId: "e1", deletedAt: null });
+    const res = await post({ content: "x", anchor: { target: APPEND, quote: "q", prefix: "a", suffix: "b" } });
+    expect(res.status).toBe(201);
+    expect(mockCreateComment.mock.calls[0][0].anchor.target).toBe(APPEND);
+  });
+
+  it("rejects an append from another entry, or a deleted one", async () => {
+    mockGetAppend.mockResolvedValue({ id: APPEND, entryId: "other", deletedAt: null });
+    expect((await post({ content: "x", anchor: { target: APPEND, quote: "q" } })).status).toBe(400);
+    mockGetAppend.mockResolvedValue({ id: APPEND, entryId: "e1", deletedAt: new Date() });
+    expect((await post({ content: "x", anchor: { target: APPEND, quote: "q" } })).status).toBe(400);
+    mockGetAppend.mockResolvedValue(null);
+    expect((await post({ content: "x", anchor: { target: APPEND, quote: "q" } })).status).toBe(400);
+    expect(mockCreateComment).not.toHaveBeenCalled();
+  });
+
+  it("rejects an anchor on a reply", async () => {
+    mockGetComment.mockResolvedValue({ id: CID, entryId: "e1", parentCommentId: null });
+    const res = await post({ content: "x", parent_comment_id: CID, anchor: { target: "entry", quote: "q" } });
+    expect(res.status).toBe(400);
+    expect(mockCreateComment).not.toHaveBeenCalled();
+  });
+
+  it("validates the anchor shape", async () => {
+    for (const anchor of [
+      { target: "entry", quote: "   " },
+      { target: "entry" },
+      { target: "nope", quote: "q" },
+      { target: "entry", quote: "q", prefix: "x".repeat(65) },
+      { target: "entry", quote: "q", offset: 4 },
+    ]) {
+      expect((await post({ content: "x", anchor })).status).toBe(400);
+    }
+    expect(mockCreateComment).not.toHaveBeenCalled();
   });
 });

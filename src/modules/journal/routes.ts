@@ -13,6 +13,7 @@ import { getUserTimezone } from "@/modules/auth/user-prefs";
 import { listEntries, getEntryByDate, createEntry, softDeleteEntry } from "./entries-repo";
 import {
   createAppend,
+  getAppend,
   listAppendsForEntry,
   updateAppend,
   softDeleteAppend,
@@ -835,6 +836,18 @@ const commentBody = z.object({
     .max(10_000)
     .refine(noInFlightUpload, { message: IN_FLIGHT_UPLOAD_MESSAGE }),
   parent_comment_id: z.string().uuid().optional(),
+  // SHAN-577: pins a top-level comment to text on the page as an inline note.
+  // `quote` is required and non-blank; the context strings may be empty (a
+  // note on the first or last words of a part has nothing on one side).
+  anchor: z
+    .object({
+      target: z.union([z.literal("entry"), z.string().uuid()]),
+      quote: z.string().trim().min(1).max(1000),
+      prefix: z.string().max(64).default(""),
+      suffix: z.string().max(64).default(""),
+    })
+    .strict()
+    .optional(),
 });
 const commentEditBody = z.object({
   content: z
@@ -871,7 +884,7 @@ journalRoutes.post(
     const { date } = c.req.valid("param");
     const row = await getEntryByDate(date);
     if (!row) return c.json({ error: "Not found" }, 404);
-    const { content, parent_comment_id } = c.req.valid("json");
+    const { content, parent_comment_id, anchor } = c.req.valid("json");
     // SHAN-574: threads are one level deep and the UI only draws replies
     // under a top-level comment on the same entry; anything else is a 201
     // for a comment nobody can see.
@@ -881,6 +894,19 @@ journalRoutes.post(
         return c.json({ error: "parent_comment_id must be a top-level comment on this entry" }, 400);
       }
     }
+    if (anchor) {
+      // SHAN-577: a reply belongs to its note's thread and is drawn there; an
+      // anchor on one would be a second pin nothing renders.
+      if (parent_comment_id) {
+        return c.json({ error: "anchor is only allowed on a top-level comment" }, 400);
+      }
+      if (anchor.target !== "entry") {
+        const append = await getAppend(anchor.target);
+        if (!append || append.entryId !== row.entry.id || append.deletedAt) {
+          return c.json({ error: "anchor.target must be \"entry\" or an append on this entry" }, 400);
+        }
+      }
+    }
     const authorTimezone = await getUserTimezone(userId);
     const comment = await createComment({
       entryId: row.entry.id,
@@ -888,6 +914,7 @@ journalRoutes.post(
       authorTimezone,
       content,
       parentCommentId: parent_comment_id,
+      anchor: anchor ?? null,
     });
     await recordActivity({
       entryId: row.entry.id,
@@ -897,7 +924,11 @@ journalRoutes.post(
       targetId: comment.id,
       actorId: userId,
       actorTokenId: actorTokenId(c),
-      detail: parent_comment_id ? { parentCommentId: parent_comment_id } : null,
+      detail: parent_comment_id
+        ? { parentCommentId: parent_comment_id }
+        : anchor
+          ? { anchorTarget: anchor.target, quote: anchor.quote.slice(0, 200) }
+          : null,
     });
     return c.json({ comment }, 201);
   }

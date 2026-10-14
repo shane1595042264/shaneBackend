@@ -1,15 +1,16 @@
 // tests/modules/journal/comments-repo.test.ts
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-const { mockSelect, mockInsert, mockUpdate, mockDelete } = vi.hoisted(() => ({
+const { mockSelect, mockInsert, mockUpdate, mockDelete, mockTransaction } = vi.hoisted(() => ({
   mockSelect: vi.fn(),
   mockInsert: vi.fn(),
   mockUpdate: vi.fn(),
   mockDelete: vi.fn(),
+  mockTransaction: vi.fn(),
 }));
 
 vi.mock("@/db/client", () => ({
-  db: { select: mockSelect, insert: mockInsert, update: mockUpdate, delete: mockDelete },
+  db: { select: mockSelect, insert: mockInsert, update: mockUpdate, delete: mockDelete, transaction: mockTransaction },
 }));
 vi.mock("@/db/schema", () => ({
   journalComments: {},
@@ -166,5 +167,57 @@ describe("deleteComment", () => {
   it("returns false when comment doesn't exist", async () => {
     mockSelect.mockReturnValue(chain([]));
     expect(await deleteComment("c1", "u1")).toBe(false);
+  });
+});
+
+describe("deleteComment on an inline note (SHAN-577)", () => {
+  const anchor = { target: "entry", quote: "ring buffer", prefix: "the kernel ", suffix: ", standing" };
+
+  function txWith(replies: { id: string }[]) {
+    const sets: unknown[] = [];
+    const deleted = vi.fn(() => Promise.resolve());
+    mockTransaction.mockImplementation(async (fn: (tx: unknown) => unknown) =>
+      fn({
+        select: () => chain(replies),
+        update: () => ({
+          set: (patch: unknown) => {
+            sets.push(patch);
+            return { where: () => Promise.resolve() };
+          },
+        }),
+        delete: () => ({ where: deleted }),
+      })
+    );
+    return { sets, deleted };
+  }
+
+  it("re-roots the thread on the earliest reply, which inherits the anchor", async () => {
+    mockSelect.mockReturnValue(chain([{ commentId: "c1", commentAuthor: "u1", entryAuthor: "owner", anchor, parentCommentId: null }]));
+    const { sets, deleted } = txWith([{ id: "r1" }, { id: "r2" }, { id: "r3" }]);
+    expect(await deleteComment("c1", "u1")).toBe(true);
+    expect(sets).toEqual([{ parentCommentId: null, anchor }, { parentCommentId: "r1" }]);
+    expect(deleted).toHaveBeenCalledTimes(1);
+    expect(mockDelete).not.toHaveBeenCalled();
+  });
+
+  it("just deletes a note nobody replied to", async () => {
+    mockSelect.mockReturnValue(chain([{ commentId: "c1", commentAuthor: "u1", entryAuthor: "owner", anchor, parentCommentId: null }]));
+    const { sets, deleted } = txWith([]);
+    expect(await deleteComment("c1", "owner")).toBe(true);
+    expect(sets).toEqual([]);
+    expect(deleted).toHaveBeenCalledTimes(1);
+  });
+
+  it("deletes a reply inside a note thread without touching the thread", async () => {
+    mockSelect.mockReturnValue(chain([{ commentId: "r2", commentAuthor: "u1", entryAuthor: "owner", anchor: null, parentCommentId: "c1" }]));
+    mockDelete.mockReturnValue({ where: vi.fn(() => Promise.resolve()) });
+    expect(await deleteComment("r2", "u1")).toBe(true);
+    expect(mockTransaction).not.toHaveBeenCalled();
+  });
+
+  it("still refuses a stranger before touching anything", async () => {
+    mockSelect.mockReturnValue(chain([{ commentId: "c1", commentAuthor: "u1", entryAuthor: "owner", anchor, parentCommentId: null }]));
+    expect(await deleteComment("c1", "stranger")).toBe(false);
+    expect(mockTransaction).not.toHaveBeenCalled();
   });
 });

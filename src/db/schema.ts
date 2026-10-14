@@ -506,6 +506,13 @@ export const journalComments = pgTable(
       .references(() => users.id, { onDelete: "restrict" }),
     authorTimezone: varchar("author_timezone", { length: 64 }),
     content: text("content").notNull(),
+    // SHAN-577: an inline note. Null for an ordinary comment; for a note it is
+    // {target, quote, prefix, suffix}: which part of the page ("entry" or an
+    // append id) and the rendered text the note is pinned to, with a little
+    // context either side so a phrase that appears twice resolves to the right
+    // one. Text, not offsets, so a note survives edits that leave its words
+    // alone. Only ever set on a top-level comment; replies live in its thread.
+    anchor: jsonb("anchor"),
     editedAt: timestamp("edited_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
