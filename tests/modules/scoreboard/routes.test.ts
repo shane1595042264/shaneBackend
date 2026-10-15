@@ -310,6 +310,30 @@ describe("match writes", () => {
     expect(res.status).toBe(400);
   });
 
+  it("POST /matches 400 Unknown game id when the game FK rejects the insert (SHAN-579)", async () => {
+    m.playerIdsExist.mockResolvedValue(true);
+    m.createMatch.mockResolvedValue("unknown_game");
+    const res = await req(
+      "/matches", "POST",
+      { gameId: GAME_ID, playerIds: [P1, P2] },
+      "u1",
+    );
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: "Unknown game id" });
+  });
+
+  it("POST /matches 400 Unknown player id when a player is deleted after the check (SHAN-579)", async () => {
+    m.playerIdsExist.mockResolvedValue(true);
+    m.createMatch.mockResolvedValue("unknown_player");
+    const res = await req(
+      "/matches", "POST",
+      { gameId: GAME_ID, playerIds: [P1, P2] },
+      "u1",
+    );
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: "Unknown player id" });
+  });
+
   it("POST /matches 201 happy path", async () => {
     m.playerIdsExist.mockResolvedValue(true);
     m.createMatch.mockResolvedValue(MATCH_ROW);

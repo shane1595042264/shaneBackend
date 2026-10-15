@@ -14,8 +14,10 @@ vi.mock("@/db/client", () => ({
     delete: mockDelete,
     update: mockUpdate,
     // incrementScore and finishMatch lock the match row inside a transaction
-    // (SHAN-564); the tx shares the same select/update mocks.
-    transaction: (fn: (tx: unknown) => unknown) => fn({ select: mockSelect, update: mockUpdate }),
+    // (SHAN-564), createMatch inserts inside one (SHAN-579); the tx shares
+    // the same select/update/insert mocks.
+    transaction: (fn: (tx: unknown) => unknown) =>
+      fn({ select: mockSelect, update: mockUpdate, insert: mockInsert }),
   },
 }));
 vi.mock("@/db/schema", () => ({
@@ -186,6 +188,48 @@ describe("createMatch", () => {
     const v2 = (mpIns2.values as ReturnType<typeof vi.fn>).mock.calls[0][0];
     expect(v1).toMatchObject({ matchId: "m1", playerId: "p1", score: 0, position: 0 });
     expect(v2).toMatchObject({ matchId: "m1", playerId: "p2", score: 0, position: 1 });
+  });
+
+  const fkError = (constraint: string) =>
+    Object.assign(new Error("insert or update violates foreign key constraint"), {
+      code: "23503",
+      constraint,
+    });
+
+  const rejectingInsert = (err: Error) => ({
+    values: vi.fn(() => ({ returning: vi.fn(() => Promise.reject(err)) })),
+  });
+
+  it("returns unknown_game when the game FK rejects the match row", async () => {
+    mockInsert.mockReturnValueOnce(
+      rejectingInsert(fkError("scoreboard_matches_game_id_scoreboard_games_id_fk")),
+    );
+    const out = await createMatch({ userId: "u1", gameId: "gone", playerIds: ["p1", "p2"] });
+    expect(out).toBe("unknown_game");
+    expect(mockInsert).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns unknown_player when a roster row hits the player FK (drizzle wraps it in cause)", async () => {
+    const matchIns = insertChain([{ id: "m1" }]);
+    const mpIns = {
+      values: vi.fn(() =>
+        Promise.reject(
+          Object.assign(new Error("Failed query"), {
+            cause: fkError("scoreboard_match_players_player_id_scoreboard_players_id_fk"),
+          }),
+        ),
+      ),
+    };
+    mockInsert.mockReturnValueOnce(matchIns).mockReturnValueOnce(mpIns);
+    const out = await createMatch({ userId: "u1", gameId: "g1", playerIds: ["p1", "p2"] });
+    expect(out).toBe("unknown_player");
+  });
+
+  it("rethrows a foreign-key violation it does not recognise", async () => {
+    mockInsert.mockReturnValueOnce(rejectingInsert(fkError("scoreboard_matches_user_id_users_id_fk")));
+    await expect(
+      createMatch({ userId: "ghost", gameId: "g1", playerIds: ["p1", "p2"] }),
+    ).rejects.toMatchObject({ code: "23503" });
   });
 });
 

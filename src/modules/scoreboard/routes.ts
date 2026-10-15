@@ -377,6 +377,8 @@ scoreboardRoutes.post(
       return c.json({ error: "Unknown player id" }, 400);
     }
     const row = await createMatch({ userId, gameId, playerIds, location });
+    if (row === "unknown_game") return c.json({ error: "Unknown game id" }, 400);
+    if (row === "unknown_player") return c.json({ error: "Unknown player id" }, 400);
     return c.json({ match: await serializeMatchById(row) }, 201);
   },
 );

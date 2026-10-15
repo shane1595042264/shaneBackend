@@ -217,33 +217,51 @@ export async function playerIdsExist(ids: string[]): Promise<boolean> {
   return rows.length === ids.length;
 }
 
-// Match + roster insert. Sequential (no transaction): single-writer site,
-// and a match orphaned by a mid-insert crash is invisible (no players)
-// and deletable. Positions follow the given order.
+// Match + roster insert, in one transaction. Positions follow the given order.
+//
+// SHAN-579: the foreign keys are the authority on whether the game and the
+// players exist. The route's playerIdsExist check is only a fast path, and a
+// game or player deleted after it ran used to surface here as a raw FK
+// violation: a 500, plus a committed match row with part of its roster.
 export async function createMatch(input: {
   userId: string;
   gameId: string;
   playerIds: string[];
   location?: string | null;
-}): Promise<ScoreboardMatchRow> {
-  const [match] = await db
-    .insert(scoreboardMatches)
-    .values({
-      userId: input.userId,
-      gameId: input.gameId,
-      location: input.location ?? null,
-    })
-    .returning();
-  const matchRow = match as ScoreboardMatchRow;
-  for (let i = 0; i < input.playerIds.length; i++) {
-    await db.insert(scoreboardMatchPlayers).values({
-      matchId: matchRow.id,
-      playerId: input.playerIds[i],
-      score: 0,
-      position: i,
+}): Promise<ScoreboardMatchRow | "unknown_game" | "unknown_player"> {
+  try {
+    return await db.transaction(async (tx) => {
+      const [match] = await tx
+        .insert(scoreboardMatches)
+        .values({
+          userId: input.userId,
+          gameId: input.gameId,
+          location: input.location ?? null,
+        })
+        .returning();
+      const matchRow = match as ScoreboardMatchRow;
+      for (let i = 0; i < input.playerIds.length; i++) {
+        await tx.insert(scoreboardMatchPlayers).values({
+          matchId: matchRow.id,
+          playerId: input.playerIds[i],
+          score: 0,
+          position: i,
+        });
+      }
+      return matchRow;
     });
+  } catch (err: any) {
+    const pg = err?.code ? err : err?.cause;
+    if (pg?.code === "23503") {
+      if (pg.constraint === "scoreboard_matches_game_id_scoreboard_games_id_fk") {
+        return "unknown_game";
+      }
+      if (pg.constraint === "scoreboard_match_players_player_id_scoreboard_players_id_fk") {
+        return "unknown_player";
+      }
+    }
+    throw err;
   }
-  return matchRow;
 }
 
 // Location edit (SHAN-436). Deliberately allowed on final matches too: the
