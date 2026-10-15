@@ -515,6 +515,73 @@ describe("GET /api/tea-entries/:id", () => {
     expect(stillOpen.status).toBe(403);
   });
 
+  describe("universal PIN has its own per-author bucket (SHAN-581)", () => {
+    const ENTRY_IDS = Array.from(
+      { length: 5 },
+      (_, i) => `2222222${i}-2222-2222-2222-222222222222`,
+    );
+
+    beforeEach(() => {
+      mockGetById.mockImplementation(async (id: string) => ({
+        id,
+        authorId: "u-author",
+        title: null,
+        content: "secret",
+        pin: "1234",
+      }));
+      mockGetUniversalTeaPin.mockResolvedValue("9999");
+    });
+
+    const guess = (id: string, pin: string) =>
+      app.request(`/api/tea-entries/${id}`, { headers: { "X-Tea-Pin": pin } });
+
+    it("spreading guesses across an author's entries does not buy extra universal guesses", async () => {
+      // Two wrong guesses per entry across 5 entries: no entry bucket is near
+      // its limit, but the author bucket is at 10 and the last guess trips it.
+      const statuses: number[] = [];
+      for (const id of ENTRY_IDS) {
+        for (let i = 0; i < 2; i++) statuses.push((await guess(id, "0000")).status);
+      }
+      expect(statuses.slice(0, 9)).toEqual(Array(9).fill(403));
+      expect(statuses[9]).toBe(429);
+      // Even the universal PIN itself is refused now, on an untouched entry.
+      const res = await guess(VALID_UUID, "9999");
+      expect(res.status).toBe(429);
+      expect(res.headers.get("Retry-After")).toMatch(/^\d+$/);
+    });
+
+    it("a correct entry PIN does not reset the universal bucket", async () => {
+      // The old reset trick: 9 misses, then the known entry PIN, repeat.
+      for (let i = 0; i < 9; i++) expect((await guess(VALID_UUID, "0000")).status).toBe(403);
+      expect((await guess(VALID_UUID, "1234")).status).toBe(200);
+      // Entry bucket was cleared, but the author bucket still holds 9 strikes.
+      expect((await guess(VALID_UUID, "0000")).status).toBe(429);
+      expect((await guess(VALID_UUID, "5555")).status).toBe(429);
+    });
+
+    it("a blocked universal bucket still lets a correct entry PIN through", async () => {
+      for (const id of ENTRY_IDS) {
+        for (let i = 0; i < 2; i++) await guess(id, "0000");
+      }
+      const res = await guess(VALID_UUID, "1234");
+      expect(res.status).toBe(200);
+      expect((await res.json()).entry.content).toBe("secret");
+    });
+
+    it("authors without a universal PIN are not charged to an author bucket", async () => {
+      mockGetUniversalTeaPin.mockResolvedValue(null);
+      for (const id of ENTRY_IDS) {
+        for (let i = 0; i < 2; i++) expect((await guess(id, "0000")).status).toBe(403);
+      }
+    });
+
+    it("a universal-PIN unlock clears the universal bucket", async () => {
+      for (let i = 0; i < 9; i++) await guess(ENTRY_IDS[i % 5], "0000");
+      expect((await guess(VALID_UUID, "9999")).status).toBe(200);
+      expect((await guess(ENTRY_IDS[0], "0000")).status).toBe(403);
+    });
+  });
+
   it("author requests bypass the limiter even after wrong-PIN attempts have piled up", async () => {
     mockGetById.mockResolvedValue({
       id: VALID_UUID,

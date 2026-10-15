@@ -52,6 +52,13 @@ export function recordFailedPinAttempt(entryId: string): BlockState {
   return { blocked: false, retryAfterSec: 0 };
 }
 
+// Bucket key for an author's universal PIN (SHAN-581), which unlocks every one
+// of their entries and so needs a counter of its own. The prefix keeps it from
+// colliding with an entry id; the helpers below take any key.
+export function universalPinBucket(authorId: string): string {
+  return `universal:${authorId}`;
+}
+
 export function clearPinAttempts(entryId: string): void {
   attempts.delete(entryId);
 }

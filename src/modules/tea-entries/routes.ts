@@ -21,6 +21,8 @@ import {
   clearPinAttempts,
   isPinAttemptBlocked,
   recordFailedPinAttempt,
+  universalPinBucket,
+  type BlockState,
 } from "./pin-rate-limit";
 import { createPATRateLimit } from "@/modules/shared/rate-limit";
 import { encodeKeysetCursor, keysetCursorParam } from "@/modules/shared/keyset";
@@ -194,15 +196,42 @@ teaEntriesRoutes.get(
     // universal PIN if it's set (SHAN-320). Both compares are constant-time.
     // A universal-PIN match unlocks the entry exactly like a per-entry match
     // — same bucket clear, same response shape.
+    //
+    // The universal PIN opens every entry the author has, so it gets its own
+    // per-author bucket (SHAN-581). The per-entry buckets alone gave an author
+    // with N entries 10N universal guesses a minute, and anyone holding one
+    // entry's PIN could reset that entry's bucket with it and guess the
+    // universal PIN forever. So a per-entry match never clears this bucket,
+    // and a blocked author bucket still lets a correct entry PIN through.
     let unlocked = verifyPin(submittedPin, row.pin);
+    let universalAfter: BlockState | null = null;
     if (!unlocked) {
       const universal = await getUniversalTeaPin(row.authorId);
-      if (universal && verifyPin(submittedPin, universal)) {
-        unlocked = true;
+      if (universal) {
+        const universalKey = universalPinBucket(row.authorId);
+        const universalBlock = isPinAttemptBlocked(universalKey);
+        if (universalBlock.blocked) {
+          return c.json(
+            { error: "Too many incorrect PIN attempts. Try again later." },
+            429,
+            { "Retry-After": String(universalBlock.retryAfterSec) },
+          );
+        }
+        if (verifyPin(submittedPin, universal)) {
+          unlocked = true;
+          clearPinAttempts(universalKey);
+        } else {
+          universalAfter = recordFailedPinAttempt(universalKey);
+        }
       }
     }
     if (!unlocked) {
-      const after = recordFailedPinAttempt(row.id);
+      const entryAfter = recordFailedPinAttempt(row.id);
+      // Unblocked states carry retryAfterSec 0, so the larger one is the block.
+      const after =
+        universalAfter && universalAfter.retryAfterSec > entryAfter.retryAfterSec
+          ? universalAfter
+          : entryAfter;
       if (after.blocked) {
         return c.json(
           { error: "Too many incorrect PIN attempts. Try again later." },
