@@ -110,31 +110,58 @@ export async function deleteSkincareProduct(
   return result.length > 0;
 }
 
-// Persist a new order for one routine. `orderedIds` is the full set of the
-// caller's product ids for that timeOfDay in the desired order; each row's
-// position is set to its index. Every update is scoped by (id, userId,
-// timeOfDay) so an id that isn't the caller's — or belongs to the other
-// routine — updates nothing. Returns the number of rows actually moved so
-// the route can 400 on a mismatched id set instead of silently dropping it.
+export class SkincareReorderMismatchError extends Error {
+  constructor() {
+    super("orderedIds must be exactly the products in this routine");
+    this.name = "SkincareReorderMismatchError";
+  }
+}
+
+// Persist a new order for one routine. `orderedIds` must be exactly the
+// caller's product ids for that timeOfDay, in the desired order; each row's
+// position is set to its index. All or nothing (SHAN-580): the routine's
+// current ids are read inside the transaction and compared to `orderedIds`
+// before any write, so a stale/foreign id or a missing product throws
+// SkincareReorderMismatchError with nothing changed. Checking only the
+// number of rows moved afterwards both committed half a reorder behind its
+// 400 and let a subset through, leaving the omitted products on duplicate
+// positions.
 export async function reorderSkincareProducts(
   userId: string,
   timeOfDay: TimeOfDay,
   orderedIds: string[],
 ): Promise<number> {
-  let moved = 0;
-  for (let i = 0; i < orderedIds.length; i++) {
-    const result = await db
-      .update(skincareProducts)
-      .set({ position: i, updatedAt: new Date() })
+  return db.transaction(async (tx) => {
+    const current = await tx
+      .select({ id: skincareProducts.id })
+      .from(skincareProducts)
       .where(
         and(
-          eq(skincareProducts.id, orderedIds[i]),
           eq(skincareProducts.userId, userId),
           eq(skincareProducts.timeOfDay, timeOfDay),
         ),
       )
-      .returning({ id: skincareProducts.id });
-    moved += result.length;
-  }
-  return moved;
+      .for("update");
+    const currentIds = new Set(current.map((r) => r.id));
+    if (
+      currentIds.size !== orderedIds.length ||
+      !orderedIds.every((id) => currentIds.has(id))
+    ) {
+      throw new SkincareReorderMismatchError();
+    }
+    const now = new Date();
+    for (let i = 0; i < orderedIds.length; i++) {
+      await tx
+        .update(skincareProducts)
+        .set({ position: i, updatedAt: now })
+        .where(
+          and(
+            eq(skincareProducts.id, orderedIds[i]),
+            eq(skincareProducts.userId, userId),
+            eq(skincareProducts.timeOfDay, timeOfDay),
+          ),
+        );
+    }
+    return orderedIds.length;
+  });
 }

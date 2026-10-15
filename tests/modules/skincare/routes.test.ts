@@ -8,6 +8,11 @@ const m = vi.hoisted(() => ({
   list: vi.fn(),
   reorder: vi.fn(),
   search: vi.fn(),
+  MismatchError: class SkincareReorderMismatchError extends Error {
+    constructor() {
+      super("orderedIds must be exactly the products in this routine");
+    }
+  },
 }));
 
 vi.mock("@/modules/skincare/repo", () => ({
@@ -16,6 +21,7 @@ vi.mock("@/modules/skincare/repo", () => ({
   deleteSkincareProduct: m.del,
   listSkincareProducts: m.list,
   reorderSkincareProducts: m.reorder,
+  SkincareReorderMismatchError: m.MismatchError,
 }));
 vi.mock("@/modules/skincare/search", () => ({ searchProducts: m.search }));
 vi.mock("@/modules/shared/rate-limit", () => ({
@@ -114,5 +120,40 @@ describe("PATCH /api/skincare/:id — trimming (SHAN-434)", () => {
     const res = await patch({ brand: "   " });
     expect(res.status).toBe(200);
     expect(m.update).toHaveBeenCalledWith(UUID, "u1", expect.objectContaining({ brand: null }));
+  });
+});
+
+describe("POST /api/skincare/reorder — all or nothing (SHAN-580)", () => {
+  const A = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+  const B = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+  function reorder(body: unknown) {
+    return app.request("/api/skincare/reorder", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Test-User": "u1" },
+      body: JSON.stringify(body),
+    });
+  }
+
+  it("200 with the reordered count when the id set matches the routine", async () => {
+    m.reorder.mockResolvedValue(2);
+    const res = await reorder({ timeOfDay: "morning", orderedIds: [B, A] });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ reordered: 2 });
+    expect(m.reorder).toHaveBeenCalledWith("u1", "morning", [B, A]);
+  });
+
+  it("400 when the repo rejects the id set (stale, foreign, or partial list)", async () => {
+    m.reorder.mockRejectedValue(new m.MismatchError());
+    const res = await reorder({ timeOfDay: "morning", orderedIds: [A] });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({
+      error: "orderedIds must be exactly the products in this routine",
+    });
+  });
+
+  it("400 on duplicate ids without touching the repo", async () => {
+    const res = await reorder({ timeOfDay: "morning", orderedIds: [A, A] });
+    expect(res.status).toBe(400);
+    expect(m.reorder).not.toHaveBeenCalled();
   });
 });

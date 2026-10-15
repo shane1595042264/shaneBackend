@@ -8,6 +8,7 @@ import {
   deleteSkincareProduct,
   listSkincareProducts,
   reorderSkincareProducts,
+  SkincareReorderMismatchError,
   updateSkincareProduct,
   type SkincareProductRow,
 } from "./repo";
@@ -140,17 +141,17 @@ skincareRoutes.post(
     if (new Set(orderedIds).size !== orderedIds.length) {
       return c.json({ error: "orderedIds contains duplicates" }, 400);
     }
-    const moved = await reorderSkincareProducts(userId, timeOfDay, orderedIds);
-    // Every id must map to one of the caller's products in this routine. A
-    // short count means the client sent a stale/foreign id — reject rather
-    // than persist a partial reorder.
-    if (moved !== orderedIds.length) {
-      return c.json(
-        { error: "orderedIds must be exactly the products in this routine" },
-        400,
-      );
+    // The ids must be exactly the caller's products in this routine. A
+    // stale/foreign id or a missing product rolls the whole reorder back.
+    try {
+      const moved = await reorderSkincareProducts(userId, timeOfDay, orderedIds);
+      return c.json({ reordered: moved });
+    } catch (err) {
+      if (err instanceof SkincareReorderMismatchError) {
+        return c.json({ error: err.message }, 400);
+      }
+      throw err;
     }
-    return c.json({ reordered: moved });
   },
 );
 

@@ -1,14 +1,21 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-const { mockSelect, mockInsert, mockDelete, mockUpdate } = vi.hoisted(() => ({
+const { mockSelect, mockInsert, mockDelete, mockUpdate, mockTransaction } = vi.hoisted(() => ({
   mockSelect: vi.fn(),
   mockInsert: vi.fn(),
   mockDelete: vi.fn(),
   mockUpdate: vi.fn(),
+  mockTransaction: vi.fn(),
 }));
 
 vi.mock("@/db/client", () => ({
-  db: { select: mockSelect, insert: mockInsert, delete: mockDelete, update: mockUpdate },
+  db: {
+    select: mockSelect,
+    insert: mockInsert,
+    delete: mockDelete,
+    update: mockUpdate,
+    transaction: mockTransaction,
+  },
 }));
 vi.mock("@/db/schema", () => ({
   skincareProducts: {
@@ -37,7 +44,7 @@ vi.mock("drizzle-orm", () => ({
 function chain(rows: unknown[]) {
   const c: Record<string, unknown> = {};
   const t = Promise.resolve(rows);
-  for (const m of ["from", "where", "orderBy", "limit"]) c[m] = vi.fn(() => c);
+  for (const m of ["from", "where", "orderBy", "limit", "for"]) c[m] = vi.fn(() => c);
   Object.assign(c, { then: (r: any, j: any) => t.then(r, j) });
   return c;
 }
@@ -47,6 +54,7 @@ import {
   deleteSkincareProduct,
   listSkincareProducts,
   reorderSkincareProducts,
+  SkincareReorderMismatchError,
   updateSkincareProduct,
 } from "@/modules/skincare/repo";
 
@@ -164,30 +172,45 @@ describe("deleteSkincareProduct", () => {
 });
 
 describe("reorderSkincareProducts", () => {
-  // Each loop iteration runs a fresh update().set().where().returning().
-  function updateReturning(rows: unknown[]) {
-    return {
-      set: vi.fn(() => ({
-        where: vi.fn(() => ({ returning: vi.fn(() => Promise.resolve(rows)) })),
-      })),
-    };
-  }
-
-  it("sets each id's position to its index and returns the moved count", async () => {
-    // Two ids, both belong to the caller → each update returns one row.
-    mockUpdate
-      .mockReturnValueOnce(updateReturning([{ id: "a" }]))
-      .mockReturnValueOnce(updateReturning([{ id: "b" }]));
-    const moved = await reorderSkincareProducts("u1", "morning", ["a", "b"]);
-    expect(moved).toBe(2);
-    expect(mockUpdate).toHaveBeenCalledTimes(2);
+  // The reorder runs inside db.transaction; the tx reuses the db mocks so
+  // the routine read and the per-id updates can be asserted directly.
+  beforeEach(() => {
+    mockTransaction.mockImplementation(async (fn: (tx: unknown) => unknown) =>
+      fn({ select: mockSelect, update: mockUpdate }),
+    );
   });
 
-  it("counts only rows that matched (foreign/stale id moves nothing)", async () => {
-    mockUpdate
-      .mockReturnValueOnce(updateReturning([{ id: "a" }]))
-      .mockReturnValueOnce(updateReturning([])); // second id not the caller's
-    const moved = await reorderSkincareProducts("u1", "morning", ["a", "foreign"]);
-    expect(moved).toBe(1);
+  function updateWhere() {
+    const where = vi.fn(() => Promise.resolve(undefined));
+    return { set: vi.fn(() => ({ where })) };
+  }
+
+  it("sets each id's position to its index when the ids are exactly the routine", async () => {
+    const routine = chain([{ id: "a" }, { id: "b" }]);
+    mockSelect.mockReturnValue(routine);
+    const u1 = updateWhere();
+    const u2 = updateWhere();
+    mockUpdate.mockReturnValueOnce(u1).mockReturnValueOnce(u2);
+    const moved = await reorderSkincareProducts("u1", "morning", ["b", "a"]);
+    expect(moved).toBe(2);
+    expect(routine.for).toHaveBeenCalledWith("update");
+    expect(u1.set).toHaveBeenCalledWith(expect.objectContaining({ position: 0 }));
+    expect(u2.set).toHaveBeenCalledWith(expect.objectContaining({ position: 1 }));
+  });
+
+  it("throws before any write when an id is stale or foreign (SHAN-580)", async () => {
+    mockSelect.mockReturnValue(chain([{ id: "a" }, { id: "b" }, { id: "c" }]));
+    await expect(
+      reorderSkincareProducts("u1", "morning", ["c", "a", "foreign"]),
+    ).rejects.toBeInstanceOf(SkincareReorderMismatchError);
+    expect(mockUpdate).not.toHaveBeenCalled();
+  });
+
+  it("throws on a subset of the routine instead of leaving the rest on duplicate positions", async () => {
+    mockSelect.mockReturnValue(chain([{ id: "a" }, { id: "b" }, { id: "c" }]));
+    await expect(
+      reorderSkincareProducts("u1", "morning", ["c", "a"]),
+    ).rejects.toBeInstanceOf(SkincareReorderMismatchError);
+    expect(mockUpdate).not.toHaveBeenCalled();
   });
 });
