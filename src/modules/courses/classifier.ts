@@ -6,6 +6,7 @@
 // falls back to safe defaults so registration is never blocked on the
 // LLM (house pattern, see modules/knowledge/classifier.ts).
 import { generateText } from "@/modules/shared/llm";
+import { safeFetch, type SafeFetchResult } from "@/modules/shared/outbound-url";
 import {
   COURSE_CATEGORIES,
   COURSE_DIFFICULTIES,
@@ -17,6 +18,7 @@ export class CourseFetchError extends Error {}
 
 const FETCH_TIMEOUT_MS = 10_000;
 const MAX_TEXT_CHARS = 8_000;
+const MAX_BODY_BYTES = 2 * 1024 * 1024;
 
 export interface CourseClassification {
   title: string;
@@ -54,18 +56,20 @@ export function stripHtml(html: string): string {
 }
 
 export async function fetchCourseText(url: string): Promise<string> {
-  let res: Response;
+  let res: SafeFetchResult;
   try {
-    res = await fetch(url, {
-      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+    // safeFetch refuses private hosts and file:// (SHAN-582); a refusal reads
+    // the same as an unreachable page so the error never names the host.
+    res = await safeFetch(url, {
+      timeoutMs: FETCH_TIMEOUT_MS,
+      maxBytes: MAX_BODY_BYTES,
       headers: { Accept: "text/html,*/*" },
     });
   } catch {
     throw new CourseFetchError("Could not reach the course page");
   }
   if (!res.ok) throw new CourseFetchError(`Course page returned ${res.status}`);
-  const body = await res.text();
-  const text = stripHtml(body).slice(0, MAX_TEXT_CHARS);
+  const text = stripHtml(res.body).slice(0, MAX_TEXT_CHARS);
   if (!text) throw new CourseFetchError("Course page has no readable text");
   return text;
 }

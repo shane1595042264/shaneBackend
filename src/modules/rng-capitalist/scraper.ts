@@ -1,3 +1,10 @@
+import { safeFetch } from "@/modules/shared/outbound-url";
+
+const FETCH_TIMEOUT_MS = 10_000;
+// Amazon product pages run to a few MB and the price patterns can sit deep in
+// them, so this is looser than the courses cap.
+const MAX_BODY_BYTES = 5 * 1024 * 1024;
+
 export function extractOgImage(html: string): string | null {
   const match = html.match(/<meta\s+(?:[^>]*?\s+)?property=["']og:image["']\s+content=["']([^"']+)["']/i)
     || html.match(/<meta\s+(?:[^>]*?\s+)?content=["']([^"']+)["']\s+property=["']og:image["']/i);
@@ -41,20 +48,24 @@ export async function scrapeProductUrl(url: string): Promise<ScrapedProduct> {
     ? "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
     : "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 
-  const response = await fetch(fetchUrl, {
+  // safeFetch refuses private hosts on every redirect hop and bounds the
+  // request; the bare fetch here had no timeout and buffered any body whole
+  // (SHAN-582).
+  const response = await safeFetch(fetchUrl, {
     headers: {
       "User-Agent": userAgent,
       "Accept": "text/html,application/xhtml+xml",
       "Accept-Language": "en-US,en;q=0.9",
     },
-    redirect: "follow",
+    timeoutMs: FETCH_TIMEOUT_MS,
+    maxBytes: MAX_BODY_BYTES,
   });
 
   if (!response.ok) {
     throw new Error(`Failed to fetch URL: ${response.status} ${response.statusText}`);
   }
 
-  const html = await response.text();
+  const html = response.body;
 
   // For Amazon, try to extract price directly from HTML using multiple strategies
   let amazonHint = "";

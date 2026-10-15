@@ -12,6 +12,7 @@ import { createLinkToken, exchangePublicToken, getCurrentBalance, getLastMonthSp
 import { requireAuth } from "@/modules/auth/middleware";
 import { createPATRateLimit } from "@/modules/shared/rate-limit";
 import { trimmedOptional } from "@/modules/shared/validators";
+import { httpUrlSchema } from "@/modules/shared/outbound-url";
 import { encodeKeysetCursor, keysetBefore, keysetCursorParam, parseKeysetCursor } from "@/modules/shared/keyset";
 
 type AuthEnv = { Variables: { userId: string } };
@@ -36,23 +37,9 @@ const plaidRateLimit = createPATRateLimit({
 });
 
 // Server-side URL guard. The route is auth-gated, but the URL is fed straight
-// into fetch() inside the scraper — so format and protocol must be enforced
-// here, not in the browser, to keep non-http schemes and malformed strings out.
-const evaluateUrlSchema = z
-  .string()
-  .url("Must be a valid URL")
-  .max(2048, "URL too long")
-  .refine(
-    (s) => {
-      try {
-        const proto = new URL(s).protocol;
-        return proto === "http:" || proto === "https:";
-      } catch {
-        return false;
-      }
-    },
-    { message: "URL must use http or https" },
-  );
+// into the scraper's fetch, so format and protocol are enforced here, not in
+// the browser. The scraper's safeFetch then refuses private hosts (SHAN-582).
+const evaluateUrlSchema = httpUrlSchema;
 
 // SHAN-423: bare z.number() only rejects NaN — it accepts Infinity and
 // arbitrarily large finite values. These fields flow into .toFixed(2) and are

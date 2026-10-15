@@ -7,6 +7,11 @@ vi.mock("@/modules/shared/llm", () => ({ generateText: mockGenerateText }));
 // the real db client and schema. Neutralize both so this stays a pure unit test.
 vi.mock("@/db/client", () => ({ db: {} }));
 vi.mock("@/db/schema", () => ({}));
+// fetchCourseText goes through safeFetch, which resolves the host before
+// fetching (SHAN-582). Answer with a public address so no real DNS runs.
+vi.mock("node:dns/promises", () => ({
+  lookup: vi.fn(async () => [{ address: "93.184.216.34", family: 4 }]),
+}));
 
 import {
   CourseFetchError,

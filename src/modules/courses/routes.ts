@@ -5,6 +5,7 @@ import { zValidator } from "@/modules/shared/zod-validator";
 import { optionalAuth, requireAuth, requireScope } from "@/modules/auth/middleware";
 import { createPATRateLimit } from "@/modules/shared/rate-limit";
 import { sniffImageMime } from "@/modules/shared/image-validate";
+import { httpUrlSchema } from "@/modules/shared/outbound-url";
 import {
   trimmedNullish,
   trimmedOptional,
@@ -60,7 +61,9 @@ const COVER_MAX_BYTES = 5 * 1024 * 1024;
 const idParam = z.object({ id: z.string().uuid() });
 const courseIdParam = z.object({ courseId: z.string().uuid() });
 const slugParam = z.object({ slug: z.string().trim().min(1).max(80) });
-const urlSchema = z.string().trim().url().max(2048);
+// http(s) only: a bare .url() let file:///proc/self/environ through to the
+// classifier fetch (SHAN-582).
+const urlSchema = httpUrlSchema;
 
 const createBody = z.object({
   url: urlSchema,

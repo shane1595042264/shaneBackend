@@ -287,6 +287,31 @@ describe("POST /api/courses", () => {
     expect(res.status).toBe(401);
   });
 
+  // SHAN-582: Bun's fetch reads file:// URLs, so a non-http scheme must never
+  // reach fetchCourseText.
+  it.each(["file:///proc/self/environ", "javascript:alert(1)", "data:text/html,hi", "ftp://x.test/c"])(
+    "400s a non-http url (%s) without fetching it",
+    async (url) => {
+      const res = await app.request("/api/courses", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Test-User": "u1" },
+        body: JSON.stringify({ url }),
+      });
+      expect(res.status).toBe(400);
+      expect(m.fetchCourseText).not.toHaveBeenCalled();
+    },
+  );
+
+  it("400s a PATCH to a non-http url", async () => {
+    const res = await app.request(`/api/courses/${courseRow.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", "X-Test-User": "u1" },
+      body: JSON.stringify({ url: "javascript:alert(1)" }),
+    });
+    expect(res.status).toBe(400);
+    expect(m.updateCourse).not.toHaveBeenCalled();
+  });
+
   it("409s on a duplicate url", async () => {
     m.getCourseByUrl.mockResolvedValue(courseRow);
     const res = await app.request("/api/courses", {

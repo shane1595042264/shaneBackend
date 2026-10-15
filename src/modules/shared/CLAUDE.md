@@ -126,6 +126,16 @@ belongs somewhere the route tests do not mock. Matching on `err.message`
 instead (what the blog revert handler did before SHAN-530) survives the mocks
 but silently stops working the moment someone rewords the string.
 
+## `outbound-url.ts` — `httpUrlSchema` / `safeFetch`
+
+Every server-side fetch of a URL a user typed goes through here (SHAN-582): course classify-on-create/reclassify and the RNG product scraper today.
+
+- **`httpUrlSchema` for any URL that is stored or fetched.** `z.string().url()` accepts `file:`, `javascript:`, `data:` and `ftp:`, and **Bun's `fetch` reads `file://` URLs**, so a course registered at `file:///proc/self/environ` fed the process environment to the classifier and published its summary on the public catalog.
+- **`safeFetch`, never bare `fetch`, for the request itself.** It refuses `localhost`, `*.internal` (Railway's private network), `*.local`, and any host that resolves to a loopback, RFC 1918, CGNAT, link-local, multicast or unspecified address (v4, v6, v4-mapped v6, NAT64, 6to4). It follows redirects by hand so every hop is re-checked; `redirect: "follow"` would let a public URL 302 inward. One `AbortSignal.timeout` covers the whole chain including the body, and the body is truncated at `maxBytes` rather than buffered whole.
+- Throws `BlockedUrlError` for a refused host. Callers map it to the same generic message as a network failure; never echo the reason, it names internal hosts.
+- Known gap: DNS is resolved here and again by `fetch`, so a rebinding host can still race the check. Bun's `fetch` has no hook to pin the socket to the checked address.
+- Tests mock `node:dns/promises` (see `tests/modules/shared/outbound-url.test.ts`); without that mock a test that calls `safeFetch` does a real DNS lookup.
+
 ## `embeddings.ts` (if present)
 
 Local embeddings via `@xenova/transformers`. CPU-only, no API key. Slow but free; used for pgvector similarity searches in the knowledge module. Don't try to wire this through `generateText` — it's not text generation.
