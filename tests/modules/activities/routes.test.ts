@@ -1,11 +1,23 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { Hono } from "hono";
 
-const { mockSelect } = vi.hoisted(() => ({ mockSelect: vi.fn() }));
+const { mockSelect, mockHasAccess } = vi.hoisted(() => ({
+  mockSelect: vi.fn(),
+  mockHasAccess: vi.fn(),
+}));
 
 vi.mock("@/db/client", () => ({ db: { select: mockSelect } }));
 vi.mock("@/db/schema", () => ({
   activities: { id: "id_col", date: "date_col", source: "source_col", type: "type_col", data: "data_col" },
+}));
+// The real requireJournalMembership runs; only the membership lookup and the
+// token resolution are stubbed.
+vi.mock("@/modules/journal/access-repo", () => ({ hasJournalAccess: mockHasAccess }));
+vi.mock("@/modules/auth/middleware", () => ({
+  optionalAuth: async (c: any, next: any) => {
+    c.set("userId", c.req.header("X-Test-User") ?? null);
+    await next();
+  },
 }));
 vi.mock("drizzle-orm", () => ({
   eq: vi.fn((c, v) => ({ c, v })),
@@ -22,11 +34,34 @@ function chain(rows: unknown[]) {
 
 import { activitiesRoutes } from "@/modules/activities/routes";
 
-beforeEach(() => vi.clearAllMocks());
+beforeEach(() => {
+  vi.clearAllMocks();
+  mockHasAccess.mockImplementation(async (userId: string | null) => userId === "member");
+});
 
-const app = new Hono().route("/api/activities", activitiesRoutes);
+const routes = new Hono().route("/api/activities", activitiesRoutes);
+// Every request below is a journal member's unless it says otherwise.
+const app = {
+  request: (path: string, headers: Record<string, string> = { "X-Test-User": "member" }) =>
+    routes.request(path, { headers }),
+};
 
 describe("GET /api/activities/:date", () => {
+  it("403s a signed-out caller without touching the DB", async () => {
+    const res = await app.request("/api/activities/2026-05-03", {});
+    expect(res.status).toBe(403);
+    expect((await res.json()).code).toBe("journal_access_required");
+    expect(mockHasAccess).toHaveBeenCalledWith(null);
+    expect(mockSelect).not.toHaveBeenCalled();
+  });
+
+  it("403s a signed-in user who is not a journal member", async () => {
+    const res = await app.request("/api/activities/2026-05-03", { "X-Test-User": "stranger" });
+    expect(res.status).toBe(403);
+    expect(mockHasAccess).toHaveBeenCalledWith("stranger");
+    expect(mockSelect).not.toHaveBeenCalled();
+  });
+
   it("returns activities for the date", async () => {
     mockSelect.mockReturnValue(chain([
       { id: "a1", date: "2026-05-03", source: "github", type: "commit", data: { repo: "foo", message: "bar" } },

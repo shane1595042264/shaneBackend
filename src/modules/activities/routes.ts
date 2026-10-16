@@ -5,12 +5,18 @@ import { eq, asc } from "drizzle-orm";
 import { db } from "@/db/client";
 import { activities } from "@/db/schema";
 import { isoDate } from "@/modules/shared/validators";
+import { optionalAuth } from "@/modules/auth/middleware";
+import { requireJournalMembership } from "@/modules/journal/access-middleware";
 
 export const activitiesRoutes = new Hono();
 
 const dateParam = z.object({ date: isoDate });
 
-activitiesRoutes.get("/:date", zValidator("param", dateParam), async (c) => {
+// Journal members only (SHAN-583). This is the raw feed the journal sidebar is
+// built from: work calendar events, commit messages, WeChat message bodies and
+// GPS visits. It was world-readable long after the journal itself went
+// invite-only in SHAN-475, which made the gate on /api/journal moot.
+activitiesRoutes.get("/:date", optionalAuth, requireJournalMembership, zValidator("param", dateParam), async (c) => {
   const { date } = c.req.valid("param");
   const rows = await db
     .select({
