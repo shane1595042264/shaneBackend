@@ -316,6 +316,13 @@
       "when": 1792002521902,
       "tag": "0044_flimsy_pete_wisdom",
       "breakpoints": true
+    },
+    {
+      "idx": 45,
+      "version": "7",
+      "when": 1792137759953,
+      "tag": "0045_typical_scarlet_spider",
+      "breakpoints": true
     }
   ]
 }

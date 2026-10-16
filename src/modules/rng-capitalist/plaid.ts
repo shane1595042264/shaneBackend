@@ -52,7 +52,7 @@ export async function getLastMonthSpend(userId: string): Promise<number | null> 
   const now = new Date();
   const lastMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
   const yearMonth = `${lastMonth.getFullYear()}-${String(lastMonth.getMonth() + 1).padStart(2, "0")}`;
-  const cached = await db.select({ totalSpend: rngMonthlySpend.totalSpend }).from(rngMonthlySpend).where(eq(rngMonthlySpend.yearMonth, yearMonth)).limit(1);
+  const cached = await db.select({ totalSpend: rngMonthlySpend.totalSpend }).from(rngMonthlySpend).where(and(eq(rngMonthlySpend.userId, userId), eq(rngMonthlySpend.yearMonth, yearMonth))).limit(1);
   if (cached[0]) return Number(cached[0].totalSpend);
   return await fetchAndCacheMonthlySpend(yearMonth, userId);
 }
@@ -66,7 +66,7 @@ export async function fetchAndCacheMonthlySpend(yearMonth: string, userId: strin
   const endDate = `${year}-${String(month).padStart(2, "0")}-${String(endOfMonth.getDate()).padStart(2, "0")}`;
   const response = await plaidClient.transactionsGet({ access_token: accessToken, start_date: startDate, end_date: endDate, options: { count: 500 } });
   const totalSpend = response.data.transactions.filter((t) => t.amount > 0).reduce((sum, t) => sum + t.amount, 0);
-  await db.insert(rngMonthlySpend).values({ yearMonth, totalSpend: String(totalSpend.toFixed(2)) }).onConflictDoNothing();
+  await db.insert(rngMonthlySpend).values({ userId, yearMonth, totalSpend: String(totalSpend.toFixed(2)) }).onConflictDoNothing({ target: [rngMonthlySpend.userId, rngMonthlySpend.yearMonth] });
   return totalSpend;
 }
 

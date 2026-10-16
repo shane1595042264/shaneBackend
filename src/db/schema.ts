@@ -217,12 +217,21 @@ export const rngPlaidTokens = pgTable("rng_plaid_tokens", {
 // ------------------------------------------------------------------
 // rng_monthly_spend
 // ------------------------------------------------------------------
-export const rngMonthlySpend = pgTable("rng_monthly_spend", {
-  id: serial("id").primaryKey(),
-  yearMonth: varchar("year_month", { length: 7 }).notNull().unique(),
-  totalSpend: text("total_spend").notNull(),
-  fetchedAt: timestamp("fetched_at", { withTimezone: true }).defaultNow(),
-});
+// One cached total per (user, month). SHAN-584: this used to be keyed by month
+// alone, so the first user's cached spend was served to every user. user_id is
+// nullable only for the two pre-SHAN-584 rows, which belonged to a Plaid token
+// whose user is gone; reads filter on user_id, so those rows are never served.
+export const rngMonthlySpend = pgTable(
+  "rng_monthly_spend",
+  {
+    id: serial("id").primaryKey(),
+    userId: uuid("user_id").references(() => users.id, { onDelete: "cascade" }),
+    yearMonth: varchar("year_month", { length: 7 }).notNull(),
+    totalSpend: text("total_spend").notNull(),
+    fetchedAt: timestamp("fetched_at", { withTimezone: true }).defaultNow(),
+  },
+  (t) => [unique("rng_monthly_spend_user_year_month_unique").on(t.userId, t.yearMonth)]
+);
 
 // ------------------------------------------------------------------
 // rng_decisions
