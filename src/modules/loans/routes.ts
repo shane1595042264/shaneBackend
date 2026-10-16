@@ -1,7 +1,8 @@
 import { Hono } from "hono";
 import { zValidator } from "@/modules/shared/zod-validator";
 import { z } from "zod";
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, sql } from "drizzle-orm";
+import type { PgUpdateSetSource } from "drizzle-orm/pg-core";
 import { db } from "@/db/client";
 import { loanEntries } from "@/db/schema";
 import { requireAuth } from "@/modules/auth/middleware";
@@ -158,7 +159,7 @@ loansRoutes.patch(
     if (existing.userId !== userId) return c.json({ error: "Forbidden" }, 403);
 
     const now = new Date();
-    const patch: Partial<typeof loanEntries.$inferInsert> = { updatedAt: now };
+    const patch: PgUpdateSetSource<typeof loanEntries> = { updatedAt: now };
     if (body.borrowerName !== undefined) patch.borrowerName = body.borrowerName;
     if (body.amount !== undefined) patch.amount = body.amount;
     if (body.currency !== undefined) patch.currency = body.currency;
@@ -167,18 +168,26 @@ loansRoutes.patch(
     if (body.status !== undefined) {
       patch.status = body.status;
       // Stamp repaidAt when transitioning to repaid; clear it on the reverse.
-      if (body.status === "repaid" && existing.status !== "repaid") {
-        patch.repaidAt = now;
-      } else if (body.status === "outstanding") {
+      // The "already repaid?" test runs in SQL against the row being written,
+      // not against `existing`: two overlapping "mark repaid" requests both
+      // read outstanding, and deciding from that read let the later one move
+      // the original repaid date (SHAN-586).
+      if (body.status === "repaid") {
+        patch.repaidAt = sql`CASE WHEN ${loanEntries.status} = 'repaid' THEN ${loanEntries.repaidAt} ELSE ${now}::timestamptz END`;
+      } else {
         patch.repaidAt = null;
       }
     }
 
+    // Scoped by owner as well as id, and a miss is a 404: the entry can be
+    // deleted between the read above and this write (Who Owes open in two
+    // tabs), and serializing the missing row used to throw a 500 (SHAN-586).
     const [row] = await db
       .update(loanEntries)
       .set(patch)
-      .where(eq(loanEntries.id, id))
+      .where(and(eq(loanEntries.id, id), eq(loanEntries.userId, userId)))
       .returning();
+    if (!row) return c.json({ error: "Not found" }, 404);
     return c.json({ entry: serialize(row) });
   },
 );

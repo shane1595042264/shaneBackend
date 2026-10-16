@@ -22,6 +22,8 @@ vi.mock("@/db/schema", () => ({
     id: "loanEntries.id",
     userId: "loanEntries.userId",
     createdAt: "loanEntries.createdAt",
+    status: "loanEntries.status",
+    repaidAt: "loanEntries.repaidAt",
   },
 }));
 
@@ -30,6 +32,7 @@ vi.mock("drizzle-orm", () => ({
   and: vi.fn((...args: unknown[]) => ({ and: args })),
   desc: vi.fn((c: unknown) => ({ c, dir: "desc" })),
   lt: vi.fn((c: unknown, v: unknown) => ({ lt: { c, v } })),
+  sql: vi.fn((strings: TemplateStringsArray, ...values: unknown[]) => ({ sql: strings.join("?"), values })),
 }));
 
 vi.mock("@/modules/auth/middleware", () => ({
@@ -45,6 +48,8 @@ import { loansRoutes } from "@/modules/loans/routes";
 
 beforeEach(() => {
   vi.clearAllMocks();
+  delete updateCalls.set;
+  delete updateCalls.where;
 });
 
 const app = new Hono().route("/api/loans", loansRoutes);
@@ -80,13 +85,21 @@ function insertReturning(rows: unknown[]) {
   }));
 }
 
+// Records what the handler hands to .set() and .where() so tests can assert
+// on the patch and the update's filter, not just the response.
+const updateCalls: { set?: Record<string, unknown>; where?: unknown } = {};
+
 function updateReturning(rows: unknown[]) {
   mockUpdate.mockImplementation(() => ({
-    set: () => ({
-      where: () => ({
-        returning: () => Promise.resolve(rows),
-      }),
-    }),
+    set: (patch: Record<string, unknown>) => {
+      updateCalls.set = patch;
+      return {
+        where: (cond: unknown) => {
+          updateCalls.where = cond;
+          return { returning: () => Promise.resolve(rows) };
+        },
+      };
+    },
   }));
 }
 
@@ -451,6 +464,67 @@ describe("PATCH /api/loans/:id — ownership + status", () => {
     const body = await res.json();
     expect(body.entry.status).toBe("outstanding");
     expect(body.entry.repaidAt).toBeNull();
+    expect(updateCalls.set?.repaidAt).toBeNull();
+  });
+
+  // SHAN-586: the entry can be deleted between the ownership read and the
+  // UPDATE (Who Owes open in two tabs). UPDATE ... RETURNING then yields no
+  // row, which used to reach serialize(undefined) and 500.
+  it("returns 404 when the entry is deleted between the read and the update", async () => {
+    selectReturning([makeRow()]);
+    updateReturning([]);
+    const res = await app.request(`/api/loans/${ENTRY_ID}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", "X-Test-User": USER_A },
+      body: JSON.stringify({ borrowerName: "Bob" }),
+    });
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: "Not found" });
+  });
+
+  it("scopes the update to the caller as well as the id", async () => {
+    selectReturning([makeRow()]);
+    updateReturning([makeRow({ borrowerName: "Bob" })]);
+    await app.request(`/api/loans/${ENTRY_ID}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", "X-Test-User": USER_A },
+      body: JSON.stringify({ borrowerName: "Bob" }),
+    });
+    expect(updateCalls.where).toEqual({
+      and: [
+        { eq: { c: "loanEntries.id", v: ENTRY_ID } },
+        { eq: { c: "loanEntries.userId", v: USER_A } },
+      ],
+    });
+  });
+
+  // SHAN-586: whether to stamp repaidAt is decided in SQL against the row
+  // being written. Deciding from the earlier read let two overlapping "mark
+  // repaid" requests both see outstanding, and the later one moved the date.
+  it("decides the repaidAt stamp in SQL, keeping an existing repaid date", async () => {
+    selectReturning([makeRow({ status: "outstanding", repaidAt: null })]);
+    updateReturning([makeRow({ status: "repaid", repaidAt: new Date("2026-05-29T12:00:00Z") })]);
+    await app.request(`/api/loans/${ENTRY_ID}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", "X-Test-User": USER_A },
+      body: JSON.stringify({ status: "repaid" }),
+    });
+    const repaidAt = updateCalls.set?.repaidAt as { sql: string; values: unknown[] };
+    expect(repaidAt.sql).toBe("CASE WHEN ? = 'repaid' THEN ? ELSE ?::timestamptz END");
+    expect(repaidAt.values.slice(0, 2)).toEqual(["loanEntries.status", "loanEntries.repaidAt"]);
+    expect(repaidAt.values[2]).toBeInstanceOf(Date);
+    expect(updateCalls.set?.updatedAt).toBe(repaidAt.values[2]);
+  });
+
+  it("leaves repaidAt alone when status is not in the patch", async () => {
+    selectReturning([makeRow({ status: "repaid", repaidAt: new Date() })]);
+    updateReturning([makeRow({ status: "repaid", amount: "10" })]);
+    await app.request(`/api/loans/${ENTRY_ID}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", "X-Test-User": USER_A },
+      body: JSON.stringify({ amount: "10" }),
+    });
+    expect(updateCalls.set).not.toHaveProperty("repaidAt");
   });
 });
 
