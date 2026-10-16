@@ -27,7 +27,7 @@ vi.mock("drizzle-orm", () => ({
 function chain(rows: unknown[]) {
   const c: Record<string, unknown> = {};
   const t = Promise.resolve(rows);
-  for (const m of ["from", "where", "orderBy", "limit", "leftJoin", "innerJoin"]) c[m] = vi.fn(() => c);
+  for (const m of ["from", "where", "orderBy", "limit", "for", "leftJoin", "innerJoin"]) c[m] = vi.fn(() => c);
   Object.assign(c, { then: (r: any, j: any) => t.then(r, j) });
   return c;
 }
@@ -186,6 +186,21 @@ describe("approveSuggestion", () => {
     mockTransaction.mockImplementation(async (fn: any) => fn(tx));
     await expect(approveSuggestion("s1", "u1", 3)).rejects.toMatchObject({ name: "VersionConflict", currentVersionNum: 5 });
   });
+
+  // SHAN-585: a second Approve that overlapped the first used to pass the
+  // status check too and 500 on the version_num unique key.
+  it("locks the suggestion row before reading its status", async () => {
+    const suggestionRead = chain([{ id: "s1", status: "approved" }]);
+    const tx = { select: vi.fn(() => suggestionRead), insert: vi.fn(), update: vi.fn() };
+    mockTransaction.mockImplementation(async (fn: any) => fn(tx));
+    await expect(approveSuggestion("s1", "u1", 1)).rejects.toMatchObject({
+      name: "SuggestionNotPendingError",
+      currentStatus: "approved",
+    });
+    expect(suggestionRead.for as any).toHaveBeenCalledWith("update");
+    expect(tx.insert).not.toHaveBeenCalled();
+    expect(tx.update).not.toHaveBeenCalled();
+  });
 });
 
 describe("rejectSuggestion", () => {
@@ -199,6 +214,20 @@ describe("rejectSuggestion", () => {
     mockTransaction.mockImplementation(async (fn: any) => fn(tx));
     await rejectSuggestion("s1", "u1", "not for me");
     expect(tx.update).toHaveBeenCalledTimes(2);
+  });
+
+  // SHAN-585: a double-clicked Reject used to decrement the pending count
+  // twice, leaving it at -1 for good.
+  it("locks the row, and a decision that landed first means no second decrement", async () => {
+    const suggestionRead = chain([{ id: "s1", entryId: "e1", status: "rejected" }]);
+    const tx = { select: vi.fn(() => suggestionRead), update: vi.fn() };
+    mockTransaction.mockImplementation(async (fn: any) => fn(tx));
+    await expect(rejectSuggestion("s1", "u1")).rejects.toMatchObject({
+      name: "SuggestionNotPendingError",
+      currentStatus: "rejected",
+    });
+    expect(suggestionRead.for as any).toHaveBeenCalledWith("update");
+    expect(tx.update).not.toHaveBeenCalled();
   });
 });
 
@@ -220,14 +249,21 @@ describe("withdrawSuggestion", () => {
   });
 
   it("reports the current status when it is already decided", async () => {
+    const suggestionRead = chain([{ id: "s1", entryId: "e1", proposerId: "u2", status: "approved" }]);
     const tx = {
-      select: vi.fn(() => chain([{ id: "s1", entryId: "e1", proposerId: "u2", status: "approved" }])),
+      select: vi.fn(() => suggestionRead),
+      update: vi.fn(),
     };
     mockTransaction.mockImplementation(async (fn: any) => fn(tx));
     await expect(withdrawSuggestion("s1", "u2")).rejects.toMatchObject({
       name: "SuggestionNotPendingError",
       currentStatus: "approved",
     });
+    // SHAN-585: the row is locked, so an approval that committed while this
+    // withdraw waited is what it reads, and a merged edit is never relabelled
+    // "withdrawn".
+    expect(suggestionRead.for as any).toHaveBeenCalledWith("update");
+    expect(tx.update).not.toHaveBeenCalled();
   });
 
   it("sets status=withdrawn and decrements pendingSuggestionCount", async () => {

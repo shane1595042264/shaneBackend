@@ -107,13 +107,26 @@ export async function inboxFor(authorId: string) {
   }));
 }
 
+/**
+ * SHAN-585: approve, reject and withdraw all lock the suggestion row before
+ * reading its status. Without the lock two overlapping decisions (a
+ * double-clicked Reject, or the author approving while the proposer
+ * withdraws) both read "pending" under READ COMMITTED and both write: the
+ * pending count drops twice and goes negative, a merged edit can end up
+ * marked "withdrawn", and a double Approve 500s on the version_num unique key.
+ * With it, the loser waits, re-reads the committed status and throws
+ * SuggestionNotPendingError, which the routes answer with a 409. Locking the
+ * suggestion first in all three also gives them one lock order, so approve
+ * (which then touches the entry) cannot deadlock against reject or withdraw.
+ */
 export async function approveSuggestion(suggestionId: string, authorId: string, ifMatchVersionNum: number) {
   return db.transaction(async (tx) => {
     const [s] = await tx
       .select()
       .from(journalSuggestions)
       .where(eq(journalSuggestions.id, suggestionId))
-      .limit(1);
+      .limit(1)
+      .for("update");
     if (!s || s.status !== "pending") throw new SuggestionNotPendingError(s?.status ?? null);
 
     const [latest] = await tx
@@ -166,7 +179,8 @@ export async function rejectSuggestion(suggestionId: string, authorId: string, r
       .select()
       .from(journalSuggestions)
       .where(eq(journalSuggestions.id, suggestionId))
-      .limit(1);
+      .limit(1)
+      .for("update");
     if (!s || s.status !== "pending") throw new SuggestionNotPendingError(s?.status ?? null);
     await tx
       .update(journalSuggestions)
@@ -197,7 +211,8 @@ export async function withdrawSuggestion(suggestionId: string, proposerId: strin
       .select()
       .from(journalSuggestions)
       .where(and(eq(journalSuggestions.id, suggestionId), eq(journalSuggestions.proposerId, proposerId)))
-      .limit(1);
+      .limit(1)
+      .for("update");
     // SHAN-536: was a plain Error("Cannot withdraw"), which the route turned
     // into 403 for every cause including a dead connection. Same typed error
     // approve and reject throw since SHAN-530.
