@@ -14,7 +14,7 @@ const m = vi.hoisted(() => ({
 }));
 
 // Mock every repo routes.ts imports so nothing touches the DB.
-vi.mock("@/modules/practice/prescription-repo", () => ({ getPrescription: vi.fn(), upsertPrescription: vi.fn(), deletePrescription: vi.fn() }));
+vi.mock("@/modules/practice/prescription-repo", () => ({ getPrescription: vi.fn(), getPrescriptionItemOwner: vi.fn(), upsertPrescription: vi.fn(), deletePrescription: vi.fn() }));
 vi.mock("@/modules/practice/locations-repo", () => ({ listLocations: vi.fn(), upsertLocation: m.upsertLocation, deleteLocation: vi.fn(), normalizeLocationName: (s: string) => s.trim().toLowerCase() }));
 vi.mock("@/modules/practice/sessions-repo", () => ({ createSession: vi.fn(), getSessionById: m.getSessionById, listSessions: vi.fn(), markSessionCompleted: vi.fn(), deleteSession: vi.fn() }));
 vi.mock("@/modules/practice/session-items-repo", () => ({ listItemsForSession: vi.fn(), syncSessionItem: vi.fn() }));

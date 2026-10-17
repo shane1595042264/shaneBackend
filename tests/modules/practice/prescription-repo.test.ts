@@ -28,7 +28,12 @@ vi.mock("@/db/client", () => ({
   },
 }));
 
-import { getPrescription, upsertPrescription, deletePrescription } from "@/modules/practice/prescription-repo";
+import {
+  getPrescription,
+  getPrescriptionItemOwner,
+  upsertPrescription,
+  deletePrescription,
+} from "@/modules/practice/prescription-repo";
 
 beforeEach(() => vi.clearAllMocks());
 
@@ -42,6 +47,20 @@ describe("getPrescription", () => {
   it("returns null when not found", async () => {
     mockSelect.mockResolvedValue([]);
     expect(await getPrescription("i1")).toBeNull();
+  });
+});
+
+describe("getPrescriptionItemOwner", () => {
+  it("returns the card's creator, null for a legacy ownerless card", async () => {
+    mockSelect.mockResolvedValueOnce([{ createdBy: "u1" }]);
+    expect(await getPrescriptionItemOwner("i1")).toEqual({ createdBy: "u1" });
+    mockSelect.mockResolvedValueOnce([{ createdBy: null }]);
+    expect(await getPrescriptionItemOwner("i1")).toEqual({ createdBy: null });
+  });
+
+  it("returns null when no card has the id", async () => {
+    mockSelect.mockResolvedValue([]);
+    expect(await getPrescriptionItemOwner("i1")).toBeNull();
   });
 });
 

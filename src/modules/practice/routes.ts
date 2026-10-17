@@ -3,7 +3,12 @@ import { zValidator } from "@/modules/shared/zod-validator";
 import { z } from "zod";
 import { requireAuth, requireScope, requireAdmin } from "@/modules/auth/middleware";
 import { createPATRateLimit } from "@/modules/shared/rate-limit";
-import { getPrescription, upsertPrescription, deletePrescription } from "./prescription-repo";
+import {
+  getPrescription,
+  getPrescriptionItemOwner,
+  upsertPrescription,
+  deletePrescription,
+} from "./prescription-repo";
 import { listLocations, upsertLocation, deleteLocation, normalizeLocationName } from "./locations-repo";
 import {
   createSession,
@@ -96,6 +101,11 @@ practiceRoutes.get("/prescriptions/:itemId", zValidator("param", itemIdParam), a
   return c.json({ prescription: p });
 });
 
+// SHAN-589: a prescription is per card and every user's session generator
+// reads it, so writing one rewrites how that card is practiced. Both writes
+// take the card's ownership rule (the creator, or anyone for a legacy
+// ownerless card), same as PUT /knowledge/entries/:id. Looking the card up
+// first also turns an unknown id into a 404 instead of an FK-violation 500.
 practiceRoutes.put(
   "/prescriptions/:itemId",
   requireAuth,
@@ -107,6 +117,11 @@ practiceRoutes.put(
     const userId = c.get("userId") as string;
     const { itemId } = c.req.valid("param");
     const body = c.req.valid("json");
+    const item = await getPrescriptionItemOwner(itemId);
+    if (!item) return c.json({ error: "Item not found" }, 404);
+    if (item.createdBy !== null && item.createdBy !== userId) {
+      return c.json({ error: "You can only configure items you created" }, 403);
+    }
     const p = await upsertPrescription(itemId, userId, body);
     return c.json({ prescription: p });
   },
@@ -119,7 +134,14 @@ practiceRoutes.delete(
   prescriptionsWriteLimit,
   zValidator("param", itemIdParam),
   async (c) => {
-    const ok = await deletePrescription(c.req.valid("param").itemId);
+    const userId = c.get("userId") as string;
+    const { itemId } = c.req.valid("param");
+    const item = await getPrescriptionItemOwner(itemId);
+    if (!item) return c.json({ error: "Not found" }, 404);
+    if (item.createdBy !== null && item.createdBy !== userId) {
+      return c.json({ error: "You can only configure items you created" }, 403);
+    }
+    const ok = await deletePrescription(itemId);
     return ok ? c.body(null, 204) : c.json({ error: "Not found" }, 404);
   },
 );

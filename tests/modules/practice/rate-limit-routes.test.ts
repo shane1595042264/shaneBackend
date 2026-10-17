@@ -8,7 +8,7 @@ import { Hono } from "hono";
 import { __resetRateLimitBuckets } from "@/modules/shared/rate-limit";
 
 const mocks = vi.hoisted(() => ({
-  prescriptions: { get: vi.fn(), upsert: vi.fn(), delete: vi.fn() },
+  prescriptions: { get: vi.fn(), owner: vi.fn(), upsert: vi.fn(), delete: vi.fn() },
   locations: { list: vi.fn(), upsert: vi.fn(), delete: vi.fn() },
   sessions: { create: vi.fn(), getById: vi.fn(), list: vi.fn(), markCompleted: vi.fn(), delete: vi.fn() },
   sessionItems: { list: vi.fn(), sync: vi.fn() },
@@ -19,6 +19,7 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("@/modules/practice/prescription-repo", () => ({
   getPrescription: mocks.prescriptions.get,
+  getPrescriptionItemOwner: mocks.prescriptions.owner,
   upsertPrescription: mocks.prescriptions.upsert,
   deletePrescription: mocks.prescriptions.delete,
 }));
@@ -95,6 +96,7 @@ function jwtHeaders() {
 
 describe("practice write rate limits (per PAT)", () => {
   it("prescriptions-write bucket 429s a PAT after 30 PUTs in a minute", async () => {
+    mocks.prescriptions.owner.mockResolvedValue({ createdBy: null });
     mocks.prescriptions.upsert.mockResolvedValue({
       id: "p1", itemId: UUID, setMode: "time", setSize: 60, restSeconds: 30,
     });
@@ -177,6 +179,7 @@ describe("practice write rate limits (per PAT)", () => {
   });
 
   it("prescriptions bucket is independent from session-items-sync bucket", async () => {
+    mocks.prescriptions.owner.mockResolvedValue({ createdBy: null });
     mocks.prescriptions.upsert.mockResolvedValue({
       id: "p1", itemId: UUID, setMode: "time", setSize: 60, restSeconds: 30,
     });

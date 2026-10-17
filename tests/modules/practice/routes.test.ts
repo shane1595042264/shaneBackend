@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { Hono } from "hono";
 
 const mocks = vi.hoisted(() => ({
-  prescriptions: { get: vi.fn(), upsert: vi.fn(), delete: vi.fn() },
+  prescriptions: { get: vi.fn(), owner: vi.fn(), upsert: vi.fn(), delete: vi.fn() },
   locations: { list: vi.fn(), upsert: vi.fn(), delete: vi.fn() },
   sessions: { create: vi.fn(), getById: vi.fn(), list: vi.fn(), markCompleted: vi.fn(), delete: vi.fn() },
   sessionItems: { list: vi.fn(), sync: vi.fn() },
@@ -11,7 +11,7 @@ const mocks = vi.hoisted(() => ({
   settings: { get: vi.fn(), update: vi.fn() },
 }));
 
-vi.mock("@/modules/practice/prescription-repo", () => ({ getPrescription: mocks.prescriptions.get, upsertPrescription: mocks.prescriptions.upsert, deletePrescription: mocks.prescriptions.delete }));
+vi.mock("@/modules/practice/prescription-repo", () => ({ getPrescription: mocks.prescriptions.get, getPrescriptionItemOwner: mocks.prescriptions.owner, upsertPrescription: mocks.prescriptions.upsert, deletePrescription: mocks.prescriptions.delete }));
 vi.mock("@/modules/practice/locations-repo", () => ({ listLocations: mocks.locations.list, upsertLocation: mocks.locations.upsert, deleteLocation: mocks.locations.delete, normalizeLocationName: (s: string) => s.trim().toLowerCase() }));
 vi.mock("@/modules/practice/sessions-repo", () => ({ createSession: mocks.sessions.create, getSessionById: mocks.sessions.getById, listSessions: mocks.sessions.list, markSessionCompleted: mocks.sessions.markCompleted, deleteSession: mocks.sessions.delete }));
 vi.mock("@/modules/practice/session-items-repo", () => ({ listItemsForSession: mocks.sessionItems.list, syncSessionItem: mocks.sessionItems.sync }));
@@ -33,7 +33,11 @@ const app = new Hono().route("/api/practice", practiceRoutes);
 const UUID = "11111111-1111-1111-1111-111111111111";
 
 describe("PUT /prescriptions/:itemId", () => {
+  const put = (user: string) =>
+    app.request(`/api/practice/prescriptions/${UUID}`, { method: "PUT", headers: { "Content-Type": "application/json", "X-Test-User": user }, body: JSON.stringify({ setMode: "reps", setSize: 5, restSeconds: 30 }) });
+
   it("upserts and returns the prescription", async () => {
+    mocks.prescriptions.owner.mockResolvedValue({ createdBy: "u1" });
     mocks.prescriptions.upsert.mockResolvedValue({ id: "p1", itemId: UUID, setMode: "time", setSize: 60, restSeconds: 30 });
     const res = await app.request(`/api/practice/prescriptions/${UUID}`, { method: "PUT", headers: { "Content-Type": "application/json", "X-Test-User": "u1" }, body: JSON.stringify({ setMode: "time", setSize: 60, restSeconds: 30 }) });
     expect(res.status).toBe(200);
@@ -42,6 +46,58 @@ describe("PUT /prescriptions/:itemId", () => {
   it("400 on invalid set_size", async () => {
     const res = await app.request(`/api/practice/prescriptions/${UUID}`, { method: "PUT", headers: { "Content-Type": "application/json", "X-Test-User": "u1" }, body: JSON.stringify({ setMode: "time", setSize: -1, restSeconds: 30 }) });
     expect(res.status).toBe(400);
+  });
+
+  // SHAN-589: the card's ownership rule, and no FK-violation 500.
+  it("404s an id that is not a card, without writing", async () => {
+    mocks.prescriptions.owner.mockResolvedValue(null);
+    const res = await put("u1");
+    expect(res.status).toBe(404);
+    expect(mocks.prescriptions.upsert).not.toHaveBeenCalled();
+  });
+  it("403s someone else's card, without writing", async () => {
+    mocks.prescriptions.owner.mockResolvedValue({ createdBy: "u2" });
+    const res = await put("u1");
+    expect(res.status).toBe(403);
+    expect(mocks.prescriptions.upsert).not.toHaveBeenCalled();
+  });
+  it("lets anyone configure a legacy ownerless card", async () => {
+    mocks.prescriptions.owner.mockResolvedValue({ createdBy: null });
+    mocks.prescriptions.upsert.mockResolvedValue({ id: "p1", itemId: UUID, setMode: "reps", setSize: 5, restSeconds: 30 });
+    const res = await put("u1");
+    expect(res.status).toBe(200);
+    expect(mocks.prescriptions.upsert).toHaveBeenCalledWith(UUID, "u1", { setMode: "reps", setSize: 5, restSeconds: 30 });
+  });
+});
+
+describe("DELETE /prescriptions/:itemId", () => {
+  const del = (user: string) =>
+    app.request(`/api/practice/prescriptions/${UUID}`, { method: "DELETE", headers: { "X-Test-User": user } });
+
+  it("deletes the owner's prescription", async () => {
+    mocks.prescriptions.owner.mockResolvedValue({ createdBy: "u1" });
+    mocks.prescriptions.delete.mockResolvedValue(true);
+    const res = await del("u1");
+    expect(res.status).toBe(204);
+    expect(mocks.prescriptions.delete).toHaveBeenCalledWith(UUID);
+  });
+  it("404s an id that is not a card", async () => {
+    mocks.prescriptions.owner.mockResolvedValue(null);
+    const res = await del("u1");
+    expect(res.status).toBe(404);
+    expect(mocks.prescriptions.delete).not.toHaveBeenCalled();
+  });
+  it("403s someone else's card, without deleting", async () => {
+    mocks.prescriptions.owner.mockResolvedValue({ createdBy: "u2" });
+    const res = await del("u1");
+    expect(res.status).toBe(403);
+    expect(mocks.prescriptions.delete).not.toHaveBeenCalled();
+  });
+  it("404s an owned card that has no prescription", async () => {
+    mocks.prescriptions.owner.mockResolvedValue({ createdBy: "u1" });
+    mocks.prescriptions.delete.mockResolvedValue(false);
+    const res = await del("u1");
+    expect(res.status).toBe(404);
   });
 });
 

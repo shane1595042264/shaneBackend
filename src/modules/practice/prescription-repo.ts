@@ -1,6 +1,6 @@
 import { eq } from "drizzle-orm";
 import { db } from "@/db/client";
-import { practicePrescriptions } from "@/db/schema";
+import { practicePrescriptions, vocabWords } from "@/db/schema";
 
 export interface Prescription {
   id: string;
@@ -26,6 +26,22 @@ export async function getPrescription(itemId: string): Promise<Prescription | nu
     .where(eq(practicePrescriptions.itemId, itemId))
     .limit(1);
   return (row as Prescription | undefined) ?? null;
+}
+
+/**
+ * The card a prescription hangs off, for the write routes' ownership check
+ * (SHAN-589). Null when no card has that id. `createdBy` null is a legacy
+ * ownerless card, which every card write treats as open.
+ */
+export async function getPrescriptionItemOwner(
+  itemId: string,
+): Promise<{ createdBy: string | null } | null> {
+  const [row] = await db
+    .select({ createdBy: vocabWords.createdBy })
+    .from(vocabWords)
+    .where(eq(vocabWords.id, itemId))
+    .limit(1);
+  return row ?? null;
 }
 
 /**
