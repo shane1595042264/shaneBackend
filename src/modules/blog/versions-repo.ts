@@ -27,8 +27,22 @@ interface AppendInput {
   source?: "direct" | "revert";
 }
 
+/**
+ * SHAN-587: lock the post row before reading the latest version, as the
+ * journal does. Otherwise a double-clicked Save, or one post saved from two
+ * tabs, sends the same If-Match twice: both requests read N, and the second
+ * insert of N + 1 500s on the (post_id, version_num) unique key instead of
+ * reading N + 1 and answering 409.
+ */
 export async function appendDirectVersion(input: AppendInput) {
   return db.transaction(async (tx) => {
+    await tx
+      .select({ id: blogPosts.id })
+      .from(blogPosts)
+      .where(eq(blogPosts.id, input.postId))
+      .limit(1)
+      .for("update");
+
     const [latest] = await tx
       .select({ versionNum: blogVersions.versionNum, id: blogVersions.id })
       .from(blogVersions)

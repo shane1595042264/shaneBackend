@@ -129,6 +129,19 @@ export async function approveSuggestion(suggestionId: string, authorId: string, 
       .for("update");
     if (!s || s.status !== "pending") throw new SuggestionNotPendingError(s?.status ?? null);
 
+    // SHAN-587: the suggestion lock only serializes decisions on THIS
+    // suggestion. Approving two different suggestions on one entry from the
+    // same page sends the same If-Match twice, and without the entry lock the
+    // second insert of N + 1 500s on the version_num unique key instead of
+    // reading N + 1 and answering 409. Taken after the suggestion lock, the
+    // same order reject, withdraw and create use.
+    await tx
+      .select({ id: journalEntries.id })
+      .from(journalEntries)
+      .where(eq(journalEntries.id, s.entryId))
+      .limit(1)
+      .for("update");
+
     const [latest] = await tx
       .select({ id: journalVersions.id, versionNum: journalVersions.versionNum })
       .from(journalVersions)

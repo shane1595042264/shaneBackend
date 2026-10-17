@@ -34,7 +34,7 @@ vi.mock("drizzle-orm", () => ({
 function chain(rows: unknown[]) {
   const c: Record<string, unknown> = {};
   const t = Promise.resolve(rows);
-  for (const m of ["from", "where", "orderBy", "limit", "leftJoin"]) c[m] = vi.fn(() => c);
+  for (const m of ["from", "where", "orderBy", "limit", "for", "leftJoin"]) c[m] = vi.fn(() => c);
   Object.assign(c, { then: (r: any, j: any) => t.then(r, j) });
   return c;
 }
@@ -128,6 +128,21 @@ describe("appendDirectVersion", () => {
         ifMatchVersionNum: 1,
       })
     ).rejects.toMatchObject({ currentVersionNum: 0 });
+  });
+
+  // SHAN-587: two saves carrying the same If-Match both read N, and the
+  // second insert of N + 1 500'd on the version_num unique key.
+  it("locks the post row before reading the latest version", async () => {
+    const lock = chain([{ id: "p1" }]);
+    const latest = chain([{ id: "v5", versionNum: 5 }]);
+    const tx = { select: vi.fn().mockReturnValueOnce(lock).mockReturnValueOnce(latest) };
+    mockTransaction.mockImplementation(async (fn: any) => fn(tx));
+    await expect(
+      appendDirectVersion({ postId: "p1", editorId: "u1", title: "t", content: "c", ifMatchVersionNum: 4 })
+    ).rejects.toMatchObject({ name: "VersionConflict", currentVersionNum: 5 });
+    expect(lock.where as any).toHaveBeenCalledWith({ eq: [{ table: "blog_posts", column: "id" }, "p1"] });
+    expect(lock.for as any).toHaveBeenCalledWith("update");
+    expect(latest.for as any).not.toHaveBeenCalled();
   });
 });
 

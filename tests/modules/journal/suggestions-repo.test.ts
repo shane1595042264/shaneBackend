@@ -201,6 +201,31 @@ describe("approveSuggestion", () => {
     expect(tx.insert).not.toHaveBeenCalled();
     expect(tx.update).not.toHaveBeenCalled();
   });
+
+  // SHAN-587: approving two DIFFERENT suggestions on one entry with the same
+  // If-Match slipped past the suggestion lock and 500'd on the unique key.
+  it("locks the entry row after the suggestion and before reading the latest version", async () => {
+    const suggestionRead = chain([{ id: "s1", entryId: "e1", status: "pending" }]);
+    const entryLock = chain([{ id: "e1" }]);
+    const latest = chain([{ id: "v5", versionNum: 5 }]);
+    const tx = {
+      select: vi.fn()
+        .mockReturnValueOnce(suggestionRead)
+        .mockReturnValueOnce(entryLock)
+        .mockReturnValueOnce(latest),
+      insert: vi.fn(),
+      update: vi.fn(),
+    };
+    mockTransaction.mockImplementation(async (fn: any) => fn(tx));
+    await expect(approveSuggestion("s1", "u1", 4)).rejects.toMatchObject({
+      name: "VersionConflict",
+      currentVersionNum: 5,
+    });
+    expect(entryLock.where as any).toHaveBeenCalledWith({ c: undefined, v: "e1" });
+    expect(entryLock.for as any).toHaveBeenCalledWith("update");
+    expect(latest.for as any).not.toHaveBeenCalled();
+    expect(tx.insert).not.toHaveBeenCalled();
+  });
 });
 
 describe("rejectSuggestion", () => {

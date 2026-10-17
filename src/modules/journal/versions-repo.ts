@@ -20,8 +20,23 @@ interface AppendInput {
   suggestionId?: string;
 }
 
+/**
+ * SHAN-587: lock the entry row before reading the latest version. Without it
+ * two writes carrying the same If-Match (a retried revert, or a revert racing
+ * an approve) both read N under READ COMMITTED, both pass the check, and the
+ * second insert of N + 1 dies on the (entry_id, version_num) unique key as a
+ * 500. With it, the loser waits, reads N + 1 and throws VersionConflictError,
+ * which the routes answer with the 409 the If-Match contract promises.
+ */
 export async function appendDirectVersion(input: AppendInput) {
   return db.transaction(async (tx) => {
+    await tx
+      .select({ id: journalEntries.id })
+      .from(journalEntries)
+      .where(eq(journalEntries.id, input.entryId))
+      .limit(1)
+      .for("update");
+
     const [latest] = await tx
       .select({ versionNum: journalVersions.versionNum, id: journalVersions.id })
       .from(journalVersions)
