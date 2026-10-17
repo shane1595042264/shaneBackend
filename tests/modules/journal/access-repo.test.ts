@@ -203,6 +203,23 @@ describe("revokeAccess", () => {
     mockDelete.mockReturnValue(chain([{ userId: "u2" }]));
     expect(await revokeAccess("u2")).toBe(true);
   });
+
+  // SHAN-590: a revoked member must not stay listed as an approved request.
+  it("clears the revoked member's request row in the same transaction", async () => {
+    const memberDelete = chain([{ userId: "u2" }]);
+    const requestDelete = chain([]);
+    mockDelete.mockReturnValueOnce(memberDelete).mockReturnValueOnce(requestDelete);
+    expect(await revokeAccess("u2")).toBe(true);
+    expect(mockTransaction).toHaveBeenCalledTimes(1);
+    expect(mockDelete).toHaveBeenNthCalledWith(2, expect.objectContaining({ userId: "jar.user_id" }));
+    expect(requestDelete.where).toHaveBeenCalledWith({ eq: ["jar.user_id", "u2"] });
+  });
+
+  it("leaves the request row alone when nobody was revoked", async () => {
+    mockDelete.mockReturnValue(chain([]));
+    expect(await revokeAccess("owner-1")).toBe(false);
+    expect(mockDelete).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("createOrRefreshRequest", () => {
@@ -229,6 +246,20 @@ describe("createOrRefreshRequest", () => {
     const out = await createOrRefreshRequest(USER, null);
     expect(out.created).toBe(true);
     expect(out.request).toMatchObject({ id: "r9" });
+  });
+
+  // SHAN-590: the loser of two simultaneous first requests used to 500 on the
+  // user_id unique key.
+  it("returns the winning row when a concurrent first request inserted first", async () => {
+    mockSelect
+      .mockReturnValueOnce(chain([]))
+      .mockReturnValueOnce(chain([{ id: "r9", status: "pending" }]));
+    const ins = insertChain([]);
+    mockInsert.mockReturnValue(ins);
+    const out = await createOrRefreshRequest(USER, "hi");
+    expect(ins.onConflictDoNothing).toHaveBeenCalledWith({ target: "jar.user_id" });
+    expect(out).toEqual({ request: { id: "r9", status: "pending" }, created: false });
+    expect(mockUpdate).not.toHaveBeenCalled();
   });
 });
 

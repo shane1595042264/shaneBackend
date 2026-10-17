@@ -158,13 +158,23 @@ export async function grantAccessByEmail(email: string, grantedBy: string) {
 /**
  * Revoke a membership. The `role = "member"` predicate means an owner row can
  * never be deleted through this path, so the journal cannot be orphaned.
+ *
+ * SHAN-590: the person's request row goes with it. Left behind, an "approved"
+ * request kept a revoked user listed as Approved on the owner's page and made
+ * /access/me report requestStatus "approved" with no role. Clearing it puts
+ * them back at "no access, no request", so they can ask again.
  */
 export async function revokeAccess(userId: string) {
-  const rows = await db
-    .delete(journalAccess)
-    .where(and(eq(journalAccess.userId, userId), eq(journalAccess.role, "member")))
-    .returning({ userId: journalAccess.userId });
-  return rows.length > 0;
+  return db.transaction(async (tx) => {
+    const rows = await tx
+      .delete(journalAccess)
+      .where(and(eq(journalAccess.userId, userId), eq(journalAccess.role, "member")))
+      .returning({ userId: journalAccess.userId });
+    if (rows.length === 0) return false;
+
+    await tx.delete(journalAccessRequests).where(eq(journalAccessRequests.userId, userId));
+    return true;
+  });
 }
 
 // ------------------------------------------------------------------
@@ -178,33 +188,44 @@ export async function revokeAccess(userId: string) {
  * re-requesting while pending is an idempotent no-op.
  */
 export async function createOrRefreshRequest(userId: string, message: string | null) {
-  const [existing] = await db
+  const [found] = await db
     .select()
     .from(journalAccessRequests)
     .where(eq(journalAccessRequests.userId, userId));
 
-  if (existing && existing.status === "pending") return { request: existing, created: false };
-
-  if (existing) {
+  let existing = found;
+  if (!existing) {
+    // SHAN-590: two first-time requests at once (two tabs, a retry) both see
+    // no row here. The loser used to hit the user_id unique key and 500, so
+    // it skips the conflict and continues with the row that won.
     const [row] = await db
-      .update(journalAccessRequests)
-      .set({
-        status: "pending",
-        message,
-        decidedBy: null,
-        decidedAt: null,
-        updatedAt: new Date(),
-      })
-      .where(eq(journalAccessRequests.id, existing.id))
+      .insert(journalAccessRequests)
+      .values({ userId, message, status: "pending" })
+      .onConflictDoNothing({ target: journalAccessRequests.userId })
       .returning();
-    return { request: row, created: false };
+    if (row) return { request: row, created: true };
+
+    [existing] = await db
+      .select()
+      .from(journalAccessRequests)
+      .where(eq(journalAccessRequests.userId, userId));
+    if (!existing) throw new Error("Access request conflicted but no row was found");
   }
 
+  if (existing.status === "pending") return { request: existing, created: false };
+
   const [row] = await db
-    .insert(journalAccessRequests)
-    .values({ userId, message, status: "pending" })
+    .update(journalAccessRequests)
+    .set({
+      status: "pending",
+      message,
+      decidedBy: null,
+      decidedAt: null,
+      updatedAt: new Date(),
+    })
+    .where(eq(journalAccessRequests.id, existing.id))
     .returning();
-  return { request: row, created: true };
+  return { request: row, created: false };
 }
 
 export async function listRequests(status?: RequestStatus) {
