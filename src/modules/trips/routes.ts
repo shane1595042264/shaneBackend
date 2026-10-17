@@ -1,7 +1,9 @@
 import { Hono } from "hono";
 import { zValidator } from "@/modules/shared/zod-validator";
 import { z } from "zod";
-import { optionalAuth, requireScope } from "@/modules/auth/middleware";
+import { createMiddleware } from "hono/factory";
+import { optionalAuth, requireScope, type AuthVars } from "@/modules/auth/middleware";
+import { TOKEN_PREFIX } from "@/modules/auth/tokens";
 import { encodeKeysetCursor, keysetCursorParam } from "@/modules/shared/keyset";
 import { extractTitle } from "./title";
 import {
@@ -58,9 +60,27 @@ const listQuery = z.object({
  *      * If the trip has ownerId !== null, only that owner can edit/delete.
  *        Anonymous callers and authed-but-non-owner callers get 403.
  *  - Browser sessions (JWT) bypass scope checks; PATs need the
- *    trips:write scope (enforced by requireScope below). Sandboxed iframes
- *    still contain whatever HTML lands.
+ *    trips:write scope on every write, POST included (enforced by
+ *    requireScope below). Sandboxed iframes still contain whatever HTML lands.
+ *  - A PAT that does not resolve (revoked, mistyped) is a 401 on writes, not
+ *    an anonymous caller. See rejectDeadPat.
  */
+
+/**
+ * SHAN-588: optionalAuth demotes an unresolvable bearer to userId null, which
+ * on this module means "anonymous": a POST with a revoked PAT answered 201
+ * with an ownerless trip that anyone can edit or delete, while the agent
+ * believed it had uploaded an owned one. Mount after optionalAuth. Only the
+ * pat_ prefix is checked; a stale browser JWT still falls back to anonymous so
+ * the open drop-a-file upload keeps working for a signed-out-looking visitor.
+ */
+const rejectDeadPat = createMiddleware<{ Variables: AuthVars }>(async (c, next) => {
+  const bearer = c.req.header("Authorization")?.replace(/^Bearer\s+/, "").trim();
+  if (bearer?.startsWith(TOKEN_PREFIX) && !c.get("userId")) {
+    return c.json({ error: "Invalid or revoked token" }, 401);
+  }
+  await next();
+});
 
 /**
  * POST /api/trips
@@ -84,7 +104,7 @@ const listQuery = z.object({
  * and both ended up in sitemap.xml. Pass `force` to create the copy anyway --
  * the open-pastebin contract is intact, it just stops being the accident.
  */
-tripsRoutes.post("/", optionalAuth, async (c) => {
+tripsRoutes.post("/", optionalAuth, rejectDeadPat, requireScope("trips:write"), async (c) => {
   const userId = c.get("userId") as string | null;
   const contentType = c.req.header("Content-Type") ?? "";
 
@@ -203,6 +223,7 @@ tripsRoutes.get("/:slug", zValidator("param", slugParam), async (c) => {
 tripsRoutes.patch(
   "/:slug",
   optionalAuth,
+  rejectDeadPat,
   requireScope("trips:write"),
   zValidator("param", slugParam),
   async (c) => {
@@ -285,6 +306,7 @@ tripsRoutes.patch(
 tripsRoutes.delete(
   "/:slug",
   optionalAuth,
+  rejectDeadPat,
   requireScope("trips:write"),
   zValidator("param", slugParam),
   async (c) => {

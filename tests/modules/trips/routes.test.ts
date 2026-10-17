@@ -20,9 +20,12 @@ vi.mock("@/modules/trips/repo", () => ({
 }));
 
 vi.mock("@/modules/auth/middleware", () => ({
+  // X-Test-Scopes simulates a PAT (comma-separated scopes); without it the
+  // caller is a browser JWT (scopes null) or anonymous.
   optionalAuth: async (c: any, next: any) => {
     c.set("userId", c.req.header("X-Test-User") ?? null);
-    c.set("tokenScopes", null);
+    const scopes = c.req.header("X-Test-Scopes");
+    c.set("tokenScopes", scopes === undefined ? null : scopes.split(",").filter(Boolean));
     await next();
   },
   requireAuth: async (c: any, next: any) => {
@@ -32,7 +35,13 @@ vi.mock("@/modules/auth/middleware", () => ({
     c.set("tokenScopes", null);
     await next();
   },
-  requireScope: () => async (_c: any, next: any) => { await next(); },
+  requireScope: (scope: string) => async (c: any, next: any) => {
+    const scopes = c.get("tokenScopes");
+    if (scopes !== null && !scopes.includes(scope)) {
+      return c.json({ error: `Token missing required scope: ${scope}` }, 403);
+    }
+    await next();
+  },
 }));
 
 import { tripsRoutes } from "@/modules/trips/routes";
@@ -536,6 +545,87 @@ describe("DELETE /api/trips/:slug", () => {
     mockGet.mockResolvedValue(null);
     const res = await app.request("/api/trips/tokyo", { method: "DELETE" });
     expect(res.status).toBe(404);
+    expect(mockDelete).not.toHaveBeenCalled();
+  });
+});
+
+describe("PAT handling on trip writes (SHAN-588)", () => {
+  const created = {
+    id: "t1", slug: "tokyo", title: "Tokyo", sourceFilename: null, createdAt: new Date(),
+  };
+  const postBody = JSON.stringify({ html: "<title>Tokyo</title>" });
+
+  it("POST with a PAT lacking trips:write is 403 and creates nothing", async () => {
+    const res = await app.request("/api/trips", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: "Bearer pat_live",
+        "X-Test-User": "u1",
+        "X-Test-Scopes": "reactions:write",
+      },
+      body: postBody,
+    });
+    expect(res.status).toBe(403);
+    expect(mockCreate).not.toHaveBeenCalled();
+  });
+
+  it("POST with a trips:write PAT is attributed to its owner", async () => {
+    mockCreate.mockResolvedValue(created);
+    const res = await app.request("/api/trips", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: "Bearer pat_live",
+        "X-Test-User": "u1",
+        "X-Test-Scopes": "trips:write",
+      },
+      body: postBody,
+    });
+    expect(res.status).toBe(201);
+    expect(mockCreate).toHaveBeenCalledWith(expect.objectContaining({ ownerId: "u1" }));
+  });
+
+  it("POST with a revoked PAT is 401, not an ownerless upload", async () => {
+    const res = await app.request("/api/trips", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: "Bearer pat_revoked" },
+      body: postBody,
+    });
+    expect(res.status).toBe(401);
+    expect(mockCreate).not.toHaveBeenCalled();
+    expect(mockFindDuplicate).not.toHaveBeenCalled();
+  });
+
+  it("POST with a stale browser JWT still uploads anonymously", async () => {
+    mockCreate.mockResolvedValue(created);
+    const res = await app.request("/api/trips", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: "Bearer eyJ.stale.jwt" },
+      body: postBody,
+    });
+    expect(res.status).toBe(201);
+    expect(mockCreate).toHaveBeenCalledWith(expect.objectContaining({ ownerId: null }));
+  });
+
+  it("PATCH of an anonymous trip with a revoked PAT is 401", async () => {
+    mockGet.mockResolvedValue(tripRow(null));
+    const res = await app.request("/api/trips/tokyo", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", Authorization: "Bearer pat_revoked" },
+      body: JSON.stringify({ title: "Hijacked" }),
+    });
+    expect(res.status).toBe(401);
+    expect(mockUpdate).not.toHaveBeenCalled();
+  });
+
+  it("DELETE of an anonymous trip with a revoked PAT is 401", async () => {
+    mockGet.mockResolvedValue(tripRow(null));
+    const res = await app.request("/api/trips/tokyo", {
+      method: "DELETE",
+      headers: { Authorization: "Bearer pat_revoked" },
+    });
+    expect(res.status).toBe(401);
     expect(mockDelete).not.toHaveBeenCalled();
   });
 });
