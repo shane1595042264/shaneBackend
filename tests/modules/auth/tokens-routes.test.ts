@@ -127,6 +127,19 @@ describe("GET /api/auth/tokens", () => {
     const res = await app.request("/api/auth/tokens");
     expect(res.status).toBe(401);
   });
+
+  it("rejects a PAT with 403 without listing (SHAN-592)", async () => {
+    mockLookupActiveToken.mockResolvedValue({
+      tokenId: "tok-1",
+      userId: "user-1",
+      scopes: ["reactions:write"],
+    });
+    const res = await app.request("/api/auth/tokens", {
+      headers: { Authorization: "Bearer pat_someactivetoken" },
+    });
+    expect(res.status).toBe(403);
+    expect(mockList).not.toHaveBeenCalled();
+  });
 });
 
 describe("DELETE /api/auth/tokens/:id", () => {
@@ -151,6 +164,35 @@ describe("DELETE /api/auth/tokens/:id", () => {
       headers: { Authorization: `Bearer ${tok}` },
     });
     expect(res.status).toBe(404);
+  });
+
+  it("rejects a PAT revoking a different token with 403 (SHAN-592)", async () => {
+    mockLookupActiveToken.mockResolvedValue({
+      tokenId: "22222222-2222-4222-8222-222222222222",
+      userId: "user-1",
+      scopes: ["reactions:write"],
+    });
+    const res = await app.request(`/api/auth/tokens/${TOKEN_ID}`, {
+      method: "DELETE",
+      headers: { Authorization: "Bearer pat_someactivetoken" },
+    });
+    expect(res.status).toBe(403);
+    expect(mockRevoke).not.toHaveBeenCalled();
+  });
+
+  it("lets a PAT revoke itself", async () => {
+    mockLookupActiveToken.mockResolvedValue({
+      tokenId: TOKEN_ID,
+      userId: "user-1",
+      scopes: [],
+    });
+    mockRevoke.mockResolvedValue(true);
+    const res = await app.request(`/api/auth/tokens/${TOKEN_ID}`, {
+      method: "DELETE",
+      headers: { Authorization: "Bearer pat_someactivetoken" },
+    });
+    expect(res.status).toBe(204);
+    expect(mockRevoke).toHaveBeenCalledWith("user-1", TOKEN_ID);
   });
 
   it("returns 400 on a malformed (non-UUID) id without touching the DB", async () => {

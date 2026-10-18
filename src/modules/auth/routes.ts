@@ -6,7 +6,7 @@ import { users } from "@/db/schema";
 import { eq } from "drizzle-orm";
 import { createRemoteJWKSet, jwtVerify, SignJWT } from "jose";
 import { JWT_SECRET } from "./config";
-import { optionalAuth, requireAuth } from "./middleware";
+import { optionalAuth, requireAuth, requireBrowserSession } from "./middleware";
 import { mintToken, listTokens, revokeToken } from "./tokens";
 
 const GOOGLE_JWKS = createRemoteJWKSet(
@@ -47,7 +47,9 @@ const googleAuthSchema = z.object({
   credential: z.string().max(8192),
 });
 
-type AuthEnv = { Variables: { userId: string | null; tokenScopes: string[] | null } };
+type AuthEnv = {
+  Variables: { userId: string | null; tokenScopes: string[] | null; tokenId: string | null };
+};
 export const authRoutes = new Hono<AuthEnv>();
 
 /**
@@ -245,7 +247,10 @@ authRoutes.post("/tokens", requireAuth, zValidator("json", mintTokenSchema), asy
   return c.json({ id, token: raw }, 201);
 });
 
-authRoutes.get("/tokens", requireAuth, async (c) => {
+// SHAN-592: listing and revoking take minting's browser-session rule. With
+// requireAuth alone, a PAT holding only reactions:write could read every
+// other token on the account and revoke them all.
+authRoutes.get("/tokens", requireAuth, requireBrowserSession("Listing tokens"), async (c) => {
   const userId = c.get("userId") as string;
   const tokens = await listTokens(userId);
   return c.json({ tokens });
@@ -263,6 +268,13 @@ authRoutes.delete(
   async (c) => {
     const userId = c.get("userId") as string;
     const { id: tokenId } = c.req.valid("param");
+    // A PAT may still revoke itself: whoever holds a leaked token can kill it.
+    if (c.get("tokenScopes") !== null && c.get("tokenId") !== tokenId) {
+      return c.json(
+        { error: "Revoking another token requires a browser session, not a PAT" },
+        403
+      );
+    }
     const ok = await revokeToken(userId, tokenId);
     return ok ? c.body(null, 204) : c.json({ error: "Token not found" }, 404);
   },
