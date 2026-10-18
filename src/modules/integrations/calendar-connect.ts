@@ -13,7 +13,7 @@ import { z } from "zod";
 import { eq } from "drizzle-orm";
 import { db } from "@/db/client";
 import { userCalendarConnections } from "@/db/schema";
-import { requireAuth } from "@/modules/auth/middleware";
+import { requireAuth, requireBrowserSession } from "@/modules/auth/middleware";
 
 const clientId = () => process.env.GOOGLE_CALENDAR_CLIENT_ID ?? "";
 const clientSecret = () => process.env.GOOGLE_CALENDAR_CLIENT_SECRET ?? "";
@@ -58,7 +58,10 @@ export async function getAccessTokenForUser(userId: string): Promise<string | nu
 type CalEnv = { Variables: { userId: string } };
 
 export const calendarConnectRoutes = new Hono<CalEnv>();
-calendarConnectRoutes.use("*", requireAuth);
+// Browser only (SHAN-593): there is no calendar scope, so requireAuth alone
+// would let any PAT swap the stored refresh token for another Google
+// account's, sending later calendar exports there.
+calendarConnectRoutes.use("*", requireAuth, requireBrowserSession("Calendar connect"));
 
 /** Connection state + the client id the frontend popup must use. */
 calendarConnectRoutes.get("/status", async (c) => {

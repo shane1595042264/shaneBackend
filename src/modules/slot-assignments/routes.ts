@@ -4,12 +4,14 @@ import { zValidator } from "@/modules/shared/zod-validator";
 import { z } from "zod";
 import { db } from "@/db/client";
 import { slotAssignments } from "@/db/schema";
-import { requireAuth } from "@/modules/auth/middleware";
+import { requireAuth, requireBrowserSession } from "@/modules/auth/middleware";
 
 type AuthEnv = { Variables: { userId: string } };
 const slotRoutes = new Hono<AuthEnv>();
 
-slotRoutes.use("*", requireAuth);
+// Browser only (SHAN-593): the layout has no PAT scope, so requireAuth alone
+// would let any token replace it.
+slotRoutes.use("*", requireAuth, requireBrowserSession("Slot assignments"));
 
 // GET / — get the user's slot assignments
 slotRoutes.get("/", async (c) => {
@@ -30,8 +32,7 @@ slotRoutes.get("/", async (c) => {
 
 // The periodic table has 118 elements, so a legitimate layout maps at most
 // 118 slots. Cap the record so a client can't persist an oversized JSONB blob
-// under their user row — the route is auth-only (no scope), so bounding the
-// payload is the only guard on write size.
+// under their user row — bounding the payload is the only guard on write size.
 const MAX_SLOTS = 118;
 
 const putSchema = z.object({

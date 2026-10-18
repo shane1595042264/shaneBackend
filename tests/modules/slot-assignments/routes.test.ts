@@ -13,14 +13,22 @@ vi.mock("@/db/schema", () => ({
 vi.mock("drizzle-orm", () => ({
   eq: vi.fn((c, v) => ({ c, v })),
 }));
-vi.mock("@/modules/auth/middleware", () => ({
-  requireAuth: async (c: any, next: any) => {
-    const u = c.req.header("X-Test-User");
-    if (!u) return c.json({ error: "auth" }, 401);
-    c.set("userId", u);
-    await next();
-  },
-}));
+// Fake only the token resolution; keep the real requireBrowserSession so the
+// PAT gate is exercised as shipped. X-Test-Scopes marks the caller as a PAT.
+vi.mock("@/modules/auth/middleware", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/modules/auth/middleware")>();
+  return {
+    ...actual,
+    requireAuth: async (c: any, next: any) => {
+      const u = c.req.header("X-Test-User");
+      if (!u) return c.json({ error: "auth" }, 401);
+      const scopes = c.req.header("X-Test-Scopes");
+      c.set("userId", u);
+      c.set("tokenScopes", scopes === undefined ? null : scopes.split(",").filter(Boolean));
+      await next();
+    },
+  };
+});
 
 // A thenable chain: every method returns the chain, and awaiting it resolves
 // to `rows` (mirrors the drizzle query-builder shape the route awaits).
@@ -150,5 +158,38 @@ describe("PUT /api/slot-assignments", () => {
     const res = await put({ assignments: { "1": " app-h", "2": "app-h " } });
     expect(res.status).toBe(400);
     expect(mockInsert).not.toHaveBeenCalled();
+  });
+});
+
+// SHAN-593: the layout has no PAT scope, so every PAT is refused whatever it
+// carries. Before the gate, requireAuth alone let any token replace the map.
+describe("slot assignments are browser-session only", () => {
+  const pat = { "X-Test-User": "u1", "X-Test-Scopes": "reactions:write" };
+
+  it("403s a PAT on GET before reading the row", async () => {
+    const res = await app.request("/api/slot-assignments", { headers: pat });
+    expect(res.status).toBe(403);
+    expect((await res.json()).error).toMatch(/browser session/);
+    expect(mockSelect).not.toHaveBeenCalled();
+  });
+
+  it("403s a PAT on PUT before writing", async () => {
+    const res = await app.request("/api/slot-assignments", {
+      method: "PUT",
+      headers: { ...pat, "Content-Type": "application/json" },
+      body: JSON.stringify({ assignments: { "1": "evil" } }),
+    });
+    expect(res.status).toBe(403);
+    expect(mockInsert).not.toHaveBeenCalled();
+  });
+
+  it("403s a PAT that carries every scope", async () => {
+    const res = await app.request("/api/slot-assignments", {
+      headers: {
+        "X-Test-User": "u1",
+        "X-Test-Scopes": "entries:write,suggestions:write,comments:write,reactions:write,knowledge:write,trips:write,practice:write",
+      },
+    });
+    expect(res.status).toBe(403);
   });
 });

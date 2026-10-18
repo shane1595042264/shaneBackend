@@ -4,12 +4,19 @@ import { Hono } from "hono";
 
 // Passthrough auth so the request reaches the per-route zValidator (the connect
 // route mounts requireAuth on "*", which would otherwise 401 before validation).
-vi.mock("@/modules/auth/middleware", () => ({
-  requireAuth: async (c: any, next: any) => {
-    c.set("userId", "test-user");
-    return next();
-  },
-}));
+// The real requireBrowserSession stays; X-Test-Scopes marks the caller as a PAT.
+vi.mock("@/modules/auth/middleware", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/modules/auth/middleware")>();
+  return {
+    ...actual,
+    requireAuth: async (c: any, next: any) => {
+      const scopes = c.req.header("X-Test-Scopes");
+      c.set("userId", "test-user");
+      c.set("tokenScopes", scopes === undefined ? null : scopes.split(",").filter(Boolean));
+      return next();
+    },
+  };
+});
 
 // The module imports db + schema at load time; stub them so no real connection
 // is opened. The bound rejection short-circuits before any db call anyway.
@@ -61,5 +68,32 @@ describe("POST /api/integrations/calendar/connect code bound", () => {
     expect(fetchSpy).toHaveBeenCalledTimes(1);
     expect(res.status).toBe(502);
     fetchSpy.mockRestore();
+  });
+});
+
+// SHAN-593: there is no calendar scope, so any PAT used to be able to swap the
+// stored refresh token for another Google account's, or drop the connection.
+describe("calendar connect is browser-session only", () => {
+  const pat = { "X-Test-Scopes": "reactions:write" };
+
+  it("403s a PAT on POST /connect before the Google code exchange", async () => {
+    const fetchSpy = vi.spyOn(global, "fetch");
+    const res = await app.request("/api/integrations/calendar/connect", {
+      method: "POST",
+      headers: { ...pat, "Content-Type": "application/json" },
+      body: JSON.stringify({ code: "a-code-from-another-account" }),
+    });
+    expect(res.status).toBe(403);
+    expect((await res.json()).error).toMatch(/browser session/);
+    expect(fetchSpy).not.toHaveBeenCalled();
+    fetchSpy.mockRestore();
+  });
+
+  it("403s a PAT on DELETE /connect and on GET /status", async () => {
+    // db is stubbed as {}, so reaching either handler would throw a 500.
+    const del = await app.request("/api/integrations/calendar/connect", { method: "DELETE", headers: pat });
+    expect(del.status).toBe(403);
+    const status = await app.request("/api/integrations/calendar/status", { headers: pat });
+    expect(status.status).toBe(403);
   });
 });
