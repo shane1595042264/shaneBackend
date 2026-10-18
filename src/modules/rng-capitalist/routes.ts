@@ -9,7 +9,7 @@ import { classifyProduct } from "./classifier";
 import { generateText } from "@/modules/shared/llm";
 import { calculateThreshold, rollD20, determineVerdict } from "./engine";
 import { createLinkToken, exchangePublicToken, getCurrentBalance, getLastMonthSpend, isPlaidConfigured } from "./plaid";
-import { requireAuth } from "@/modules/auth/middleware";
+import { requireAuth, requireBrowserSession } from "@/modules/auth/middleware";
 import { createPATRateLimit } from "@/modules/shared/rate-limit";
 import { trimmedOptional } from "@/modules/shared/validators";
 import { httpUrlSchema } from "@/modules/shared/outbound-url";
@@ -24,9 +24,9 @@ rngRoutes.use("*", requireAuth);
 // Per-PAT rate limits. JWTs (browser sessions) bypass — tokenId is null.
 // evaluate fires the LLM (classifyProduct on URL scrape OR generateText on
 // manual input) on every request, so it gets the tight bucket — mirrors
-// vocabulary-enrich. plaid bucket covers every endpoint that hits Plaid's API:
-// link-token + exchange (setup) and /budget (read-on-render, hits
-// accountsBalanceGet uncached per plaid.ts).
+// vocabulary-enrich. The plaid bucket covers /budget (read-on-render, hits
+// accountsBalanceGet uncached per plaid.ts); the link-token + exchange setup
+// routes are browser-only (SHAN-594), so no PAT ever reaches them.
 const evaluateRateLimit = createPATRateLimit({
   bucket: "rng-capitalist-evaluate",
   limitPerMinute: 10,
@@ -221,7 +221,12 @@ rngRoutes.get("/bans", async (c) => {
   return c.json({ bans });
 });
 
-rngRoutes.post("/plaid/link-token", plaidRateLimit, async (c) => {
+// Bank linking is browser-only (SHAN-594). exchange inserts a new access token
+// and every read uses the newest, so a PAT that could reach these routes could
+// swap the owner's bank for its own and steer every budget and verdict.
+const bankLinking = requireBrowserSession("Bank linking");
+
+rngRoutes.post("/plaid/link-token", bankLinking, async (c) => {
   if (!isPlaidConfigured()) return c.json({ error: "Plaid not configured" }, 500);
   const userId = c.get("userId");
   const linkToken = await createLinkToken(userId);
@@ -229,7 +234,7 @@ rngRoutes.post("/plaid/link-token", plaidRateLimit, async (c) => {
 });
 
 export const exchangeSchema = z.object({ public_token: z.string().max(500) });
-rngRoutes.post("/plaid/exchange", plaidRateLimit, zValidator("json", exchangeSchema), async (c) => {
+rngRoutes.post("/plaid/exchange", bankLinking, zValidator("json", exchangeSchema), async (c) => {
   const userId = c.get("userId");
   const { public_token } = c.req.valid("json");
   await exchangePublicToken(public_token, userId);

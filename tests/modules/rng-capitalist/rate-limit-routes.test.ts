@@ -1,8 +1,9 @@
 // Per-PAT rate limits on the rng-capitalist write surface. evaluate fires the
 // LLM on every request (manual-input path → generateText, URL-scrape path →
 // classifyProduct), so it has its own tight bucket. The plaid bucket covers
-// every endpoint that hits Plaid's API — plaid/link-token + plaid/exchange
-// (setup) and /budget (read-on-render). JWTs (no tokenId) bypass.
+// /budget (read-on-render, hits Plaid's API). The plaid/link-token + exchange
+// setup routes are browser-only (SHAN-594): every PAT gets 403 before Plaid.
+// JWTs (no tokenId) bypass the limiters.
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { Hono } from "hono";
 import { __resetRateLimitBuckets } from "@/modules/shared/rate-limit";
@@ -60,8 +61,10 @@ vi.mock("@/modules/rng-capitalist/plaid", () => ({
 
 // Same auth shape as journal/rate-limit-routes.test.ts: X-Test-Token flips the
 // request from JWT to PAT by setting tokenId. The limiter only counts when
-// tokenId is non-null.
-vi.mock("@/modules/auth/middleware", () => ({
+// tokenId is non-null. requireBrowserSession is the real one, so the PAT gate
+// on bank linking is exercised as shipped.
+vi.mock("@/modules/auth/middleware", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/modules/auth/middleware")>()),
   optionalAuth: async (c: any, next: any) => {
     c.set("userId", c.req.header("X-Test-User") ?? null);
     const token = c.req.header("X-Test-Token");
@@ -210,40 +213,40 @@ describe("rng-capitalist write rate limits (per PAT)", () => {
     });
     expect(evaluateBlocked.status).toBe(429);
 
-    // plaid/link-token still goes through — separate bucket.
-    const link = await app.request("/api/rng/plaid/link-token", {
-      method: "POST",
-      headers,
-    });
-    expect(link.status).toBe(200);
+    // budget still goes through — separate bucket.
+    mockGetCurrentBalance.mockResolvedValue(1000);
+    mockGetLastMonthSpend.mockResolvedValue(100);
+    const budget = await app.request("/api/rng/budget", { headers });
+    expect(budget.status).toBe(200);
   });
 
-  it("plaid/link-token and plaid/exchange share one bucket (combined counter)", async () => {
-    const headers = patHeaders();
-    // Mix link-token + exchange calls to hit 10 total.
-    for (let i = 0; i < 5; i++) {
-      const r = await app.request("/api/rng/plaid/link-token", {
-        method: "POST",
-        headers,
-      });
-      expect(r.status).toBe(200);
-    }
-    for (let i = 0; i < 5; i++) {
-      const r = await app.request("/api/rng/plaid/exchange", {
-        method: "POST",
-        headers,
-        body: JSON.stringify({ public_token: "ptok-xyz" }),
-      });
-      expect(r.status).toBe(200);
-    }
-    // 11th plaid call — either endpoint — is 429.
-    const blocked = await app.request("/api/rng/plaid/exchange", {
+  // SHAN-594: exchange inserts a new access token and every read uses the
+  // newest, so a PAT here could swap the owner's bank for its own.
+  it("PATs get 403 on plaid/link-token and plaid/exchange, whatever their scopes, and never reach Plaid", async () => {
+    const link = await app.request("/api/rng/plaid/link-token", { method: "POST", headers: patHeaders() });
+    expect(link.status).toBe(403);
+    expect(await link.json()).toEqual({ error: "Bank linking requires a browser session, not a PAT" });
+    const exchange = await app.request("/api/rng/plaid/exchange", {
       method: "POST",
-      headers,
+      headers: patHeaders(),
       body: JSON.stringify({ public_token: "ptok-xyz" }),
     });
-    expect(blocked.status).toBe(429);
-    expect(blocked.headers.get("Retry-After")).toBe("60");
+    expect(exchange.status).toBe(403);
+    expect(mockCreateLinkToken).not.toHaveBeenCalled();
+    expect(mockExchangePublicToken).not.toHaveBeenCalled();
+  });
+
+  it("a browser session can still link a bank", async () => {
+    const link = await app.request("/api/rng/plaid/link-token", { method: "POST", headers: jwtHeaders() });
+    expect(link.status).toBe(200);
+    expect(await link.json()).toEqual({ link_token: "link_token_test" });
+    const exchange = await app.request("/api/rng/plaid/exchange", {
+      method: "POST",
+      headers: jwtHeaders(),
+      body: JSON.stringify({ public_token: "ptok-xyz" }),
+    });
+    expect(exchange.status).toBe(200);
+    expect(mockExchangePublicToken).toHaveBeenCalledWith("ptok-xyz", "u-author");
   });
 
   it("budget joins the plaid bucket — 429s a PAT after 10 GETs in a minute", async () => {
@@ -267,31 +270,5 @@ describe("rng-capitalist write rate limits (per PAT)", () => {
       const r = await app.request("/api/rng/budget", { headers });
       expect(r.status).toBe(200);
     }
-  });
-
-  it("budget shares the plaid bucket with link-token + exchange (combined counter across all three)", async () => {
-    const headers = patHeaders();
-    mockGetCurrentBalance.mockResolvedValue(1000);
-    mockGetLastMonthSpend.mockResolvedValue(100);
-    // Mix all three plaid-bucket endpoints to hit 10 total.
-    for (let i = 0; i < 4; i++) {
-      const r = await app.request("/api/rng/budget", { headers });
-      expect(r.status).toBe(200);
-    }
-    for (let i = 0; i < 3; i++) {
-      const r = await app.request("/api/rng/plaid/link-token", { method: "POST", headers });
-      expect(r.status).toBe(200);
-    }
-    for (let i = 0; i < 3; i++) {
-      const r = await app.request("/api/rng/plaid/exchange", {
-        method: "POST",
-        headers,
-        body: JSON.stringify({ public_token: "ptok-xyz" }),
-      });
-      expect(r.status).toBe(200);
-    }
-    // 11th plaid-bucket call — budget — is 429.
-    const blocked = await app.request("/api/rng/budget", { headers });
-    expect(blocked.status).toBe(429);
   });
 });

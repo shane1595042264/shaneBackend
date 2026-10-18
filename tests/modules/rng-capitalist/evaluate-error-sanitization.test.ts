@@ -55,7 +55,8 @@ vi.mock("@/modules/rng-capitalist/plaid", () => ({
   isPlaidConfigured: mockIsPlaidConfigured,
 }));
 
-vi.mock("@/modules/auth/middleware", () => ({
+vi.mock("@/modules/auth/middleware", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/modules/auth/middleware")>()),
   optionalAuth: async (c: any, next: any) => {
     c.set("userId", c.req.header("X-Test-User") ?? null);
     c.set("tokenScopes", null);
