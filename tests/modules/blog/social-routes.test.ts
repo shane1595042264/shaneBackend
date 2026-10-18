@@ -300,6 +300,16 @@ describe("POST /api/blog/posts/:slug/reactions", () => {
     expect(await res.json()).toEqual({ result: "removed" });
   });
 
+  it("404s when the post is deleted between the lookup and the toggle (SHAN-591)", async () => {
+    mockToggleReaction.mockResolvedValue(null);
+    const res = await app.request("/api/blog/posts/hello-world/reactions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Test-User": "u2" },
+      body: JSON.stringify({ emoji: "rocket" }),
+    });
+    expect(res.status).toBe(404);
+  });
+
   it("400s an emoji outside the shared allowlist instead of letting the enum cast throw", async () => {
     const res = await app.request("/api/blog/posts/hello-world/reactions", {
       method: "POST",

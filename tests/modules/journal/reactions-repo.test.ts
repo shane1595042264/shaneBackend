@@ -13,7 +13,7 @@ vi.mock("@/db/schema", () => ({ entryReactions: {}, commentReactions: {} }));
 vi.mock("drizzle-orm", () => ({
   eq: vi.fn((c, v) => ({ c, v })),
   and: vi.fn((...a) => ({ and: a })),
-  sql: vi.fn(() => ({ __sql: true })),
+  sql: vi.fn((strings: TemplateStringsArray, ...values: unknown[]) => ({ __sql: strings.join("?"), values })),
 }));
 
 function chain(rows: unknown[]) {
@@ -51,6 +51,7 @@ describe("toggleEntryReaction", () => {
       select: vi.fn(() => chain([])),
       insert: vi.fn(() => ({ values: vi.fn(() => Promise.resolve()) })),
       delete: vi.fn(),
+      execute: vi.fn(() => Promise.resolve()),
     };
     mockTransaction.mockImplementation(async (fn: any) => fn(tx));
     expect(await toggleEntryReaction("u1", "e1", "rocket")).toBe("added");
@@ -63,20 +64,68 @@ describe("toggleEntryReaction", () => {
       select: vi.fn(() => chain([{ id: "r1" }])),
       delete: vi.fn(() => ({ where: vi.fn(() => Promise.resolve()) })),
       insert: vi.fn(),
+      execute: vi.fn(() => Promise.resolve()),
     };
     mockTransaction.mockImplementation(async (fn: any) => fn(tx));
     expect(await toggleEntryReaction("u1", "e1", "rocket")).toBe("removed");
     expect(tx.delete).toHaveBeenCalledTimes(1);
     expect(tx.insert).not.toHaveBeenCalled();
   });
+
+  // SHAN-591: two concurrent toggles both read "no row" without the lock, and
+  // the second insert 500s on the (user, entry, emoji) unique key.
+  it("takes the per-reaction advisory lock before reading", async () => {
+    const order: string[] = [];
+    const tx = {
+      execute: vi.fn(() => { order.push("lock"); return Promise.resolve(); }),
+      select: vi.fn(() => { order.push("select"); return chain([]); }),
+      insert: vi.fn(() => ({ values: vi.fn(() => Promise.resolve()) })),
+      delete: vi.fn(),
+    };
+    mockTransaction.mockImplementation(async (fn: any) => fn(tx));
+    await toggleEntryReaction("u1", "e1", "rocket");
+    expect(order).toEqual(["lock", "select"]);
+    const lockSql = (tx.execute.mock.calls[0] as unknown[])[0] as { __sql: string; values: unknown[] };
+    expect(lockSql.__sql).toContain("pg_advisory_xact_lock(hashtextextended(");
+    expect(lockSql.values).toEqual(["entry:u1:e1:rocket"]);
+  });
+
+  it("returns null when the entry was deleted mid-toggle (FK violation)", async () => {
+    mockTransaction.mockRejectedValue(Object.assign(new Error("fk"), { cause: { code: "23503" } }));
+    expect(await toggleEntryReaction("u1", "e1", "rocket")).toBeNull();
+  });
+
+  it("rethrows any other error", async () => {
+    mockTransaction.mockRejectedValue(Object.assign(new Error("boom"), { code: "23505" }));
+    await expect(toggleEntryReaction("u1", "e1", "rocket")).rejects.toThrow("boom");
+  });
 });
 
 describe("toggleCommentReaction", () => {
+  it("locks on a comment-scoped key, distinct from entry reactions", async () => {
+    const tx = {
+      execute: vi.fn(() => Promise.resolve()),
+      select: vi.fn(() => chain([])),
+      insert: vi.fn(() => ({ values: vi.fn(() => Promise.resolve()) })),
+      delete: vi.fn(),
+    };
+    mockTransaction.mockImplementation(async (fn: any) => fn(tx));
+    await toggleCommentReaction("u1", "c1", "heart");
+    const lockSql = (tx.execute.mock.calls[0] as unknown[])[0] as { values: unknown[] };
+    expect(lockSql.values).toEqual(["comment:u1:c1:heart"]);
+  });
+
+  it("returns null when the comment was deleted mid-toggle", async () => {
+    mockTransaction.mockRejectedValue(Object.assign(new Error("fk"), { code: "23503" }));
+    expect(await toggleCommentReaction("u1", "c1", "heart")).toBeNull();
+  });
+
   it("inserts when no existing reaction", async () => {
     const tx = {
       select: vi.fn(() => chain([])),
       insert: vi.fn(() => ({ values: vi.fn(() => Promise.resolve()) })),
       delete: vi.fn(),
+      execute: vi.fn(() => Promise.resolve()),
     };
     mockTransaction.mockImplementation(async (fn: any) => fn(tx));
     expect(await toggleCommentReaction("u1", "c1", "heart")).toBe("added");
@@ -87,6 +136,7 @@ describe("toggleCommentReaction", () => {
       select: vi.fn(() => chain([{ id: "r1" }])),
       delete: vi.fn(() => ({ where: vi.fn(() => Promise.resolve()) })),
       insert: vi.fn(),
+      execute: vi.fn(() => Promise.resolve()),
     };
     mockTransaction.mockImplementation(async (fn: any) => fn(tx));
     expect(await toggleCommentReaction("u1", "c1", "heart")).toBe("removed");

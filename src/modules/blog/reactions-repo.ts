@@ -8,14 +8,21 @@
 import { and, eq, sql } from "drizzle-orm";
 import { db } from "@/db/client";
 import { blogPostReactions } from "@/db/schema";
-import type { Emoji } from "@/modules/journal/reactions-repo";
+import {
+  isForeignKeyViolation,
+  lockReaction,
+  type Emoji,
+} from "@/modules/journal/reactions-repo";
 
+// SHAN-591: serialized like the journal toggles (see lockReaction); null means
+// the post was deleted between the route's lookup and the insert.
 export async function togglePostReaction(
   userId: string,
   postId: string,
   emoji: Emoji
-): Promise<"added" | "removed"> {
+): Promise<"added" | "removed" | null> {
   return db.transaction(async (tx) => {
+    await lockReaction(tx, `post:${userId}:${postId}:${emoji}`);
     const existing = await tx
       .select({ id: blogPostReactions.id })
       .from(blogPostReactions)
@@ -32,7 +39,10 @@ export async function togglePostReaction(
       return "removed";
     }
     await tx.insert(blogPostReactions).values({ userId, postId, emoji });
-    return "added";
+    return "added" as const;
+  }).catch((err) => {
+    if (isForeignKeyViolation(err)) return null;
+    throw err;
   });
 }
 

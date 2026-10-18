@@ -156,6 +156,17 @@ describe("POST /api/journal/entries/:date/reactions", () => {
     expect(res.status).toBe(404);
   });
 
+  it("404 when the entry is deleted between the lookup and the toggle (SHAN-591)", async () => {
+    mockGetByDate.mockResolvedValue({ entry: { id: "e1" }, currentVersion: {} });
+    mockToggleEntry.mockResolvedValue(null);
+    const res = await app.request("/api/journal/entries/2026-05-03/reactions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Test-User": "u1" },
+      body: JSON.stringify({ emoji: "rocket" }),
+    });
+    expect(res.status).toBe(404);
+  });
+
   it("401 without auth", async () => {
     const res = await app.request("/api/journal/entries/2026-05-03/reactions", {
       method: "POST",
@@ -199,6 +210,17 @@ describe("POST /api/journal/comments/:id/reactions", () => {
     });
     expect(res.status).toBe(404);
     expect(mockToggleComment).not.toHaveBeenCalled();
+  });
+
+  it("404 when the comment is deleted between the lookup and the toggle (SHAN-591)", async () => {
+    mockGetComment.mockResolvedValue({ id: "c1" });
+    mockToggleComment.mockResolvedValue(null);
+    const res = await app.request(`/api/journal/comments/${CID}/reactions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Test-User": "u1" },
+      body: JSON.stringify({ emoji: "heart" }),
+    });
+    expect(res.status).toBe(404);
   });
 });
 

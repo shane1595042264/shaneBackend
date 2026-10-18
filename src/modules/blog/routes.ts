@@ -545,6 +545,7 @@ blogRoutes.post(
     const row = await getPostBySlug(c.req.valid("param").slug, userId);
     if (!row) return c.json({ error: "Not found" }, 404);
     const result = await togglePostReaction(userId, row.post.id, emoji);
+    if (!result) return c.json({ error: "Not found" }, 404);
     return c.json({ result });
   }
 );

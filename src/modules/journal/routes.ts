@@ -1017,6 +1017,7 @@ journalRoutes.post(
     const row = await getEntryByDate(c.req.valid("param").date);
     if (!row) return c.json({ error: "Not found" }, 404);
     const result = await toggleEntryReaction(userId, row.entry.id, emoji);
+    if (!result) return c.json({ error: "Not found" }, 404);
     return c.json({ result });
   }
 );
@@ -1037,6 +1038,7 @@ journalRoutes.post(
     const comment = await getComment(commentId);
     if (!comment) return c.json({ error: "Not found" }, 404);
     const result = await toggleCommentReaction(userId, commentId, emoji);
+    if (!result) return c.json({ error: "Not found" }, 404);
     return c.json({ result });
   }
 );

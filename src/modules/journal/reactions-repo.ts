@@ -19,12 +19,32 @@ export function isAllowedEmoji(e: string): e is Emoji {
   return (ALLOWED_EMOJI as readonly string[]).includes(e);
 }
 
+type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+// SHAN-591: a toggle is read-then-write, so two concurrent toggles of the same
+// reaction both read "no row" under READ COMMITTED and the second insert hits
+// the (user, target, emoji) unique key as an unhandled 500. Serializing on a
+// transaction-scoped advisory lock keyed on that triple makes the waiter's
+// select (a fresh snapshot per statement) see the first toggle's committed
+// result, so two toggles add then remove, as two clicks should. The lock is
+// released at commit or rollback; a hash collision only costs extra waiting.
+export async function lockReaction(tx: Tx, key: string): Promise<void> {
+  await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${key}, 0))`);
+}
+
+// The routes check the target exists before toggling; one deleted in between
+// fails the insert's foreign key. Callers map this to a 404.
+export function isForeignKeyViolation(err: any): boolean {
+  return err?.code === "23503" || err?.cause?.code === "23503";
+}
+
 export async function toggleEntryReaction(
   userId: string,
   entryId: string,
   emoji: Emoji
-): Promise<"added" | "removed"> {
+): Promise<"added" | "removed" | null> {
   return db.transaction(async (tx) => {
+    await lockReaction(tx, `entry:${userId}:${entryId}:${emoji}`);
     const existing = await tx
       .select({ id: entryReactions.id })
       .from(entryReactions)
@@ -41,7 +61,10 @@ export async function toggleEntryReaction(
       return "removed";
     }
     await tx.insert(entryReactions).values({ userId, entryId, emoji });
-    return "added";
+    return "added" as const;
+  }).catch((err) => {
+    if (isForeignKeyViolation(err)) return null;
+    throw err;
   });
 }
 
@@ -49,8 +72,9 @@ export async function toggleCommentReaction(
   userId: string,
   commentId: string,
   emoji: Emoji
-): Promise<"added" | "removed"> {
+): Promise<"added" | "removed" | null> {
   return db.transaction(async (tx) => {
+    await lockReaction(tx, `comment:${userId}:${commentId}:${emoji}`);
     const existing = await tx
       .select({ id: commentReactions.id })
       .from(commentReactions)
@@ -67,7 +91,10 @@ export async function toggleCommentReaction(
       return "removed";
     }
     await tx.insert(commentReactions).values({ userId, commentId, emoji });
-    return "added";
+    return "added" as const;
+  }).catch((err) => {
+    if (isForeignKeyViolation(err)) return null;
+    throw err;
   });
 }
 
