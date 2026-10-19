@@ -522,6 +522,11 @@ export const journalComments = pgTable(
     // one. Text, not offsets, so a note survives edits that leave its words
     // alone. Only ever set on a top-level comment; replies live in its thread.
     anchor: jsonb("anchor"),
+    // SHAN-596: how the note came to be. Null for anything a person typed;
+    // {kind: "ai", provider, model} for an Explain answer saved as a note,
+    // which the reader paid for with their own key and which doubles as the
+    // cache that stops the same selection being explained twice.
+    meta: jsonb("meta"),
     editedAt: timestamp("edited_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
@@ -1733,5 +1738,105 @@ export const blogPostReactions = pgTable(
     // leads with user_id and can't serve it — same reason entry_reactions
     // carries its own entry_id index.
     index("blog_post_reactions_post_id_idx").on(t.postId),
+  ],
+);
+
+// ------------------------------------------------------------------
+// SHAN-596: bring-your-own-key AI (Explain) and private reader notes
+// ------------------------------------------------------------------
+
+// One key per provider per user. The key itself is AES-256-GCM sealed
+// (modules/ai/crypto.ts) and never leaves the server again; `keyHint` is the
+// last four characters, all the settings page ever shows.
+export const userAiKeys = pgTable(
+  "user_ai_keys",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    // "gemini" | "openai" | "anthropic" | "xai", detected from the key's format.
+    provider: varchar("provider", { length: 20 }).notNull(),
+    keySealed: text("key_sealed").notNull(),
+    keyHint: varchar("key_hint", { length: 8 }).notNull(),
+    // Text models the key could list when it was last checked, cheapest first.
+    models: jsonb("models").notNull().default([]),
+    // The cheapest model that actually answered the validation call.
+    defaultModel: varchar("default_model", { length: 120 }).notNull(),
+    // Chosen in Settings; null means "the cheapest that works" (defaultModel).
+    preferredModel: varchar("preferred_model", { length: 120 }),
+    // "ok" | "failing": flipped when an Explain call is refused for the key.
+    status: varchar("status", { length: 12 }).notNull().default("ok"),
+    lastError: text("last_error"),
+    lastCheckedAt: timestamp("last_checked_at", { withTimezone: true }).notNull().defaultNow(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [unique("user_ai_keys_user_provider_unique").on(t.userId, t.provider)],
+);
+
+export const userAiSettings = pgTable("user_ai_settings", {
+  userId: uuid("user_id")
+    .primaryKey()
+    .references(() => users.id, { onDelete: "cascade" }),
+  // Null: use whichever key works, in the order the keys were added.
+  preferredProvider: varchar("preferred_provider", { length: 20 }),
+  // Whether new notes and explanations are also handed to the Knowledge
+  // classifier to become cards. On unless the reader turns it off.
+  notesToKnowledge: boolean("notes_to_knowledge").notNull().default(true),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+// Every model call made with a reader's key, for the usage dashboard. Cost is
+// an estimate in millionths of a dollar from modules/ai/catalog.ts; null when
+// the model's price is unknown.
+export const aiUsageEvents = pgTable(
+  "ai_usage_events",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    provider: varchar("provider", { length: 20 }).notNull(),
+    model: varchar("model", { length: 120 }).notNull(),
+    // "explain" | "validate"
+    feature: varchar("feature", { length: 20 }).notNull(),
+    // "journal" | "blog" | "knowledge" for explain; null for key checks.
+    surface: varchar("surface", { length: 20 }),
+    inputTokens: integer("input_tokens").notNull().default(0),
+    outputTokens: integer("output_tokens").notNull().default(0),
+    costMicroUsd: integer("cost_micro_usd"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("ai_usage_events_user_created_idx").on(t.userId, t.createdAt)],
+);
+
+// Notes a reader pins to text on public pages (a blog post, a knowledge card).
+// Private to the reader who wrote them, unlike journal notes, which live in
+// journal_comments and are shared with every journal member.
+export const readerNotes = pgTable(
+  "reader_notes",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    // "blog" | "knowledge"
+    surface: varchar("surface", { length: 20 }).notNull(),
+    // The blog post id or the knowledge card id.
+    resourceId: uuid("resource_id").notNull(),
+    parentId: uuid("parent_id"),
+    // {target, quote, prefix, suffix}, as on journal notes. Roots only.
+    anchor: jsonb("anchor"),
+    meta: jsonb("meta"),
+    content: text("content").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("reader_notes_user_resource_idx").on(t.userId, t.surface, t.resourceId),
+    foreignKey({
+      columns: [t.parentId],
+      foreignColumns: [t.id],
+      name: "reader_notes_parent_id_fk",
+    }).onDelete("cascade"),
   ],
 );

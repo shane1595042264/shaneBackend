@@ -14,7 +14,9 @@ const {
   mockGetComment,
   mockGetAppend,
   mockRecordActivity,
+  mockQueueNote,
 } = vi.hoisted(() => ({
+  mockQueueNote: vi.fn(),
   mockRecordActivity: vi.fn().mockResolvedValue(undefined),
   mockGetAppend: vi.fn(),
   mockGetComment: vi.fn(),
@@ -63,6 +65,10 @@ vi.mock("@/modules/journal/comments-repo", () => ({
   updateComment: mockUpdateComment,
   deleteComment: mockDeleteComment,
 }));
+// SHAN-596: a new note is also queued for the knowledge classifier. That runs
+// fire-and-forget against the real LLM chain, so it is mocked out here and its
+// call is what the tests assert on.
+vi.mock("@/modules/knowledge/ingest", () => ({ queueNoteForKnowledge: mockQueueNote }));
 vi.mock("@/modules/journal/appends-repo", () => ({
   createAppend: vi.fn(),
   getAppend: mockGetAppend,
@@ -351,5 +357,42 @@ describe("POST /api/journal/entries/:date/comments with an anchor (SHAN-577)", (
     expect(mockCreateComment.mock.calls[0][0].anchor.prefix).toBe("\u{1F600}");
     const activity = mockRecordActivity.mock.calls.at(-1)?.[0];
     expect(activity.detail.quote).toBe("a".repeat(199));
+  });
+});
+
+describe("journal notes from Explain (SHAN-596)", () => {
+  const post = (body: unknown) =>
+    app.request("/api/journal/entries/2026-05-03/comments", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Test-User": "u1" },
+      body: JSON.stringify(body),
+    });
+  const meta = { kind: "ai", provider: "gemini", model: "gemini-3.5-flash-lite" };
+
+  beforeEach(() => {
+    mockGetByDate.mockResolvedValue({ entry: { id: "e1" }, currentVersion: {} });
+    mockCreateComment.mockResolvedValue({ id: "n1" });
+  });
+
+  it("stores the model that wrote an explanation and queues the note for knowledge", async () => {
+    const res = await post({ content: "It means X.", anchor: { target: "entry", quote: "ring buffer" }, meta });
+    expect(res.status).toBe(201);
+    expect(mockCreateComment).toHaveBeenCalledWith(expect.objectContaining({ meta }));
+    expect(mockQueueNote).toHaveBeenCalledWith({ userId: "u1", quote: "ring buffer", content: "It means X.", app: "journal" });
+  });
+
+  it("queues a typed note too, but never a plain comment", async () => {
+    await post({ content: "mine", anchor: { target: "entry", quote: "q" } });
+    expect(mockQueueNote).toHaveBeenCalledTimes(1);
+    mockQueueNote.mockClear();
+    await post({ content: "plain comment" });
+    expect(mockQueueNote).not.toHaveBeenCalled();
+  });
+
+  it("rejects meta without an anchor, and a meta that is not an AI stamp", async () => {
+    expect((await post({ content: "x", meta })).status).toBe(400);
+    expect((await post({ content: "x", anchor: { target: "entry", quote: "q" }, meta: { kind: "human" } })).status).toBe(400);
+    expect((await post({ content: "x", anchor: { target: "entry", quote: "q" }, meta: { ...meta, provider: "groq" } })).status).toBe(400);
+    expect(mockCreateComment).not.toHaveBeenCalled();
   });
 });

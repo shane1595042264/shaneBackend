@@ -19,6 +19,8 @@ import {
   softDeleteAppend,
 } from "./appends-repo";
 import { recordActivity, listActivity, listActivityForEntry } from "./activity-repo";
+import { noteMetaSchema } from "@/modules/ai/note-schemas";
+import { queueNoteForKnowledge } from "@/modules/knowledge/ingest";
 import { eq, and, desc, asc, lt, gt } from "drizzle-orm";
 import { db } from "@/db/client";
 import { journalEntries } from "@/db/schema";
@@ -853,6 +855,9 @@ const commentBody = z.object({
     })
     .strict()
     .optional(),
+  // SHAN-596: {kind: "ai", provider, model} on an Explain answer saved as a
+  // note. Only meaningful on a note, so only accepted with an anchor.
+  meta: noteMetaSchema.optional(),
 });
 const commentEditBody = z.object({
   content: z
@@ -889,7 +894,7 @@ journalRoutes.post(
     const { date } = c.req.valid("param");
     const row = await getEntryByDate(date);
     if (!row) return c.json({ error: "Not found" }, 404);
-    const { content, parent_comment_id, anchor } = c.req.valid("json");
+    const { content, parent_comment_id, anchor, meta } = c.req.valid("json");
     // SHAN-574: threads are one level deep and the UI only draws replies
     // under a top-level comment on the same entry; anything else is a 201
     // for a comment nobody can see.
@@ -898,6 +903,9 @@ journalRoutes.post(
       if (!parent || parent.entryId !== row.entry.id || parent.parentCommentId !== null) {
         return c.json({ error: "parent_comment_id must be a top-level comment on this entry" }, 400);
       }
+    }
+    if (meta && !anchor) {
+      return c.json({ error: "meta is only allowed on a note (a comment with an anchor)" }, 400);
     }
     if (anchor) {
       // SHAN-577: a reply belongs to its note's thread and is drawn there; an
@@ -920,7 +928,11 @@ journalRoutes.post(
       content,
       parentCommentId: parent_comment_id,
       anchor: anchor ?? null,
+      meta: meta ?? null,
     });
+    // SHAN-596: a new note (typed or explained) also becomes a knowledge card,
+    // unless the author turned that off. Replies stay in the discussion.
+    if (anchor) queueNoteForKnowledge({ userId, quote: anchor.quote, content, app: "journal" });
     await recordActivity({
       entryId: row.entry.id,
       entryDate: date,

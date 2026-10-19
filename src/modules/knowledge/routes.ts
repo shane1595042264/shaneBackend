@@ -6,8 +6,9 @@ import { vocabWords, vocabConnections } from "@/db/schema";
 import { desc, eq, and, or, ilike, sql, inArray } from "drizzle-orm";
 import { enrichWord } from "@/modules/vocabulary/ai-enricher";
 import { enrichPatch } from "@/modules/vocabulary/enrich-patch";
-import { classifyNote, type ClassificationSource } from "./classifier";
+import { classifyNote } from "./classifier";
 import { postToBilibili } from "./bilibili";
+import { ingestSingle, mergeSource, type CallerSource } from "./ingest";
 import { applyLocationDelta, normalizeLocations, computeLongTermMemorized } from "./memorization";
 import { reciteRoutes } from "./recite-routes";
 import { optionalAuth, requireAuth, requireScope } from "@/modules/auth/middleware";
@@ -101,14 +102,6 @@ const batchNotesSchema = z
 const noteSchema = z.union([singleNoteSchema, batchNotesSchema]);
 
 type SingleNoteInput = z.infer<typeof singleNoteSchema>;
-type CallerSource = {
-  app: string | null;
-  book: string | null;
-  author: string | null;
-  location: string | null;
-  rawContext: string | null;
-};
-
 function normalizeSourceInput(input: SingleNoteInput["source"]): CallerSource | null {
   if (input === undefined) return null;
   if (typeof input === "string") {
@@ -121,52 +114,6 @@ function normalizeSourceInput(input: SingleNoteInput["source"]): CallerSource | 
     location: input.location ?? null,
     rawContext: input.rawContext ?? null,
   };
-}
-
-function mergeSource(
-  caller: CallerSource | null,
-  classifier: ClassificationSource | null,
-  originalText: string
-): Record<string, string | null> | null {
-  const app = caller?.app ?? classifier?.app ?? null;
-  const book = caller?.book ?? classifier?.book ?? null;
-  const author = caller?.author ?? classifier?.author ?? null;
-  const location = caller?.location ?? classifier?.location ?? null;
-  const hasAnyMeaningful = [app, book, author, location].some((v) => v !== null);
-  if (!hasAnyMeaningful) return null;
-  const rawContext = caller?.rawContext ?? classifier?.rawContext ?? originalText;
-  return { app, book, author, location, rawContext };
-}
-
-async function ingestSingle(
-  text: string,
-  callerSource: CallerSource | null,
-  createdBy: string | null
-) {
-  const classified = await classifyNote(text);
-  const source = mergeSource(callerSource, classified.source, text);
-  const [entry] = await db
-    .insert(vocabWords)
-    .values({
-      word: classified.word,
-      language: classified.language,
-      category: classified.category,
-      definition: classified.definition || null,
-      pronunciation: classified.pronunciation || null,
-      partOfSpeech: classified.partOfSpeech || null,
-      exampleSentence: classified.exampleSentence || null,
-      labels: classified.labels,
-      aiMetadata: {
-        enrichedAt: new Date().toISOString(),
-        originalNote: text,
-        classifiedCategory: classified.category,
-      },
-      source,
-      createdBy,
-    })
-    .returning();
-  postToBilibili(entry).catch(() => {});
-  return entry;
 }
 
 const singleRateLimit = createPATRateLimit({

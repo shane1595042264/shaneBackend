@@ -25,6 +25,8 @@ export async function createComment(input: {
   content: string;
   parentCommentId?: string | null;
   anchor?: CommentAnchor | null;
+  /** SHAN-596: {kind: "ai", provider, model} on an Explain answer. */
+  meta?: Record<string, unknown> | null;
 }) {
   const [row] = await db
     .insert(journalComments)
@@ -35,6 +37,7 @@ export async function createComment(input: {
       content: input.content,
       parentCommentId: input.parentCommentId ?? null,
       anchor: input.anchor ?? null,
+      meta: input.meta ?? null,
     })
     .returning();
   return row;
