@@ -14,6 +14,8 @@ import {
   foreignKey,
   customType,
   boolean,
+  real,
+  primaryKey,
 } from "drizzle-orm/pg-core";
 
 // Custom pgvector column type
@@ -1838,5 +1840,32 @@ export const readerNotes = pgTable(
       foreignColumns: [t.id],
       name: "reader_notes_parent_id_fk",
     }).onDelete("cascade"),
+  ],
+);
+
+// SHAN-597: where each reader left off in each journal entry, synced across
+// their devices. One row per (reader, entry), overwritten on every save, so
+// scrolling back up moves it back: this is the last place read, not the
+// furthest.
+export const journalReadingPositions = pgTable(
+  "journal_reading_positions",
+  {
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    entryId: uuid("entry_id")
+      .notNull()
+      .references(() => journalEntries.id, { onDelete: "cascade" }),
+    // 0..1 through the entry and its appends; 1 once the end is on screen.
+    progress: real("progress").notNull().default(0),
+    // {block, offset, text}: which text block sat on the reading line, how far
+    // into it, and its opening words, so the spot survives another screen
+    // width. `progress` is the fallback when an edit moved the block.
+    anchor: jsonb("anchor").notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ name: "journal_reading_positions_pk", columns: [t.userId, t.entryId] }),
+    index("journal_reading_positions_user_updated_idx").on(t.userId, t.updatedAt),
   ],
 );

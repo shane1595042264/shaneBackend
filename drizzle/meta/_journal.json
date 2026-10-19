@@ -330,6 +330,13 @@
       "when": 1792382937249,
       "tag": "0046_nifty_ink",
       "breakpoints": true
+    },
+    {
+      "idx": 47,
+      "version": "7",
+      "when": 1792416256984,
+      "tag": "0047_strong_sersi",
+      "breakpoints": true
     }
   ]
 }
