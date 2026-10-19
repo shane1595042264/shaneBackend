@@ -21,7 +21,7 @@ vi.mock("@/modules/ai/repo", () => repo);
 
 import { ProviderError } from "@/modules/ai/providers";
 import { sealKey } from "@/modules/ai/crypto";
-import { KeyCheckError, addKey, buildExplainPrompt, chooseKey, explain } from "@/modules/ai/service";
+import { KeyCheckError, addKey, buildExplainPrompt, chooseKey, explain, recheckKey } from "@/modules/ai/service";
 
 const GEMINI = "AIza" + "B".repeat(35);
 const ok = { text: "ok", inputTokens: 4, outputTokens: 1 };
@@ -97,11 +97,13 @@ describe("explain", () => {
   });
 
   it("marks a key failing when the provider refuses it", async () => {
-    repo.listKeys.mockResolvedValue([{ id: "k1", provider: "openai", status: "ok", keySealed: sealKey("sk-x"), defaultModel: "gpt-5-nano", preferredModel: null }]);
+    const sealed = sealKey("sk-x");
+    repo.listKeys.mockResolvedValue([{ id: "k1", provider: "openai", status: "ok", keySealed: sealed, defaultModel: "gpt-5-nano", preferredModel: null }]);
     repo.getSettings.mockResolvedValue({ preferredProvider: null, notesToKnowledge: true });
     mockGenerate.mockRejectedValue(new ProviderError("quota", 429, "You exceeded your current quota"));
     await expect(explain("u1", input)).rejects.toMatchObject({ code: "provider", kind: "quota" });
-    expect(repo.updateKey).toHaveBeenCalledWith("u1", "k1", expect.objectContaining({ status: "failing" }));
+    // Guarded by the refused key, so a key pasted in meanwhile stays "ok" (SHAN-600).
+    expect(repo.updateKey).toHaveBeenCalledWith("u1", "k1", expect.objectContaining({ status: "failing" }), sealed);
   });
 
   it("builds a prompt with the selection marked and the context around it", () => {
@@ -111,5 +113,38 @@ describe("explain", () => {
     expect(prompt).toContain("Document: Notes");
     expect(prompt).toContain("Section: What I learned");
     expect(prompt).toContain("Text before: ...Linux keeps messages in a");
+  });
+});
+
+describe("recheckKey", () => {
+  let sealed: string;
+  let row: Record<string, unknown>;
+  beforeEach(() => {
+    sealed = sealKey(GEMINI);
+    row = { id: "k1", provider: "gemini", status: "failing", keySealed: sealed, defaultModel: "gemini-3.5-flash-lite", preferredModel: null };
+  });
+
+  it("writes the result only against the key it checked", async () => {
+    repo.getKey.mockResolvedValue(row);
+    mockList.mockResolvedValue(["gemini-3.5-flash-lite"]);
+    mockGenerate.mockResolvedValue(ok);
+    repo.updateKey.mockResolvedValue({ ...row, status: "ok" });
+    expect(await recheckKey("u1", "k1")).toMatchObject({ status: "ok" });
+    expect(repo.updateKey).toHaveBeenCalledWith("u1", "k1", expect.objectContaining({ status: "ok" }), sealed);
+  });
+
+  it("drops a stale failure and returns the key that replaced it mid-check", async () => {
+    const replaced = { ...row, status: "ok", keySealed: sealKey("AIza" + "C".repeat(35)) };
+    repo.getKey.mockResolvedValueOnce(row).mockResolvedValueOnce(replaced);
+    mockList.mockRejectedValue(new ProviderError("auth", 401, "API key not valid"));
+    repo.updateKey.mockResolvedValue(null);
+    expect(await recheckKey("u1", "k1")).toBe(replaced);
+    expect(repo.updateKey).toHaveBeenCalledWith("u1", "k1", expect.objectContaining({ status: "failing" }), sealed);
+  });
+
+  it("is null for a key that does not exist", async () => {
+    repo.getKey.mockResolvedValue(null);
+    expect(await recheckKey("u1", "k1")).toBeNull();
+    expect(mockList).not.toHaveBeenCalled();
   });
 });

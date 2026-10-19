@@ -18,6 +18,7 @@ Readers paste their own provider key in Settings > AI; Explain (and only Explain
 - The sealed key never leaves the server; `publicKey()` is the only shape returned.
 - Model choice: preferred provider's key if it is `ok`, else the first `ok` key; that key's `preferredModel`, else `defaultModel` (the cheapest model that passed the check).
 - An auth or quota refusal during `explain` flips the key to `failing` so the next Explain does not hit the same wall; `POST /keys/:id/check` re-runs the check.
+- Any key write decided about a key you read earlier (recheck result, Explain's `failing`, a preferred model checked against `models`) passes that row's `keySealed` to `updateKey`: re-adding a provider's key replaces it under the same id, so an unguarded write lands on the new key (SHAN-600). Likewise `saveSettings` writes only the fields sent; never merge into a read and write the whole row back.
 - Explain answers are stripped of em/en dashes before they are returned (house rule).
 - The explanation is saved as a note by the client (journal comment or reader note, with `meta`), not here. That note is the cache: the client looks for an AI note on the same quote before calling Explain again.
 

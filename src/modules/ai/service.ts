@@ -88,27 +88,34 @@ export async function addKey(userId: string, rawKey: string) {
   });
 }
 
+/**
+ * The result is written only if the row still holds the key that was checked:
+ * the check can take several provider calls, and a key added for the same
+ * provider meanwhile replaces this one in place. Then the reader gets the row
+ * as it is now, untouched.
+ */
 export async function recheckKey(userId: string, id: string) {
   const row = await repo.getKey(userId, id);
   if (!row) return null;
+  let updated: repo.KeyRow | null;
   try {
     const { models, defaultModel } = await checkKey(row.provider as AiProvider, openKey(row.keySealed), userId);
     const keepPreferred = row.preferredModel && models.includes(row.preferredModel) ? row.preferredModel : null;
-    return repo.updateKey(userId, id, {
-      models,
-      defaultModel,
-      preferredModel: keepPreferred,
-      status: "ok",
-      lastError: null,
-      lastCheckedAt: new Date(),
-    });
+    updated = await repo.updateKey(
+      userId,
+      id,
+      { models, defaultModel, preferredModel: keepPreferred, status: "ok", lastError: null, lastCheckedAt: new Date() },
+      row.keySealed
+    );
   } catch (err) {
-    return repo.updateKey(userId, id, {
-      status: "failing",
-      lastError: err instanceof Error ? err.message : "Check failed",
-      lastCheckedAt: new Date(),
-    });
+    updated = await repo.updateKey(
+      userId,
+      id,
+      { status: "failing", lastError: err instanceof Error ? err.message : "Check failed", lastCheckedAt: new Date() },
+      row.keySealed
+    );
   }
+  return updated ?? repo.getKey(userId, id);
 }
 
 // ---------------------------------------------------------------------------
@@ -183,7 +190,12 @@ export async function explain(userId: string, input: ExplainInput) {
   try {
     key = openKey(row.keySealed);
   } catch {
-    await repo.updateKey(userId, row.id, { status: "failing", lastError: "Stored key could not be read. Add it again." });
+    await repo.updateKey(
+      userId,
+      row.id,
+      { status: "failing", lastError: "Stored key could not be read. Add it again." },
+      row.keySealed
+    );
     throw new ExplainError("no_key", "Your saved key could not be read. Add it again in Settings.");
   }
 
@@ -211,8 +223,10 @@ export async function explain(userId: string, input: ExplainInput) {
     };
   } catch (err) {
     if (err instanceof ProviderError) {
+      // Only the key that was refused: a working key pasted in while this
+      // call was out keeps its "ok".
       if (err.kind === "auth" || err.kind === "quota") {
-        await repo.updateKey(userId, row.id, { status: "failing", lastError: err.message });
+        await repo.updateKey(userId, row.id, { status: "failing", lastError: err.message }, row.keySealed);
       }
       throw new ExplainError("provider", err.message, err.kind);
     }

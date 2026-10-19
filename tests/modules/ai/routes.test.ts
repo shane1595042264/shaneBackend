@@ -87,6 +87,13 @@ describe("PATCH /api/ai/keys/:id", () => {
     expect((await send("PATCH", `/api/ai/keys/${KEY_ID}`, { preferredModel: "gemini-3.5-flash-lite" })).status).toBe(200);
     expect((await send("PATCH", `/api/ai/keys/${KEY_ID}`, { preferredModel: null })).status).toBe(200);
   });
+
+  it("409s when the key was replaced or deleted after its models were read (SHAN-600)", async () => {
+    repo.getKey.mockResolvedValue({ id: KEY_ID, keySealed: "old", models: ["gemini-3.5-flash-lite"] });
+    repo.updateKey.mockResolvedValue(null);
+    expect((await send("PATCH", `/api/ai/keys/${KEY_ID}`, { preferredModel: "gemini-3.5-flash-lite" })).status).toBe(409);
+    expect(repo.updateKey).toHaveBeenCalledWith("u1", KEY_ID, { preferredModel: "gemini-3.5-flash-lite" }, "old");
+  });
 });
 
 describe("PATCH /api/ai/settings", () => {

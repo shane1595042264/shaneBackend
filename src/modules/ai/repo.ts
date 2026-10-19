@@ -89,15 +89,29 @@ export async function upsertKey(input: {
   return row as KeyRow;
 }
 
+/**
+ * `expectSealed`: only write while the row still holds that key. Adding a key
+ * for a provider that already has one keeps the row id (the upsert above), so
+ * a write decided about the old key, after a slow provider call or a read of
+ * its model list, would otherwise land on the new one (SHAN-600). Null when
+ * the row is gone or holds a different key.
+ */
 export async function updateKey(
   userId: string,
   id: string,
-  patch: Partial<Pick<KeyRow, "preferredModel" | "status" | "lastError" | "defaultModel" | "models" | "lastCheckedAt">>
+  patch: Partial<Pick<KeyRow, "preferredModel" | "status" | "lastError" | "defaultModel" | "models" | "lastCheckedAt">>,
+  expectSealed?: string
 ): Promise<KeyRow | null> {
   const [row] = await db
     .update(userAiKeys)
     .set(patch)
-    .where(and(eq(userAiKeys.userId, userId), eq(userAiKeys.id, id)))
+    .where(
+      and(
+        eq(userAiKeys.userId, userId),
+        eq(userAiKeys.id, id),
+        expectSealed === undefined ? undefined : eq(userAiKeys.keySealed, expectSealed)
+      )
+    )
     .returning();
   return (row as KeyRow) ?? null;
 }
@@ -118,14 +132,25 @@ export async function getSettings(userId: string): Promise<AiSettings> {
   };
 }
 
+/**
+ * Writes only the fields the patch carries and answers with the stored row.
+ * Merging the patch into an earlier read and writing the whole row back let
+ * two PATCHes in flight revert each other: choosing a preferred provider
+ * right after turning notesToKnowledge off turned it back on (SHAN-600).
+ */
 export async function saveSettings(userId: string, patch: Partial<AiSettings>): Promise<AiSettings> {
-  const current = await getSettings(userId);
-  const next = { ...current, ...patch };
-  await db
+  const set: Partial<AiSettings> & { updatedAt: Date } = { updatedAt: new Date() };
+  if (patch.preferredProvider !== undefined) set.preferredProvider = patch.preferredProvider;
+  if (patch.notesToKnowledge !== undefined) set.notesToKnowledge = patch.notesToKnowledge;
+  const [row] = await db
     .insert(userAiSettings)
-    .values({ userId, ...next, updatedAt: new Date() })
-    .onConflictDoUpdate({ target: userAiSettings.userId, set: { ...next, updatedAt: new Date() } });
-  return next;
+    .values({ userId, ...set })
+    .onConflictDoUpdate({ target: userAiSettings.userId, set })
+    .returning();
+  return {
+    preferredProvider: (row.preferredProvider as AiProvider | null) ?? null,
+    notesToKnowledge: row.notesToKnowledge,
+  };
 }
 
 export async function recordUsage(input: {

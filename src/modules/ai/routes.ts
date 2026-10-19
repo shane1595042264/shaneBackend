@@ -58,8 +58,11 @@ aiRoutes.patch(
     if (preferredModel !== null && !models.includes(preferredModel)) {
       return c.json({ error: "That model is not available to this key" }, 400);
     }
-    const updated = await repo.updateKey(userId, id, { preferredModel });
-    return c.json({ key: repo.publicKey(updated!) });
+    // The model list checked above belongs to this exact key; if it was
+    // replaced or deleted since, the choice no longer applies.
+    const updated = await repo.updateKey(userId, id, { preferredModel }, row.keySealed);
+    if (!updated) return c.json({ error: "This key changed while you were choosing. Reload and pick again." }, 409);
+    return c.json({ key: repo.publicKey(updated) });
   }
 );
 
