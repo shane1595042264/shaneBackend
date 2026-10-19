@@ -10,7 +10,7 @@ import { zValidator } from "@/modules/shared/zod-validator";
 import { requireAuth, optionalAuth, requireScope } from "@/modules/auth/middleware";
 import { createPATRateLimit } from "@/modules/shared/rate-limit";
 import { generateUniqueSlug } from "@/modules/trips/slug";
-import { isoDate, trimmedRequired, trimmedNullish } from "@/modules/shared/validators";
+import { isoDate, trimmedRequired, trimmedNullish, uuidId } from "@/modules/shared/validators";
 import {
   BLOCK_KINDS,
   BLOCK_MODES,
@@ -54,9 +54,9 @@ const completionsWriteLimit = createPATRateLimit({
 
 export const planRoutes = new Hono();
 
-const planIdParam = z.object({ planId: z.string().uuid() });
-const dayIdParam = planIdParam.extend({ dayId: z.string().uuid() });
-const blockIdParam = dayIdParam.extend({ blockId: z.string().uuid() });
+const planIdParam = z.object({ planId: uuidId() });
+const dayIdParam = planIdParam.extend({ dayId: uuidId() });
+const blockIdParam = dayIdParam.extend({ blockId: uuidId() });
 
 /** Local clock time a session starts, "HH:MM" on a 24h clock. */
 const sessionTime = z
@@ -465,7 +465,7 @@ planRoutes.put(
 // ----- Completions (the tally) -----
 
 const completionBody = z.object({
-  blockId: z.string().uuid(),
+  blockId: uuidId(),
   isoDate,
   setsCompleted: z.number().int().min(0).max(500).default(0),
   elapsedSeconds: z.number().int().min(0).max(86_400).default(0),
@@ -533,7 +533,7 @@ planRoutes.delete(
   requireScope("practice:write"),
   completionsWriteLimit,
   zValidator("param", planIdParam),
-  zValidator("query", z.object({ blockId: z.string().uuid(), isoDate })),
+  zValidator("query", z.object({ blockId: uuidId(), isoDate })),
   async (c) => {
     const userId = c.get("userId") as string;
     const { planId } = c.req.valid("param");
@@ -600,7 +600,7 @@ planRoutes.delete(
 planRoutes.get(
   "/:planId/calendar.ics",
   zValidator("param", planIdParam),
-  zValidator("query", z.object({ token: z.string().uuid() })),
+  zValidator("query", z.object({ token: uuidId() })),
   async (c) => {
     const { planId } = c.req.valid("param");
     const plan = await getPlanByIcsToken(c.req.valid("query").token);

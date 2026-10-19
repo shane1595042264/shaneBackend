@@ -11,7 +11,7 @@ import { z } from "zod";
 import { createMiddleware } from "hono/factory";
 import { zValidator } from "@/modules/shared/zod-validator";
 import { requireAuth, optionalAuth, type AuthVars } from "@/modules/auth/middleware";
-import { trimmedOptional } from "@/modules/shared/validators";
+import { trimmedOptional, uuidId } from "@/modules/shared/validators";
 import {
   approveRequest,
   createOrRefreshRequest,
@@ -27,8 +27,8 @@ type Vars = { Variables: AuthVars };
 
 export const journalAccessRoutes = new Hono<Vars>();
 
-const uuidParam = z.object({ id: z.string().uuid() });
-const userIdParam = z.object({ userId: z.string().uuid() });
+const uuidParam = z.object({ id: uuidId() });
+const userIdParam = z.object({ userId: uuidId() });
 
 /** Reject PATs. Access management is a human, browser-session action. */
 const browserOnly = createMiddleware<Vars>(async (c, next) => {

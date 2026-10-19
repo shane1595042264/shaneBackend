@@ -19,6 +19,7 @@ import {
   trimmedNullish,
   trimmedLabels,
   pageOffset,
+  uuidId,
 } from "@/modules/shared/validators";
 import {
   createComment as createKnowledgeComment,
@@ -31,7 +32,7 @@ import {
 export const knowledgeRoutes = new Hono();
 
 const uuidParamSchema = z.object({
-  id: z.string().uuid("Invalid UUID"),
+  id: uuidId("Invalid UUID"),
 });
 
 // SHAN-415: filter params are bounded (read-side counterpart to SHAN-396's
@@ -63,7 +64,7 @@ const wordsQuerySchema = z.object({
 });
 
 const wordIdQuerySchema = z.object({
-  wordId: z.string().uuid("Invalid UUID"),
+  wordId: uuidId("Invalid UUID"),
 });
 
 // ---------------------------------------------------------------------------
@@ -644,7 +645,7 @@ knowledgeRoutes.delete("/entries/:id", requireAuth, requireScope("knowledge:writ
 // Bulk delete. Same ownership rule as single delete. Returns per-id outcome so
 // the UI can show which rows were skipped without a second round-trip.
 const bulkDeleteSchema = z.object({
-  ids: z.array(z.string().uuid()).min(1).max(100),
+  ids: z.array(uuidId()).min(1).max(100),
 });
 
 knowledgeRoutes.post("/entries/bulk-delete", requireAuth, requireScope("knowledge:write"), zValidator("json", bulkDeleteSchema), async (c) => {
@@ -716,8 +717,8 @@ knowledgeRoutes.post("/entries/:id/enrich", requireAuth, requireScope("knowledge
 // ---------------------------------------------------------------------------
 
 const createConnectionSchema = z.object({
-  fromWordId: z.string().uuid(),
-  toWordId: z.string().uuid(),
+  fromWordId: uuidId(),
+  toWordId: uuidId(),
   connectionType: z.enum(["synonym", "antonym", "related", "translation", "root"]),
   // SHAN-412: short free-text annotation on a connection, inserted into the
   // shared vocab_connections.note text column. Bound it to match vocabulary
@@ -851,7 +852,7 @@ const commentBody = z.object({
   // SHAN-433: trim before min(1) so a whitespace-only comment is a 400 rather
   // than a blank thread post.
   content: trimmedRequired(10_000),
-  parent_comment_id: z.string().uuid().optional(),
+  parent_comment_id: uuidId().optional(),
 });
 const commentEditBody = z.object({ content: trimmedRequired(10_000) });
 

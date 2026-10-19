@@ -10,6 +10,7 @@ import {
   trimmedNullish,
   trimmedOptional,
   trimmedLabels,
+  uuidId,
 } from "@/modules/shared/validators";
 import { generateUniqueSlug } from "@/modules/trips/slug";
 import { CourseFetchError, classifyCourse, fetchCourseText } from "./classifier";
@@ -58,8 +59,8 @@ export const coursesRoutes = new Hono<Vars>();
 
 const COVER_MAX_BYTES = 5 * 1024 * 1024;
 
-const idParam = z.object({ id: z.string().uuid() });
-const courseIdParam = z.object({ courseId: z.string().uuid() });
+const idParam = z.object({ id: uuidId() });
+const courseIdParam = z.object({ courseId: uuidId() });
 const slugParam = z.object({ slug: z.string().trim().min(1).max(80) });
 // http(s) only: a bare .url() let file:///proc/self/environ through to the
 // classifier fetch (SHAN-582).
@@ -107,7 +108,7 @@ const ratingBody = z.object({ stars: z.number().int().min(1).max(5) });
 
 const commentBody = z.object({
   content: z.string().trim().min(1).max(10_000),
-  parent_comment_id: z.string().uuid().optional(),
+  parent_comment_id: uuidId().optional(),
 });
 
 interface CourseMeta {

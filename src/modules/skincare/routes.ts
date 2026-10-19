@@ -17,6 +17,7 @@ import {
   trimmedRequired,
   trimmedOptional,
   trimmedNullish,
+  uuidId,
 } from "@/modules/shared/validators";
 
 // Per-PAT 60s rolling write limit. JWT browser sessions bypass. Distinct
@@ -30,7 +31,7 @@ type Vars = { Variables: { userId: string | null; tokenScopes: string[] | null }
 export const skincareRoutes = new Hono<Vars>();
 
 const timeOfDaySchema = z.enum(["morning", "night"]);
-const idParam = z.object({ id: z.string().uuid() });
+const idParam = z.object({ id: uuidId() });
 
 const createBody = z.object({
   timeOfDay: timeOfDaySchema,
@@ -63,7 +64,7 @@ const patchBody = z
 const reorderBody = z.object({
   timeOfDay: timeOfDaySchema,
   // Full ordered id list for the routine; positions are assigned by index.
-  orderedIds: z.array(z.string().uuid()).min(1).max(100),
+  orderedIds: z.array(uuidId()).min(1).max(100),
 });
 
 const searchQuery = z.object({

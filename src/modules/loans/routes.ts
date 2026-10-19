@@ -6,6 +6,7 @@ import type { PgUpdateSetSource } from "drizzle-orm/pg-core";
 import { db } from "@/db/client";
 import { loanEntries } from "@/db/schema";
 import { requireAuth } from "@/modules/auth/middleware";
+import { uuidId } from "@/modules/shared/validators";
 import { encodeKeysetCursor, keysetBefore, keysetCursorParam, parseKeysetCursor } from "@/modules/shared/keyset";
 
 type AuthEnv = { Variables: { userId: string } };
@@ -14,7 +15,7 @@ export const loansRoutes = new Hono<AuthEnv>();
 loansRoutes.use("*", requireAuth);
 
 const idParamSchema = z.object({
-  id: z.string().uuid(),
+  id: uuidId(),
 });
 
 // Amount accepted as string OR number on input; persisted as text to preserve

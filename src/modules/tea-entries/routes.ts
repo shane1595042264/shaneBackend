@@ -8,6 +8,7 @@ import {
   IN_FLIGHT_UPLOAD_MESSAGE,
   MAX_MARKDOWN_BODY,
   MAX_MARKDOWN_BODY_MESSAGE,
+  uuidId,
 } from "@/modules/shared/validators";
 import {
   createTeaEntry,
@@ -75,7 +76,7 @@ const createBody = z.object({
   pin: pinSchema,
 });
 
-const idParam = z.object({ id: z.string().uuid() });
+const idParam = z.object({ id: uuidId() });
 
 // Opt-in keyset pagination for the list endpoint. Both optional, so a bare
 // GET /api/tea-entries keeps returning the full list (nextCursor null). Mirrors

@@ -14,6 +14,7 @@ import {
   trimmedOptional,
   trimmedLabels,
   pageOffset,
+  uuidId,
 } from "@/modules/shared/validators";
 
 export const vocabularyRoutes = new Hono();
@@ -31,7 +32,7 @@ const enrichRateLimit = createPATRateLimit({
 });
 
 const uuidParamSchema = z.object({
-  id: z.string().uuid("Invalid UUID"),
+  id: uuidId("Invalid UUID"),
 });
 
 // SHAN-415: bound filter params (mirrors the knowledge module's wordsQuerySchema
@@ -50,7 +51,7 @@ const wordsQuerySchema = z.object({
 });
 
 const wordIdQuerySchema = z.object({
-  wordId: z.string().uuid("Invalid UUID"),
+  wordId: uuidId("Invalid UUID"),
 });
 
 // ---------------------------------------------------------------------------
@@ -329,8 +330,8 @@ vocabularyRoutes.post(
 // ---------------------------------------------------------------------------
 
 const createConnectionSchema = z.object({
-  fromWordId: z.string().uuid(),
-  toWordId: z.string().uuid(),
+  fromWordId: uuidId(),
+  toWordId: uuidId(),
   connectionType: z.enum(["synonym", "antonym", "related", "translation", "root"]),
   // SHAN-401: short free-text annotation on a connection — bound it so an
   // unbounded text column can't be filled with a runaway payload.

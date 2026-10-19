@@ -7,6 +7,7 @@ import { eq } from "drizzle-orm";
 import { createRemoteJWKSet, jwtVerify, SignJWT } from "jose";
 import { JWT_SECRET } from "./config";
 import { optionalAuth, requireAuth, requireBrowserSession } from "./middleware";
+import { uuidId } from "@/modules/shared/validators";
 import { mintToken, listTokens, revokeToken } from "./tokens";
 
 const GOOGLE_JWKS = createRemoteJWKSet(
@@ -259,7 +260,7 @@ authRoutes.get("/tokens", requireAuth, requireBrowserSession("Listing tokens"), 
 // Reject malformed :id before it reaches the uuid column — a bad id would
 // otherwise throw "invalid input syntax for type uuid" in Postgres and surface
 // as a misleading 500 instead of a 400. Mirrors the SHAN-362 journal guard.
-const uuidParamSchema = z.object({ id: z.string().uuid() });
+const uuidParamSchema = z.object({ id: uuidId() });
 
 authRoutes.delete(
   "/tokens/:id",

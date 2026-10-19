@@ -7,6 +7,7 @@ import {
   trimmedRequired,
   trimmedOptional,
   trimmedNullish,
+  uuidId,
 } from "@/modules/shared/validators";
 import { searchIcons, fetchIconPath } from "./icon-search";
 import {
@@ -49,7 +50,7 @@ const scoreboardWriteLimit = createPATRateLimit({
 type Vars = { Variables: { userId: string | null; tokenScopes: string[] | null } };
 export const scoreboardRoutes = new Hono<Vars>();
 
-const idParam = z.object({ id: z.string().uuid() });
+const idParam = z.object({ id: uuidId() });
 const colorSchema = z.enum(SCOREBOARD_COLORS);
 const iconSlugSchema = z
   .string()
@@ -93,8 +94,8 @@ const patchPlayerBody = z
   });
 
 const createMatchBody = z.object({
-  gameId: z.string().uuid(),
-  playerIds: z.array(z.string().uuid()).min(2).max(8),
+  gameId: uuidId(),
+  playerIds: z.array(uuidId()).min(2).max(8),
   location: trimmedNullish(160),
 });
 
@@ -105,12 +106,12 @@ const patchMatchBody = z
   });
 
 const scoreBody = z.object({
-  playerId: z.string().uuid(),
+  playerId: uuidId(),
   delta: z.union([z.literal(1), z.literal(-1)]),
 });
 
 const matchesQuery = z.object({
-  gameId: z.string().uuid().optional(),
+  gameId: uuidId().optional(),
   status: z.enum(["live", "final"]).optional(),
   limit: z.coerce.number().int().min(1).max(100).default(50),
   cursor: keysetCursorParam.optional(),

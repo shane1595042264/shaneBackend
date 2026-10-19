@@ -64,6 +64,7 @@ import {
   int4Positive,
   int4PositiveParam,
   dropLoneSurrogates,
+  uuidId,
 } from "@/modules/shared/validators";
 import { createPATRateLimit } from "@/modules/shared/rate-limit";
 import { journalAccessRoutes } from "./access-routes";
@@ -132,7 +133,7 @@ const dateParam = z.object({ date: isoDate });
 // Guards the :id path param on suggestion/comment routes. Without this a
 // malformed id reaches the Postgres uuid column and throws "invalid input
 // syntax for type uuid", surfacing as a misleading 500 instead of a 400.
-const uuidParam = z.object({ id: z.string().uuid() });
+const uuidParam = z.object({ id: uuidId() });
 
 // Pagination for the version list. The cursor is the versionNum of the last row
 // on the previous page; the list is descending, so the next page is everything
@@ -325,7 +326,7 @@ journalRoutes.post(
   }
 );
 
-const appendIdParam = z.object({ date: isoDate, id: z.string().uuid() });
+const appendIdParam = z.object({ date: isoDate, id: uuidId() });
 
 // SHAN-483: appends were POST/GET-only, so an agent that posted duplicate
 // content had no way to take it back. These two routes close that hole.
@@ -836,7 +837,7 @@ const commentBody = z.object({
     .min(1)
     .max(10_000)
     .refine(noInFlightUpload, { message: IN_FLIGHT_UPLOAD_MESSAGE }),
-  parent_comment_id: z.string().uuid().optional(),
+  parent_comment_id: uuidId().optional(),
   // SHAN-577: pins a top-level comment to text on the page as an inline note.
   // `quote` is required and non-blank; the context strings may be empty (a
   // note on the first or last words of a part has nothing on one side).
@@ -845,7 +846,7 @@ const commentBody = z.object({
   // leaves context that still matches the rendered text.
   anchor: z
     .object({
-      target: z.union([z.literal("entry"), z.string().uuid()]),
+      target: z.union([z.literal("entry"), uuidId()]),
       quote: z.string().transform(dropLoneSurrogates).pipe(z.string().trim().min(1).max(1000)),
       prefix: z.string().max(64).default("").transform(dropLoneSurrogates),
       suffix: z.string().max(64).default("").transform(dropLoneSurrogates),

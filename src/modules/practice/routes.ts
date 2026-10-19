@@ -24,7 +24,7 @@ import { getSettings, updateSettings } from "./settings-repo";
 import { createVocabSession, getVocabSession, vocabSessionSummary } from "./vocab-sessions-repo";
 import { generateVocabSession, vocabPreviewCounts, isVocabCard } from "./vocab-generator";
 import { applyReview } from "./vocab-srs-repo";
-import { trimmedRequired, trimmedNullish } from "@/modules/shared/validators";
+import { trimmedRequired, trimmedNullish, uuidId } from "@/modules/shared/validators";
 import { planRoutes } from "./plans-routes";
 
 // Per-PAT rolling-60s rate limits on the practice write surface. JWTs bypass
@@ -88,7 +88,7 @@ practiceRoutes.patch(
 
 // ----- Prescriptions -----
 
-const itemIdParam = z.object({ itemId: z.string().uuid() });
+const itemIdParam = z.object({ itemId: uuidId() });
 const prescriptionBody = z.object({
   setMode: z.enum(["time", "reps"]),
   setSize: z.number().int().min(1).max(3600),
@@ -176,7 +176,7 @@ practiceRoutes.delete(
   requireAuth,
   requireScope("practice:write"),
   locationsWriteLimit,
-  zValidator("param", z.object({ id: z.string().uuid() })),
+  zValidator("param", z.object({ id: uuidId() })),
   async (c) => {
     const userId = c.get("userId") as string;
     const ok = await deleteLocation(c.req.valid("param").id, userId);
@@ -193,7 +193,7 @@ const sessionGenBody = z.union([
     includeSolidified: z.boolean().optional().default(false),
   }),
   z.object({
-    itemIds: z.array(z.string().uuid()).min(1).max(50),
+    itemIds: z.array(uuidId()).min(1).max(50),
   }),
 ]);
 
@@ -266,7 +266,7 @@ practiceRoutes.get("/sessions/preview", requireAuth, zValidator("query", preview
 practiceRoutes.get(
   "/sessions/:id",
   requireAuth,
-  zValidator("param", z.object({ id: z.string().uuid() })),
+  zValidator("param", z.object({ id: uuidId() })),
   async (c) => {
     const userId = c.get("userId") as string;
     const session = await getSessionById(c.req.valid("param").id, userId);
@@ -287,7 +287,7 @@ practiceRoutes.patch(
   requireAuth,
   requireScope("practice:write"),
   sessionsWriteLimit,
-  zValidator("param", z.object({ id: z.string().uuid() })),
+  zValidator("param", z.object({ id: uuidId() })),
   async (c) => {
     const userId = c.get("userId") as string;
     const ok = await markSessionCompleted(c.req.valid("param").id, userId);
@@ -300,7 +300,7 @@ practiceRoutes.delete(
   requireAuth,
   requireScope("practice:write"),
   sessionsWriteLimit,
-  zValidator("param", z.object({ id: z.string().uuid() })),
+  zValidator("param", z.object({ id: uuidId() })),
   async (c) => {
     const userId = c.get("userId") as string;
     const ok = await deleteSession(c.req.valid("param").id, userId);
@@ -313,7 +313,7 @@ practiceRoutes.delete(
 const syncBody = z.object({
   timerState: z.unknown().optional(),
   setsCompleted: z.number().int().min(0).max(500).optional(),
-  locationId: z.string().uuid().nullable().optional(),
+  locationId: uuidId().nullable().optional(),
   // SHAN-434: trim; a whitespace-only locationName collapses to null (no
   // location) rather than persisting blank padding on the session item.
   locationName: trimmedNullish(120),
@@ -326,7 +326,7 @@ practiceRoutes.post(
   requireAuth,
   requireScope("practice:write"),
   sessionItemsSyncLimit,
-  zValidator("param", z.object({ id: z.string().uuid() })),
+  zValidator("param", z.object({ id: uuidId() })),
   zValidator("json", syncBody),
   async (c) => {
     const userId = c.get("userId") as string;
@@ -415,7 +415,7 @@ practiceRoutes.post(
 practiceRoutes.get(
   "/vocab/sessions/:id",
   requireAuth,
-  zValidator("param", z.object({ id: z.string().uuid() })),
+  zValidator("param", z.object({ id: uuidId() })),
   async (c) => {
     const userId = c.get("userId") as string;
     const result = await getVocabSession(c.req.valid("param").id, userId);
@@ -427,7 +427,7 @@ practiceRoutes.get(
 practiceRoutes.get(
   "/vocab/sessions/:id/summary",
   requireAuth,
-  zValidator("param", z.object({ id: z.string().uuid() })),
+  zValidator("param", z.object({ id: uuidId() })),
   async (c) => {
     const userId = c.get("userId") as string;
     const summary = await vocabSessionSummary(c.req.valid("param").id, userId);
@@ -437,8 +437,8 @@ practiceRoutes.get(
 );
 
 const vocabReviewBody = z.object({
-  sessionId: z.string().uuid(),
-  itemId: z.string().uuid(),
+  sessionId: uuidId(),
+  itemId: uuidId(),
   grade: z.enum(["remember", "forget"]),
 });
 

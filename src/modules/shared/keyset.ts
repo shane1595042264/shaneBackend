@@ -1,5 +1,6 @@
 import { getTableName, lt, sql, type AnyColumn, type SQL } from "drizzle-orm";
 import { z } from "zod";
+import { uuidId } from "./validators";
 
 /**
  * Compound keyset cursors for the newest-first list endpoints (SHAN-513).
@@ -31,7 +32,7 @@ export interface KeysetCursor {
 }
 
 const isoTimestamp = z.string().datetime();
-const rowId = z.string().uuid();
+const rowId = uuidId();
 
 /**
  * Encode the cursor for the last row of a page.

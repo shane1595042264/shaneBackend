@@ -25,6 +25,7 @@ import {
   trimmedLabels,
   int4Positive,
   int4PositiveParam,
+  uuidId,
 } from "@/modules/shared/validators";
 import {
   createPost,
@@ -431,7 +432,7 @@ const blogReactionsLimit = createPATRateLimit({
   limitPerMinute: 60,
 });
 
-const commentIdParam = z.object({ id: z.string().uuid() });
+const commentIdParam = z.object({ id: uuidId() });
 
 const commentBody = z.object({
   content: z

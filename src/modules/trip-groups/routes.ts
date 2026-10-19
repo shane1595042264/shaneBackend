@@ -49,6 +49,7 @@ import { users } from "@/db/schema";
 import { db } from "@/db/client";
 import { eq } from "drizzle-orm";
 import { sniffImageMime } from "@/modules/shared/image-validate";
+import { uuidId } from "@/modules/shared/validators";
 import {
   createNote,
   listNotes,
@@ -80,7 +81,7 @@ export const tripGroupsRoutes = new Hono<AuthEnv>();
 
 const photoIdOnlyParam = z.object({
   slug: z.string().regex(/^[a-z0-9][a-z0-9-]{0,79}$/),
-  photoId: z.string().uuid(),
+  photoId: uuidId(),
 });
 
 // Raw photo bytes — registered BEFORE the auth middleware on purpose:
@@ -114,7 +115,7 @@ const slugParam = z.object({
 
 const ideaIdParam = z.object({
   slug: z.string().regex(/^[a-z0-9][a-z0-9-]{0,79}$/),
-  ideaId: z.string().uuid(),
+  ideaId: uuidId(),
 });
 
 const createGroupBody = z.object({
@@ -555,7 +556,7 @@ tripGroupsRoutes.get(
 
 const suggestionIdParam = z.object({
   slug: z.string().regex(/^[a-z0-9][a-z0-9-]{0,79}$/),
-  suggestionId: z.string().uuid(),
+  suggestionId: uuidId(),
 });
 
 /**
@@ -862,7 +863,7 @@ tripGroupsRoutes.post(
 
 const noteIdParam = z.object({
   slug: z.string().regex(/^[a-z0-9][a-z0-9-]{0,79}$/),
-  noteId: z.string().uuid(),
+  noteId: uuidId(),
 });
 
 tripGroupsRoutes.delete(
@@ -979,7 +980,7 @@ tripGroupsRoutes.post(
 
 const sectionIdParam = z.object({
   slug: z.string().regex(/^[a-z0-9][a-z0-9-]{0,79}$/),
-  sectionId: z.string().uuid(),
+  sectionId: uuidId(),
 });
 
 /** Everyone in the group can contribute — any member may update items. */

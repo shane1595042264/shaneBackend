@@ -144,3 +144,17 @@ export const int4PositiveParam = z.coerce.number().int().min(1).max(PG_INT4_MAX)
 // Same bound for a JSON body field, which is already a number — no coercion, so
 // a string body value still fails the type check as it does today.
 export const int4Positive = z.number().int().min(1).max(PG_INT4_MAX);
+
+// SHAN-595: any uuid arriving in a path, query or body. Postgres compares uuid
+// values case-insensitively and always returns them lowercase, but zod's
+// .uuid() accepts uppercase and passes it through unchanged, so a handler that
+// compares the caller's id with a row id in JS (Set.has, ===) missed: an
+// uppercase id for a row that exists came back "not found". Swift's
+// UUID().uuidString and most Windows GUID tools emit uppercase. Lowercasing
+// here makes every id canonical before handler code sees it. A test in
+// tests/modules/shared/uuid-guard.test.ts fails on a raw z.string().uuid().
+export const uuidId = (message?: string) =>
+  z
+    .string()
+    .uuid(message)
+    .transform((s) => s.toLowerCase());

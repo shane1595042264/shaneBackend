@@ -5,7 +5,7 @@ import { db } from "@/db/client";
 import { vocabWords } from "@/db/schema";
 import { requireAuth, requireScope } from "@/modules/auth/middleware";
 import { createPATRateLimit } from "@/modules/shared/rate-limit";
-import { trimmedRequired } from "@/modules/shared/validators";
+import { trimmedRequired, uuidId } from "@/modules/shared/validators";
 import { zValidator } from "@/modules/shared/zod-validator";
 import { upsertLocation } from "@/modules/practice/locations-repo";
 import { applyLocationDelta, computeLongTermMemorized } from "./memorization";
@@ -46,7 +46,7 @@ const attemptSchema = z
   })
   .strict();
 
-const idParam = z.object({ id: z.string().uuid("Invalid UUID") });
+const idParam = z.object({ id: uuidId("Invalid UUID") });
 
 /** Built per request, never at module scope: the route tests mock @/db/schema partially. */
 function ownedBy(userId: string) {
