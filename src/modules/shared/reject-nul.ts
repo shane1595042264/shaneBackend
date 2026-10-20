@@ -44,7 +44,11 @@ export function findNul(value: unknown, path: string[] = []): string | null {
   return null;
 }
 
-function reject(c: Context, path?: string) {
+/**
+ * The 400 for a NUL at `path`. Exported for the multipart routes that store
+ * text fields (trips), since this middleware never reads a multipart body.
+ */
+export function nulRejection(c: Context, path?: string) {
   const message = "Contains a NUL byte, which cannot be stored";
   const detail = path ? { path, message } : { message };
   return c.json(
@@ -54,12 +58,13 @@ function reject(c: Context, path?: string) {
 }
 
 export const rejectNul = createMiddleware(async (c, next) => {
-  if (ENCODED_NUL.test(c.req.url)) return reject(c, "url");
+  if (ENCODED_NUL.test(c.req.url)) return nulRejection(c, "url");
 
   // JSON only. The body is read through `c.req.text()` so Hono's body cache
   // hands the same bytes to the handler's `c.req.json()`. Multipart bodies are
   // never touched: once `text` is cached, Hono rebuilds `formData()` from it
-  // without the Content-Type boundary and the upload fails to parse.
+  // without the Content-Type boundary and the upload fails to parse. A route
+  // that stores multipart text checks it itself with findNul (trips, SHAN-602).
   const contentType = c.req.header("Content-Type") ?? "";
   if (/^application\/(.+\+)?json\b/i.test(contentType)) {
     let body: unknown;
@@ -70,7 +75,7 @@ export const rejectNul = createMiddleware(async (c, next) => {
       return next();
     }
     const hit = findNul(body);
-    if (hit !== null) return reject(c, hit || undefined);
+    if (hit !== null) return nulRejection(c, hit || undefined);
   }
 
   return next();

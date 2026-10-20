@@ -5,6 +5,7 @@ import { createMiddleware } from "hono/factory";
 import { optionalAuth, requireScope, type AuthVars } from "@/modules/auth/middleware";
 import { TOKEN_PREFIX } from "@/modules/auth/tokens";
 import { encodeKeysetCursor, keysetCursorParam } from "@/modules/shared/keyset";
+import { findNul, nulRejection } from "@/modules/shared/reject-nul";
 import { extractTitle } from "./title";
 import {
   createTrip,
@@ -131,6 +132,10 @@ tripsRoutes.post("/", optionalAuth, rejectDeadPat, requireScope("trips:write"), 
     // Multipart fields are always strings, so the boolean has to be spelled out.
     const forceField = form.get("force");
     force = forceField === "true" || forceField === "1";
+    // SHAN-602: rejectNul skips multipart bodies, and all three of these land
+    // in text columns, where a NUL is a Postgres 500.
+    const nulAt = findNul({ html, title: providedTitle, filename: sourceFilename });
+    if (nulAt !== null) return nulRejection(c, nulAt);
   } else {
     const raw = await c.req.json().catch(() => null);
     const parsed = jsonCreateBody.safeParse(raw);
@@ -255,6 +260,9 @@ tripsRoutes.patch(
       if (typeof titleField === "string" && titleField.trim()) {
         providedTitle = titleField.trim().slice(0, 200);
       }
+      // SHAN-602: same multipart NUL check as POST.
+      const nulAt = findNul({ html, title: providedTitle, filename: sourceFilename });
+      if (nulAt !== null) return nulRejection(c, nulAt);
     } else {
       const raw = await c.req.json().catch(() => null);
       const parsed = jsonPatchBody.safeParse(raw);

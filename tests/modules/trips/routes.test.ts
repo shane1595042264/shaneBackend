@@ -629,3 +629,37 @@ describe("PAT handling on trip writes (SHAN-588)", () => {
     expect(mockDelete).not.toHaveBeenCalled();
   });
 });
+
+describe("NUL bytes in multipart trip uploads (SHAN-602)", () => {
+  // rejectNul only reads JSON bodies, so before this the multipart path handed
+  // a NUL straight to Postgres and answered 500 to an anonymous caller.
+  const nulForm = (field: "html" | "title" | "filename") => {
+    const form = new FormData();
+    const html = field === "html" ? "<title>Tokyo</title>a\0b" : "<title>Tokyo</title>";
+    const name = field === "filename" ? "to\0kyo.html" : "tokyo.html";
+    form.append("file", new File([html], name, { type: "text/html" }));
+    if (field === "title") form.append("title", "Tok\0yo");
+    return form;
+  };
+
+  for (const field of ["html", "title", "filename"] as const) {
+    it(`POST answers 400 for a NUL in the ${field}, before any query`, async () => {
+      const res = await app.request("/api/trips", { method: "POST", body: nulForm(field) });
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.details).toEqual([
+        { path: field, message: "Contains a NUL byte, which cannot be stored" },
+      ]);
+      expect(mockFindDuplicate).not.toHaveBeenCalled();
+      expect(mockCreate).not.toHaveBeenCalled();
+    });
+
+    it(`PATCH answers 400 for a NUL in the ${field} and writes nothing`, async () => {
+      mockGet.mockResolvedValue(tripRow(null));
+      const res = await app.request("/api/trips/tokyo", { method: "PATCH", body: nulForm(field) });
+      expect(res.status).toBe(400);
+      expect((await res.json()).details[0].path).toBe(field);
+      expect(mockUpdate).not.toHaveBeenCalled();
+    });
+  }
+});
