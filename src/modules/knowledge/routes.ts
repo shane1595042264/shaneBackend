@@ -133,6 +133,19 @@ const entriesWriteRateLimit = createPATRateLimit({
   bucket: "knowledge-entries-write",
   limitPerMinute: 30,
 });
+// SHAN-604: the rest of the knowledge writes were unthrottled. Edits, deletes
+// and connections share the card bucket above. Enrich sends an LLM request on
+// every call, so it gets the tight bucket the vocabulary copy has had since
+// SHAN-310; comments get their own, like journal and blog, so a chatty
+// commenter cannot lock out card edits.
+const enrichRateLimit = createPATRateLimit({
+  bucket: "knowledge-enrich",
+  limitPerMinute: 10,
+});
+const commentsWriteRateLimit = createPATRateLimit({
+  bucket: "knowledge-comments-write",
+  limitPerMinute: 30,
+});
 
 knowledgeRoutes.post(
   "/notes",
@@ -499,6 +512,7 @@ knowledgeRoutes.put(
   "/entries/:id",
   requireAuth,
   requireScope("knowledge:write"),
+  entriesWriteRateLimit,
   zValidator("param", uuidParamSchema),
   zValidator("json", updateWordSchema),
   async (c) => {
@@ -571,7 +585,7 @@ knowledgeRoutes.put(
 // Delete an entry. Ownership rule: caller must be the creator. Legacy entries
 // (createdBy IS NULL, predate this column) are deletable by any authed user —
 // single-user app, no one else exists to lay claim.
-knowledgeRoutes.delete("/entries/:id", requireAuth, requireScope("knowledge:write"), zValidator("param", uuidParamSchema), async (c) => {
+knowledgeRoutes.delete("/entries/:id", requireAuth, requireScope("knowledge:write"), entriesWriteRateLimit, zValidator("param", uuidParamSchema), async (c) => {
   const { id } = c.req.valid("param");
   const userId = c.get("userId") as string;
 
@@ -595,7 +609,7 @@ const bulkDeleteSchema = z.object({
   ids: z.array(uuidId()).min(1).max(100),
 });
 
-knowledgeRoutes.post("/entries/bulk-delete", requireAuth, requireScope("knowledge:write"), zValidator("json", bulkDeleteSchema), async (c) => {
+knowledgeRoutes.post("/entries/bulk-delete", requireAuth, requireScope("knowledge:write"), entriesWriteRateLimit, zValidator("json", bulkDeleteSchema), async (c) => {
   const { ids } = c.req.valid("json");
   const userId = c.get("userId") as string;
 
@@ -623,7 +637,7 @@ knowledgeRoutes.post("/entries/bulk-delete", requireAuth, requireScope("knowledg
 });
 
 // AI-enrich an existing entry
-knowledgeRoutes.post("/entries/:id/enrich", requireAuth, requireScope("knowledge:write"), zValidator("param", uuidParamSchema), async (c) => {
+knowledgeRoutes.post("/entries/:id/enrich", requireAuth, requireScope("knowledge:write"), enrichRateLimit, zValidator("param", uuidParamSchema), async (c) => {
   const { id } = c.req.valid("param");
   const userId = c.get("userId") as string;
   const [entry] = await db.select().from(vocabWords).where(eq(vocabWords.id, id));
@@ -685,7 +699,7 @@ knowledgeRoutes.get("/connections", zValidator("query", wordIdQuerySchema), asyn
   return c.json({ connections });
 });
 
-knowledgeRoutes.post("/connections", requireAuth, requireScope("knowledge:write"), zValidator("json", createConnectionSchema), async (c) => {
+knowledgeRoutes.post("/connections", requireAuth, requireScope("knowledge:write"), entriesWriteRateLimit, zValidator("json", createConnectionSchema), async (c) => {
   const body = c.req.valid("json");
   const userId = c.get("userId") as string;
 
@@ -729,7 +743,7 @@ knowledgeRoutes.post("/connections", requireAuth, requireScope("knowledge:write"
   }
 });
 
-knowledgeRoutes.delete("/connections/:id", requireAuth, requireScope("knowledge:write"), zValidator("param", uuidParamSchema), async (c) => {
+knowledgeRoutes.delete("/connections/:id", requireAuth, requireScope("knowledge:write"), entriesWriteRateLimit, zValidator("param", uuidParamSchema), async (c) => {
   const { id } = c.req.valid("param");
   const userId = c.get("userId") as string;
 
@@ -824,6 +838,7 @@ knowledgeRoutes.post(
   "/entries/:id/comments",
   requireAuth,
   requireScope("comments:write"),
+  commentsWriteRateLimit,
   zValidator("param", uuidParamSchema),
   zValidator("json", commentBody),
   async (c) => {
@@ -857,6 +872,7 @@ knowledgeRoutes.patch(
   "/comments/:id",
   requireAuth,
   requireScope("comments:write"),
+  commentsWriteRateLimit,
   zValidator("param", uuidParamSchema),
   zValidator("json", commentEditBody),
   async (c) => {
@@ -872,6 +888,7 @@ knowledgeRoutes.delete(
   "/comments/:id",
   requireAuth,
   requireScope("comments:write"),
+  commentsWriteRateLimit,
   zValidator("param", uuidParamSchema),
   async (c) => {
     const userId = c.get("userId") as string;

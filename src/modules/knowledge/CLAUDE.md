@@ -35,6 +35,7 @@ Response is always `{ entries: Entry[] }`. Partial-batch failures return `207 Mu
 - Requires either a JWT (browser cookie/localStorage path) or a PAT with the `knowledge:write` scope. Anonymous → 401.
 - JWTs bypass scope checks (the existing convention in `modules/auth/middleware.ts`).
 - Per-PAT rate limit: 30/min single, 5/min batch, separate buckets. JWTs bypass.
+- Every other knowledge write is limited per PAT too (SHAN-604): card create/edit/delete/bulk-delete and connection create/delete share one 30/min bucket (`knowledge-entries-write`), enrich has its own 10/min one (`knowledge-enrich`, one LLM call per request), comments have their own 30/min one (`knowledge-comments-write`). A new write route here takes one of these; `tests/modules/knowledge/write-rate-limits.test.ts` lists them.
 - `c.get("tokenId")` is set in middleware and logged per-request — useful for tracing which client ingested what.
 
 ## Classifier gotchas
