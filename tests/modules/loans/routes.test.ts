@@ -35,14 +35,22 @@ vi.mock("drizzle-orm", () => ({
   sql: vi.fn((strings: TemplateStringsArray, ...values: unknown[]) => ({ sql: strings.join("?"), values })),
 }));
 
-vi.mock("@/modules/auth/middleware", () => ({
-  requireAuth: async (c: any, next: any) => {
-    const u = c.req.header("X-Test-User");
-    if (!u) return c.json({ error: "auth" }, 401);
-    c.set("userId", u);
-    await next();
-  },
-}));
+// Fake only the token resolution; keep the real requireBrowserSession so the
+// PAT gate is exercised as shipped. X-Test-Scopes marks the caller as a PAT.
+vi.mock("@/modules/auth/middleware", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/modules/auth/middleware")>();
+  return {
+    ...actual,
+    requireAuth: async (c: any, next: any) => {
+      const u = c.req.header("X-Test-User");
+      if (!u) return c.json({ error: "auth" }, 401);
+      const scopes = c.req.header("X-Test-Scopes");
+      c.set("userId", u);
+      c.set("tokenScopes", scopes === undefined ? null : scopes.split(",").filter(Boolean));
+      await next();
+    },
+  };
+});
 
 import { loansRoutes } from "@/modules/loans/routes";
 
@@ -562,5 +570,55 @@ describe("DELETE /api/loans/:id — ownership", () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.ok).toBe(true);
+  });
+});
+
+describe("PAT gate (SHAN-601)", () => {
+  const pat = { "X-Test-User": USER_A, "X-Test-Scopes": "reactions:write" };
+
+  it("403s a PAT on GET before reading the ledger", async () => {
+    const res = await app.request("/api/loans", { headers: pat });
+    expect(res.status).toBe(403);
+    expect((await res.json()).error).toMatch(/browser session/);
+    expect(mockSelect).not.toHaveBeenCalled();
+  });
+
+  it("403s a PAT on POST before writing", async () => {
+    const res = await app.request("/api/loans", {
+      method: "POST",
+      headers: { ...pat, "Content-Type": "application/json" },
+      body: JSON.stringify({ borrowerName: "Bob", amount: "10" }),
+    });
+    expect(res.status).toBe(403);
+    expect(mockInsert).not.toHaveBeenCalled();
+  });
+
+  it("403s a PAT on PATCH before reading or writing", async () => {
+    const res = await app.request(`/api/loans/${ENTRY_ID}`, {
+      method: "PATCH",
+      headers: { ...pat, "Content-Type": "application/json" },
+      body: JSON.stringify({ status: "repaid" }),
+    });
+    expect(res.status).toBe(403);
+    expect(mockSelect).not.toHaveBeenCalled();
+    expect(mockUpdate).not.toHaveBeenCalled();
+  });
+
+  it("403s a PAT on DELETE before reading or deleting", async () => {
+    const res = await app.request(`/api/loans/${ENTRY_ID}`, { method: "DELETE", headers: pat });
+    expect(res.status).toBe(403);
+    expect(mockSelect).not.toHaveBeenCalled();
+    expect(mockDelete).not.toHaveBeenCalled();
+  });
+
+  it("403s a PAT with no scopes at all", async () => {
+    const res = await app.request("/api/loans", { headers: { "X-Test-User": USER_A, "X-Test-Scopes": "" } });
+    expect(res.status).toBe(403);
+  });
+
+  it("lets a browser session through", async () => {
+    selectReturning([]);
+    const res = await app.request("/api/loans", { headers: { "X-Test-User": USER_A } });
+    expect(res.status).toBe(200);
   });
 });

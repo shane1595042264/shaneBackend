@@ -5,14 +5,16 @@ import { and, desc, eq, sql } from "drizzle-orm";
 import type { PgUpdateSetSource } from "drizzle-orm/pg-core";
 import { db } from "@/db/client";
 import { loanEntries } from "@/db/schema";
-import { requireAuth } from "@/modules/auth/middleware";
+import { requireAuth, requireBrowserSession } from "@/modules/auth/middleware";
 import { uuidId } from "@/modules/shared/validators";
 import { encodeKeysetCursor, keysetBefore, keysetCursorParam, parseKeysetCursor } from "@/modules/shared/keyset";
 
 type AuthEnv = { Variables: { userId: string } };
 export const loansRoutes = new Hono<AuthEnv>();
 
-loansRoutes.use("*", requireAuth);
+// Loans has no PAT scope of its own, so requireAuth alone let any token, whatever
+// it was minted for, read and rewrite the ledger (SHAN-601). Browser only.
+loansRoutes.use("*", requireAuth, requireBrowserSession("Loans"));
 
 const idParamSchema = z.object({
   id: uuidId(),
