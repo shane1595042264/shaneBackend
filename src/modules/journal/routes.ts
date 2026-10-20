@@ -8,7 +8,7 @@ import {
   SuggestionNotPendingError,
   VersionNotFoundError,
 } from "@/modules/shared/domain-errors";
-import { requireAuth, optionalAuth, requireScope } from "@/modules/auth/middleware";
+import { requireAuth, optionalAuth, requireScope, requireAnyScope } from "@/modules/auth/middleware";
 import { getUserTimezone } from "@/modules/auth/user-prefs";
 import { listEntries, getEntryByDate, createEntry, softDeleteEntry } from "./entries-repo";
 import {
@@ -1090,6 +1090,10 @@ journalRoutes.get("/comments/:id/reactions", optionalAuth, requireJournalMembers
 //   accepted image/svg+xml which is an XSS vector when the URL is opened
 //   directly, and (b) any client can spoof file.type. Allowlist:
 //   png/jpeg/gif/webp.
+//   A PAT needs one of the scopes that write markdown somewhere an image can
+//   be embedded (SHAN-603). Before that any member's PAT could upload,
+//   reactions-only and scopeless ones included, and these bytes are public
+//   and can never be deleted.
 // GET /api/journal/images/:id — streams the raw bytes with the stored mime
 //   type. Deliberately NOT behind requireJournalMembership even though the
 //   journal is invite-only (SHAN-475): an <img> tag sends no Authorization
@@ -1104,48 +1108,54 @@ const IMAGE_MAX_BYTES = 5 * 1024 * 1024;
 const IMAGE_DAILY_LIMIT = 100;
 const IMAGE_WINDOW_MS = 24 * 60 * 60 * 1000;
 
-journalRoutes.post("/images", requireAuth, requireJournalMembership, async (c) => {
-  const userId = c.get("userId") as string;
-  const contentType = c.req.header("Content-Type") ?? "";
-  if (!contentType.includes("multipart/form-data")) {
-    return c.json({ error: "Expected multipart/form-data with a 'file' field" }, 400);
-  }
-  const form = await c.req.formData();
-  const file = form.get("file");
-  if (!(file instanceof File)) {
-    return c.json({ error: "Missing 'file' in multipart upload" }, 400);
-  }
-  if (file.size === 0) {
-    return c.json({ error: "Empty file" }, 400);
-  }
-  if (file.size > IMAGE_MAX_BYTES) {
-    return c.json({ error: "Image too large (max 5MB)" }, 413);
-  }
-  const now = new Date();
-  const windowStart = new Date(now.getTime() - IMAGE_WINDOW_MS);
-  const { count, oldestCreatedAt } = await countUploadsInWindow(userId, windowStart);
-  if (count >= IMAGE_DAILY_LIMIT) {
-    // Honest Retry-After: when the oldest row exits the trailing window, the
-    // count drops by one and the next upload succeeds. Min 1s so we never
-    // emit Retry-After: 0 (which some clients treat as "retry immediately").
-    const expiresAtMs = oldestCreatedAt
-      ? new Date(oldestCreatedAt).getTime() + IMAGE_WINDOW_MS
-      : now.getTime() + IMAGE_WINDOW_MS;
-    const retryAfter = Math.max(1, Math.ceil((expiresAtMs - now.getTime()) / 1000));
-    return c.json(
-      { error: `Upload quota exceeded (${IMAGE_DAILY_LIMIT}/24h). Try again later.` },
-      429,
-      { "Retry-After": String(retryAfter) },
-    );
-  }
-  const buffer = Buffer.from(await file.arrayBuffer());
-  const sniffedMime = sniffImageMime(buffer);
-  if (!sniffedMime) {
-    return c.json({ error: "Unsupported image type — png/jpeg/gif/webp only" }, 415);
-  }
-  const { id } = await insertImage({ uploadedBy: userId, mimeType: sniffedMime, data: buffer });
-  return c.json({ id, url: `/api/journal/images/${id}` }, 201);
-});
+journalRoutes.post(
+  "/images",
+  requireAuth,
+  requireAnyScope("entries:write", "suggestions:write", "comments:write", "knowledge:write"),
+  requireJournalMembership,
+  async (c) => {
+    const userId = c.get("userId") as string;
+    const contentType = c.req.header("Content-Type") ?? "";
+    if (!contentType.includes("multipart/form-data")) {
+      return c.json({ error: "Expected multipart/form-data with a 'file' field" }, 400);
+    }
+    const form = await c.req.formData();
+    const file = form.get("file");
+    if (!(file instanceof File)) {
+      return c.json({ error: "Missing 'file' in multipart upload" }, 400);
+    }
+    if (file.size === 0) {
+      return c.json({ error: "Empty file" }, 400);
+    }
+    if (file.size > IMAGE_MAX_BYTES) {
+      return c.json({ error: "Image too large (max 5MB)" }, 413);
+    }
+    const now = new Date();
+    const windowStart = new Date(now.getTime() - IMAGE_WINDOW_MS);
+    const { count, oldestCreatedAt } = await countUploadsInWindow(userId, windowStart);
+    if (count >= IMAGE_DAILY_LIMIT) {
+      // Honest Retry-After: when the oldest row exits the trailing window, the
+      // count drops by one and the next upload succeeds. Min 1s so we never
+      // emit Retry-After: 0 (which some clients treat as "retry immediately").
+      const expiresAtMs = oldestCreatedAt
+        ? new Date(oldestCreatedAt).getTime() + IMAGE_WINDOW_MS
+        : now.getTime() + IMAGE_WINDOW_MS;
+      const retryAfter = Math.max(1, Math.ceil((expiresAtMs - now.getTime()) / 1000));
+      return c.json(
+        { error: `Upload quota exceeded (${IMAGE_DAILY_LIMIT}/24h). Try again later.` },
+        429,
+        { "Retry-After": String(retryAfter) },
+      );
+    }
+    const buffer = Buffer.from(await file.arrayBuffer());
+    const sniffedMime = sniffImageMime(buffer);
+    if (!sniffedMime) {
+      return c.json({ error: "Unsupported image type — png/jpeg/gif/webp only" }, 415);
+    }
+    const { id } = await insertImage({ uploadedBy: userId, mimeType: sniffedMime, data: buffer });
+    return c.json({ id, url: `/api/journal/images/${id}` }, 201);
+  },
+);
 
 journalRoutes.get("/images/:id", zValidator("param", uuidParam), async (c) => {
   const { id } = c.req.valid("param");

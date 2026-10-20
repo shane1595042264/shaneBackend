@@ -86,21 +86,34 @@ vi.mock("@/modules/journal/access-middleware", () => ({
   requireJournalMembership: async (_c: any, next: any) => { await next(); },
 }));
 
-vi.mock("@/modules/auth/middleware", () => ({
-  optionalAuth: async (c: any, next: any) => {
-    c.set("userId", c.req.header("X-Test-User") ?? null);
-    c.set("tokenScopes", null);
-    await next();
-  },
-  requireAuth: async (c: any, next: any) => {
-    const u = c.req.header("X-Test-User");
-    if (!u) return c.json({ error: "auth" }, 401);
-    c.set("userId", u);
-    c.set("tokenScopes", null);
-    await next();
-  },
-  requireScope: () => async (_c: any, next: any) => { await next(); },
-}));
+// X-Test-Scopes turns the caller into a PAT with those comma-separated scopes
+// (empty string = a scopeless PAT); without it the caller is a JWT session.
+// requireAnyScope is the real one, so the upload gate is tested as wired.
+vi.mock("@/modules/auth/middleware", async () => {
+  const actual = await vi.importActual<typeof import("@/modules/auth/middleware")>(
+    "@/modules/auth/middleware",
+  );
+  const scopesFrom = (c: any) => {
+    const raw = c.req.header("X-Test-Scopes");
+    return raw === undefined ? null : raw.split(",").filter(Boolean);
+  };
+  return {
+    optionalAuth: async (c: any, next: any) => {
+      c.set("userId", c.req.header("X-Test-User") ?? null);
+      c.set("tokenScopes", scopesFrom(c));
+      await next();
+    },
+    requireAuth: async (c: any, next: any) => {
+      const u = c.req.header("X-Test-User");
+      if (!u) return c.json({ error: "auth" }, 401);
+      c.set("userId", u);
+      c.set("tokenScopes", scopesFrom(c));
+      await next();
+    },
+    requireScope: () => async (_c: any, next: any) => { await next(); },
+    requireAnyScope: actual.requireAnyScope,
+  };
+});
 
 import { journalRoutes } from "@/modules/journal/routes";
 
@@ -139,6 +152,45 @@ describe("POST /api/journal/images", () => {
     expect(mockInsertImage).toHaveBeenCalledTimes(1);
     expect(mockInsertImage.mock.calls[0][0].mimeType).toBe("image/png");
     expect(mockInsertImage.mock.calls[0][0].uploadedBy).toBe("u1");
+  });
+
+  // SHAN-603: a PAT must hold a scope that writes markdown somewhere.
+  it.each([
+    ["reactions:write"],
+    ["trips:write,practice:write"],
+    [""],
+  ])("403 for a PAT with scopes '%s', before the body is read", async (scopes) => {
+    const form = new FormData();
+    form.append("file", new File([PNG_SIG], "x.png", { type: "image/png" }));
+    const res = await app.request("/api/journal/images", {
+      method: "POST",
+      headers: { "X-Test-User": "u1", "X-Test-Scopes": scopes },
+      body: form,
+    });
+    expect(res.status).toBe(403);
+    expect((await res.json()).error).toBe(
+      "Token missing required scope: one of entries:write, suggestions:write, comments:write, knowledge:write",
+    );
+    expect(mockCountUploadsInWindow).not.toHaveBeenCalled();
+    expect(mockInsertImage).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["entries:write"],
+    ["suggestions:write"],
+    ["comments:write"],
+    ["reactions:write,knowledge:write"],
+  ])("201 for a PAT with scopes '%s'", async (scopes) => {
+    mockInsertImage.mockResolvedValue({ id: "img-2" });
+    const form = new FormData();
+    form.append("file", new File([PNG_SIG], "x.png", { type: "image/png" }));
+    const res = await app.request("/api/journal/images", {
+      method: "POST",
+      headers: { "X-Test-User": "u1", "X-Test-Scopes": scopes },
+      body: form,
+    });
+    expect(res.status).toBe(201);
+    expect(mockInsertImage).toHaveBeenCalledTimes(1);
   });
 
   it("415 when client uploads an SVG even with image/svg+xml content type", async () => {

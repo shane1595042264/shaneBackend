@@ -69,6 +69,9 @@ vi.mock("@/modules/auth/middleware", () => ({
   requireScope: () => async (_c: any, next: any) => {
     await next();
   },
+  requireAnyScope: () => async (_c: any, next: any) => {
+    await next();
+  },
 }));
 
 import { journalRoutes } from "@/modules/journal/routes";

@@ -36,6 +36,7 @@ vi.mock("@/modules/auth/middleware", () => ({
   optionalAuth: async (_c: any, next: any) => { await next(); },
   requireAuth: async (_c: any, next: any) => { await next(); },
   requireScope: () => async (_c: any, next: any) => { await next(); },
+  requireAnyScope: () => async (_c: any, next: any) => { await next(); },
 }));
 vi.mock("drizzle-orm", () => ({
   eq: vi.fn((c, v) => ({ c, v })),

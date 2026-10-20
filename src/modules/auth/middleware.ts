@@ -64,6 +64,23 @@ export function requireScope(scope: string) {
 }
 
 /**
+ * Like requireScope, but any one of `scopes` is enough. For routes that
+ * serve several features, each with its own scope (the journal image
+ * uploader feeds entries, comments, suggestions and knowledge notes), so a
+ * token that can write any of them may use it and a token that can write
+ * none of them, such as a reactions-only PAT, may not. JWTs bypass.
+ */
+export function requireAnyScope(...scopes: string[]) {
+  return createMiddleware<{ Variables: AuthVars }>(async (c, next) => {
+    const held = c.get("tokenScopes");
+    if (held !== null && !scopes.some((s) => held.includes(s))) {
+      return c.json({ error: `Token missing required scope: one of ${scopes.join(", ")}` }, 403);
+    }
+    await next();
+  });
+}
+
+/**
  * Reject PATs on routes that are browser-session only. Mount after
  * requireAuth; JWTs (scopes === null) pass, any PAT gets 403 whatever
  * its scopes. Use this for modules that have no PAT scope of their own,

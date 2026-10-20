@@ -29,7 +29,14 @@ vi.mock("drizzle-orm", () => ({
 }));
 
 import { jwtVerify, SignJWT } from "jose";
-import { optionalAuth, requireAuth, requireScope, requireAdmin, requireBrowserSession } from "@/modules/auth/middleware";
+import {
+  optionalAuth,
+  requireAuth,
+  requireScope,
+  requireAnyScope,
+  requireAdmin,
+  requireBrowserSession,
+} from "@/modules/auth/middleware";
 
 const SECRET = new TextEncoder().encode("test-secret-min-32-bytes-long-xxxx");
 
@@ -118,6 +125,40 @@ describe("requireScope", () => {
   it("bypasses scope check for a JWT session (scopes is null)", async () => {
     const tok = await makeJwt("user-7");
     const app = new Hono().use(requireAuth).use(requireScope("entries:write")).get("/", (c) => c.text("ok"));
+    const res = await app.request("/", { headers: { Authorization: `Bearer ${tok}` } });
+    expect(res.status).toBe(200);
+  });
+});
+
+describe("requireAnyScope", () => {
+  const app = new Hono()
+    .use(requireAuth)
+    .use(requireAnyScope("entries:write", "comments:write"))
+    .get("/", (c) => c.text("ok"));
+
+  it("allows a PAT holding any one of the scopes", async () => {
+    mockLookupActiveToken.mockResolvedValue({ userId: "user-5a", scopes: ["reactions:write", "comments:write"] });
+    const res = await app.request("/", { headers: { Authorization: "Bearer pat_abc" } });
+    expect(res.status).toBe(200);
+  });
+
+  it("blocks a PAT holding none of them", async () => {
+    mockLookupActiveToken.mockResolvedValue({ userId: "user-5b", scopes: ["reactions:write"] });
+    const res = await app.request("/", { headers: { Authorization: "Bearer pat_abc" } });
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({
+      error: "Token missing required scope: one of entries:write, comments:write",
+    });
+  });
+
+  it("blocks a PAT with no scopes", async () => {
+    mockLookupActiveToken.mockResolvedValue({ userId: "user-5c", scopes: [] });
+    const res = await app.request("/", { headers: { Authorization: "Bearer pat_abc" } });
+    expect(res.status).toBe(403);
+  });
+
+  it("bypasses the check for a JWT session", async () => {
+    const tok = await makeJwt("user-5d");
     const res = await app.request("/", { headers: { Authorization: `Bearer ${tok}` } });
     expect(res.status).toBe(200);
   });

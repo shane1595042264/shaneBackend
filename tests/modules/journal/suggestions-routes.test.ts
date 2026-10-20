@@ -79,6 +79,7 @@ vi.mock("@/modules/auth/middleware", () => ({
     await next();
   },
   requireScope: () => async (_c: any, next: any) => { await next(); },
+  requireAnyScope: () => async (_c: any, next: any) => { await next(); },
 }));
 
 function chain(rows: unknown[]) {
