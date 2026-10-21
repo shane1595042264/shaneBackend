@@ -34,24 +34,35 @@ vi.mock("@/modules/auth/user-prefs", () => ({
 // X-Test-Token presence flips the request from "JWT" to "PAT" by setting
 // tokenId. The PAT rate limiter only counts when tokenId is non-null, so
 // existing tests (which never send the header) bypass it automatically.
+// A PAT holds entries:write unless X-Test-Scopes lists its scopes instead
+// (comma-separated, empty for none), and requireScope enforces them the way
+// the real middleware does.
+const scopesFor = (c: any): string[] | null => {
+  if (!c.req.header("X-Test-Token")) return null;
+  const listed = c.req.header("X-Test-Scopes");
+  return listed === undefined ? ["entries:write"] : listed.split(",").filter(Boolean);
+};
+
 vi.mock("@/modules/auth/middleware", () => ({
   optionalAuth: async (c: any, next: any) => {
     c.set("userId", c.req.header("X-Test-User") ?? null);
-    const token = c.req.header("X-Test-Token");
-    c.set("tokenScopes", token ? [] : null);
-    c.set("tokenId", token ?? null);
+    c.set("tokenScopes", scopesFor(c));
+    c.set("tokenId", c.req.header("X-Test-Token") ?? null);
     await next();
   },
   requireAuth: async (c: any, next: any) => {
     const u = c.req.header("X-Test-User");
     if (!u) return c.json({ error: "auth" }, 401);
     c.set("userId", u);
-    const token = c.req.header("X-Test-Token");
-    c.set("tokenScopes", token ? [] : null);
-    c.set("tokenId", token ?? null);
+    c.set("tokenScopes", scopesFor(c));
+    c.set("tokenId", c.req.header("X-Test-Token") ?? null);
     await next();
   },
-  requireScope: () => async (_c: any, next: any) => {
+  requireScope: (scope: string) => async (c: any, next: any) => {
+    const scopes = c.get("tokenScopes");
+    if (scopes !== null && !scopes.includes(scope)) {
+      return c.json({ error: `Token missing required scope: ${scope}` }, 403);
+    }
     await next();
   },
 }));
@@ -258,6 +269,26 @@ describe("GET /api/tea-entries", () => {
     expect(res.status).toBe(400);
     expect(mockListForAuthor).not.toHaveBeenCalled();
   });
+
+  // SHAN-605: the list was behind requireAuth alone, so any PAT could
+  // enumerate its owner's private entries.
+  it("403s a PAT without entries:write and never reads the list (SHAN-605)", async () => {
+    const res = await app.request("/api/tea-entries", {
+      headers: { "X-Test-User": "u1", "X-Test-Token": "t1", "X-Test-Scopes": "reactions:write" },
+    });
+    expect(res.status).toBe(403);
+    expect((await res.json()).error).toBe("Token missing required scope: entries:write");
+    expect(mockListForAuthor).not.toHaveBeenCalled();
+  });
+
+  it("serves the list to a PAT holding entries:write (SHAN-605)", async () => {
+    mockListForAuthor.mockResolvedValue([{ id: VALID_UUID, title: "T" }]);
+    const res = await app.request("/api/tea-entries", {
+      headers: { "X-Test-User": "u1", "X-Test-Token": "t1" },
+    });
+    expect(res.status).toBe(200);
+    expect((await res.json()).entries).toHaveLength(1);
+  });
 });
 
 describe("GET /api/tea-entries/public (removed — SHAN-334)", () => {
@@ -296,6 +327,59 @@ describe("GET /api/tea-entries/:id", () => {
     expect(body.isAuthor).toBe(true);
     expect(body.entry.pin).toBe("1234");
     expect(body.entry.content).toBe("secret");
+  });
+
+  // SHAN-605: the author view carries the PIN, so a PAT of the author needs
+  // entries:write to get it. Without the scope it is treated as a non-author.
+  describe("author PATs (SHAN-605)", () => {
+    const authorRow = {
+      id: VALID_UUID,
+      authorId: "u1",
+      title: null,
+      content: "secret",
+      pin: "1234",
+    };
+    const lowScopePat = { "X-Test-User": "u1", "X-Test-Token": "t1", "X-Test-Scopes": "reactions:write" };
+
+    it("gives a PAT with entries:write the author view, PIN included", async () => {
+      mockGetById.mockResolvedValue(authorRow);
+      const res = await app.request(`/api/tea-entries/${VALID_UUID}`, {
+        headers: { "X-Test-User": "u1", "X-Test-Token": "t1" },
+      });
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.isAuthor).toBe(true);
+      expect(body.entry.pin).toBe("1234");
+    });
+
+    it("asks a PAT without entries:write for the PIN like any non-author", async () => {
+      mockGetById.mockResolvedValue(authorRow);
+      const res = await app.request(`/api/tea-entries/${VALID_UUID}`, { headers: lowScopePat });
+      expect(res.status).toBe(401);
+      const body = await res.json();
+      expect(body.error).toBe("PIN required");
+      expect(body).not.toHaveProperty("entry");
+    });
+
+    it("opens the entry for that PAT with the right PIN, without returning the PIN", async () => {
+      mockGetById.mockResolvedValue(authorRow);
+      const res = await app.request(`/api/tea-entries/${VALID_UUID}`, {
+        headers: { ...lowScopePat, "X-Tea-Pin": "1234" },
+      });
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.isAuthor).toBe(false);
+      expect(body.entry.content).toBe("secret");
+      expect(body.entry).not.toHaveProperty("pin");
+    });
+
+    it("refuses that PAT a wrong PIN", async () => {
+      mockGetById.mockResolvedValue(authorRow);
+      const res = await app.request(`/api/tea-entries/${VALID_UUID}`, {
+        headers: { ...lowScopePat, "X-Tea-Pin": "9999" },
+      });
+      expect(res.status).toBe(403);
+    });
   });
 
   it("401 to non-author with no PIN header returns authorId for localStorage lookup", async () => {

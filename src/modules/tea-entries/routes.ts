@@ -129,17 +129,27 @@ teaEntriesRoutes.post(
 // list is returned and nextCursor is null (legacy behavior). When a full page
 // (length === limit) comes back, nextCursor encodes the last row's createdAt
 // and id so the next page can't skip a tie.
-teaEntriesRoutes.get("/", requireAuth, zValidator("query", listQuery), async (c) => {
-  const userId = c.get("userId") as string;
-  const { limit, cursor } = c.req.valid("query");
-  const entries = await listTeaEntriesForAuthor(userId, { limit, cursor });
-  const last = entries[entries.length - 1];
-  const nextCursor =
-    limit && entries.length === limit ? encodeKeysetCursor(last.createdAt, last.id) : null;
-  return c.json({ entries, nextCursor });
-});
+//
+// SHAN-605: the list is the author's private index (ids, titles, excerpts),
+// so a PAT needs entries:write, the scope every tea write already takes.
+// Without it a reactions-only journal token could enumerate the whole diary.
+teaEntriesRoutes.get(
+  "/",
+  requireAuth,
+  requireScope("entries:write"),
+  zValidator("query", listQuery),
+  async (c) => {
+    const userId = c.get("userId") as string;
+    const { limit, cursor } = c.req.valid("query");
+    const entries = await listTeaEntriesForAuthor(userId, { limit, cursor });
+    const last = entries[entries.length - 1];
+    const nextCursor =
+      limit && entries.length === limit ? encodeKeysetCursor(last.createdAt, last.id) : null;
+    return c.json({ entries, nextCursor });
+  },
+);
 
-// Per-post auth: the author always gets the full row (content + pin display).
+// Per-post auth: the author gets the full row (content + pin display).
 // Non-authors must supply the matching 4-digit PIN in X-Tea-Pin; on success we
 // return only the content (never the pin). Anonymous viewers go down the same
 // PIN path as a signed-in non-author — knowing the entry id is the gate.
@@ -153,7 +163,14 @@ teaEntriesRoutes.get(
     const row = await getTeaEntryById(id);
     if (!row) return c.json({ error: "Not found" }, 404);
 
-    if (userId && row.authorId === userId) {
+    // SHAN-605: the author view carries the PIN, so it goes to a browser
+    // session or a PAT holding entries:write (which can already PATCH and
+    // read the PIN back). Any other PAT of the author is treated like a
+    // non-author: the right X-Tea-Pin still opens the entry, but the PIN is
+    // never returned.
+    const scopes = c.get("tokenScopes");
+    const authorView = scopes === null || scopes.includes("entries:write");
+    if (userId && row.authorId === userId && authorView) {
       // Author response includes the PIN so the read page can render the
       // asterisks-and-toggle UI. Non-author paths NEVER return the PIN.
       return c.json({
