@@ -28,7 +28,17 @@ const SLUG_RE = /^[a-z0-9-]+\/[a-z0-9-]+$/;
 // candidate paths are normalized before comparison below.
 const BACKGROUND_D = "m00h512v512h0z";
 
+// After a failed refresh, wait this long before asking GitHub again
+// (SHAN-606). Without it every search re-waited the 8s timeout before
+// falling back. Shorter when there is no stale tree to serve, so a cold
+// deploy recovers soon after GitHub does.
+const STALE_BACKOFF_MS = 5 * 60_000;
+const COLD_BACKOFF_MS = 30_000;
+
 let treeCache: { slugs: string[]; expiresAt: number } | null = null;
+// One tree download shared by every search that arrives while it runs.
+let inflight: Promise<string[]> | null = null;
+let retryAfter = 0;
 
 // Query-token expansions for games whose obvious name doesn't match the
 // icon's filename. Values are extra tokens scored alongside the originals.
@@ -49,6 +59,20 @@ const SYNONYMS: Record<string, string[]> = {
 async function getTree(): Promise<string[]> {
   const now = Date.now();
   if (treeCache && treeCache.expiresAt > now) return treeCache.slugs;
+  if (now < retryAfter) {
+    if (treeCache) return treeCache.slugs;
+    throw new Error("GitHub tree unavailable, retrying later");
+  }
+  if (!inflight) {
+    inflight = fetchTree().finally(() => {
+      inflight = null;
+    });
+  }
+  return inflight;
+}
+
+async function fetchTree(): Promise<string[]> {
+  const now = Date.now();
   try {
     const headers: Record<string, string> = {
       "User-Agent": "ShaneLiPersonalWebsite/1.0",
@@ -74,8 +98,10 @@ async function getTree(): Promise<string[]> {
       .map((t) => t.path.slice(0, -4));
     if (slugs.length === 0) throw new Error("GitHub tree was empty");
     treeCache = { slugs, expiresAt: now + TREE_TTL_MS };
+    retryAfter = 0;
     return slugs;
   } catch (err) {
+    retryAfter = Date.now() + (treeCache ? STALE_BACKOFF_MS : COLD_BACKOFF_MS);
     // Serve stale rather than failing the add-game flow on a GitHub blip.
     if (treeCache) return treeCache.slugs;
     throw err;
@@ -144,6 +170,8 @@ export async function fetchIconPath(
 /** Test-only: clear the tree cache. */
 export function __resetIconCache() {
   treeCache = null;
+  inflight = null;
+  retryAfter = 0;
 }
 
 /** Test-only: seed the tree cache; expired=true exercises stale-serve. */

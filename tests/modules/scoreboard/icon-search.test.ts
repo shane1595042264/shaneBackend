@@ -66,6 +66,55 @@ describe("searchIcons", () => {
     const out = await searchIcons("pillow");
     expect(out[0].slug).toBe("lorc/pillow");
   });
+
+  it("shares one tree download between concurrent cold searches", async () => {
+    mockFetch.mockResolvedValue(treeResponse(["lorc/pillow.svg"]));
+    const outs = await Promise.all([
+      searchIcons("pillow"),
+      searchIcons("pillow"),
+      searchIcons("pill"),
+    ]);
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    for (const out of outs) expect(out[0].slug).toBe("lorc/pillow");
+  });
+
+  it("backs off after a failed refresh instead of re-asking GitHub on every search", async () => {
+    vi.useFakeTimers();
+    try {
+      __setTreeCache(["lorc/pillow"], true);
+      mockFetch.mockRejectedValue(new Error("rate limited"));
+      await searchIcons("pillow");
+      const out = await searchIcons("pillow");
+      expect(out[0].slug).toBe("lorc/pillow");
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+
+      vi.advanceTimersByTime(5 * 60_000 + 1);
+      mockFetch.mockResolvedValue(treeResponse(["lorc/pillow.svg", "lorc/pillow-fort.svg"]));
+      const fresh = await searchIcons("pillow");
+      expect(mockFetch).toHaveBeenCalledTimes(2);
+      expect(fresh.map((r) => r.slug)).toContain("lorc/pillow-fort");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("fails fast on a cold cache while GitHub is down, then retries after the window", async () => {
+    vi.useFakeTimers();
+    try {
+      mockFetch.mockRejectedValue(new Error("unreachable"));
+      await expect(searchIcons("pillow")).rejects.toThrow();
+      await expect(searchIcons("pillow")).rejects.toThrow();
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+
+      vi.advanceTimersByTime(30_000 + 1);
+      mockFetch.mockResolvedValue(treeResponse(["lorc/pillow.svg"]));
+      const out = await searchIcons("pillow");
+      expect(mockFetch).toHaveBeenCalledTimes(2);
+      expect(out[0].slug).toBe("lorc/pillow");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe("fetchIconPath", () => {
