@@ -15,7 +15,7 @@ vi.mock("@/db/client", () => ({
 vi.mock("@/db/schema", () => ({
   courses: {
     id: {}, userId: {}, slug: {}, url: {}, title: {}, description: {},
-    category: {}, difficulty: {}, durationMinutes: {}, tags: {},
+    category: {}, difficulty: {}, durationMinutes: {}, tags: {}, visibility: {},
     createdAt: {}, updatedAt: {},
   },
   courseCovers: {
@@ -29,7 +29,11 @@ vi.mock("@/db/schema", () => ({
     id: {}, courseId: {}, parentCommentId: {}, authorId: {}, content: {},
     editedAt: {}, createdAt: {}, updatedAt: {},
   },
-  users: { id: {}, name: {}, avatarUrl: {} },
+  users: { id: {}, name: {}, avatarUrl: {}, email: {} },
+}));
+
+vi.mock("@/modules/journal/access-repo", () => ({
+  ownerEmail: () => "owner@example.com",
 }));
 
 vi.mock("drizzle-orm", () => {
@@ -37,6 +41,7 @@ vi.mock("drizzle-orm", () => {
   return {
     eq: vi.fn((a, b) => ({ a, b, op: "eq" })),
     and: vi.fn((...args: unknown[]) => ({ args, op: "and" })),
+    or: vi.fn((...args: unknown[]) => ({ args, op: "or" })),
     lt: vi.fn((a, b) => ({ a, b, op: "lt" })),
     inArray: vi.fn((a, b) => ({ a, b, op: "inArray" })),
     asc: vi.fn((c) => ({ c, dir: "asc" })),
@@ -87,7 +92,8 @@ function deleteChain(returningRows: unknown[]) {
   return { chain: { where }, where, returning };
 }
 
-import { inArray, lt } from "drizzle-orm";
+import { and, eq, inArray, lt, or } from "drizzle-orm";
+import { courses } from "@/db/schema";
 import {
   createCourse,
   listCourses,
@@ -97,6 +103,7 @@ import {
   myRatings,
   getCourseById,
   slugTaken,
+  isSiteOwner,
   updateCourse,
   deleteCourse,
   upsertRating,
@@ -111,8 +118,11 @@ beforeEach(() => vi.clearAllMocks());
 const courseRow = {
   id: "c1", userId: "u1", slug: "pi2-heist", url: "https://x/courses/pi2-heist/",
   title: "The Pi/2 Heist", description: "d", category: "math", difficulty: "advanced",
-  durationMinutes: 28, tags: ["integrals"], createdAt: new Date(), updatedAt: new Date(),
+  durationMinutes: 28, tags: ["integrals"], visibility: "public", createdAt: new Date(),
+  updatedAt: new Date(),
 };
+
+const owner = { userId: "shane", isSiteOwner: true };
 
 describe("createCourse", () => {
   it("inserts the row and returns it", async () => {
@@ -121,7 +131,7 @@ describe("createCourse", () => {
     const out = await createCourse({
       userId: "u1", slug: "pi2-heist", url: courseRow.url, title: courseRow.title,
       description: "d", category: "math", difficulty: "advanced", durationMinutes: 28,
-      tags: ["integrals"],
+      tags: ["integrals"], visibility: "public",
     });
     expect(ic.values.mock.calls[0][0]).toMatchObject({ userId: "u1", slug: "pi2-heist", category: "math" });
     expect(out).toEqual(courseRow);
@@ -136,7 +146,7 @@ describe("listCourses / getCourseById / slugTaken", () => {
   it("skips the limit clause when no limit is given", async () => {
     const c = chain([courseRow]);
     mockSelect.mockReturnValue(c);
-    await listCourses();
+    await listCourses({ viewer: owner });
     expect(c.limit).not.toHaveBeenCalled();
     expect(c.where).toHaveBeenCalledWith(undefined);
   });
@@ -153,9 +163,48 @@ describe("listCourses / getCourseById / slugTaken", () => {
   it("ignores an unparseable cursor rather than filtering on NaN", async () => {
     const c = chain([courseRow]);
     mockSelect.mockReturnValue(c);
-    await listCourses({ cursor: "not-a-date" });
+    await listCourses({ cursor: "not-a-date", viewer: owner });
     expect(lt).not.toHaveBeenCalled();
     expect(c.where).toHaveBeenCalledWith(undefined);
+  });
+});
+
+describe("listCourses visibility (SHAN-617)", () => {
+  it("shows only public courses when no viewer is given", async () => {
+    const c = chain([]);
+    mockSelect.mockReturnValue(c);
+    await listCourses();
+    expect(eq).toHaveBeenCalledWith(courses.visibility, "public");
+    expect(or).not.toHaveBeenCalled();
+    expect(c.where).toHaveBeenCalledWith(and(eq(courses.visibility, "public")));
+  });
+  it("adds the viewer's own private courses for a signed-in non-owner", async () => {
+    mockSelect.mockReturnValue(chain([]));
+    await listCourses({ viewer: { userId: "u1", isSiteOwner: false } });
+    expect(or).toHaveBeenCalledWith(
+      eq(courses.visibility, "public"),
+      eq(courses.userId, "u1"),
+    );
+  });
+  it("does not filter for the site owner", async () => {
+    const c = chain([]);
+    mockSelect.mockReturnValue(c);
+    await listCourses({ viewer: owner });
+    expect(eq).not.toHaveBeenCalled();
+    expect(c.where).toHaveBeenCalledWith(undefined);
+  });
+});
+
+describe("isSiteOwner", () => {
+  it("matches the owner email case- and whitespace-insensitively", async () => {
+    mockSelect.mockReturnValue(chain([{ email: " Owner@Example.com " }]));
+    await expect(isSiteOwner("shane")).resolves.toBe(true);
+  });
+  it("is false for anyone else and for an unknown user", async () => {
+    mockSelect.mockReturnValue(chain([{ email: "ava@example.com" }]));
+    await expect(isSiteOwner("u1")).resolves.toBe(false);
+    mockSelect.mockReturnValue(chain([]));
+    await expect(isSiteOwner("ghost")).resolves.toBe(false);
   });
 });
 

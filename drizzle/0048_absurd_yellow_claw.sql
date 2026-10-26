@@ -1,0 +1,1 @@
+ALTER TABLE "courses" ADD COLUMN "visibility" varchar(10) DEFAULT 'public' NOT NULL;

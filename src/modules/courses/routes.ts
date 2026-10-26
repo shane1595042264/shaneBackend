@@ -17,7 +17,10 @@ import { CourseFetchError, classifyCourse, fetchCourseText } from "./classifier"
 import {
   COURSE_CATEGORIES,
   COURSE_DIFFICULTIES,
+  COURSE_VISIBILITIES,
   type CourseRow,
+  type CourseViewer,
+  isSiteOwner,
   createCourse,
   listCourses,
   getCourseById,
@@ -69,6 +72,7 @@ const urlSchema = httpUrlSchema;
 const createBody = z.object({
   url: urlSchema,
   title: trimmedOptional(200),
+  visibility: z.enum(COURSE_VISIBILITIES).default("public"),
 });
 
 const patchBody = z
@@ -80,6 +84,7 @@ const patchBody = z
     durationMinutes: z.number().int().min(1).max(100_000).nullish(),
     tags: trimmedLabels(40, 8),
     url: urlSchema.optional(),
+    visibility: z.enum(COURSE_VISIBILITIES).optional(),
   })
   .refine(
     (b) =>
@@ -89,7 +94,8 @@ const patchBody = z
       b.difficulty !== undefined ||
       b.durationMinutes !== undefined ||
       b.tags !== undefined ||
-      b.url !== undefined,
+      b.url !== undefined ||
+      b.visibility !== undefined,
     { message: "At least one field is required" },
   );
 
@@ -135,6 +141,7 @@ function serializeCourse(row: CourseRow, meta: CourseMeta) {
     difficulty: row.difficulty,
     durationMinutes: row.durationMinutes,
     tags: Array.isArray(row.tags) ? row.tags : [],
+    visibility: row.visibility,
     ownerId: row.userId,
     coverUrl: coverUrlFor(row.id, meta.coverUpdatedAt),
     rating: { average: meta.average, count: meta.count },
@@ -169,10 +176,39 @@ async function metaFor(courseId: string, userId: string | null): Promise<CourseM
   };
 }
 
+// Segments under shanejli.com/courses/ that are not course slugs: the site's
+// middleware 404s them without probing (SHAN-460), and /courses/private/<slug>
+// is where private courses are read (SHAN-617). A course minted with one of
+// these slugs would be unreachable, so the generator treats them as taken.
+const RESERVED_SLUGS = new Set(["covers", "private"]);
+
+async function courseSlugTaken(slug: string): Promise<boolean> {
+  return RESERVED_SLUGS.has(slug) || slugTaken(slug);
+}
+
+// ---- Private courses (SHAN-617) ------------------------------------------
+
+async function viewerFor(userId: string | null): Promise<CourseViewer> {
+  return { userId, isSiteOwner: userId ? await isSiteOwner(userId) : false };
+}
+
+/**
+ * A private course is readable only by its creator and the site owner. Every
+ * route that takes a course id or slug answers anyone else with the same 404
+ * as a missing course, so a private course cannot be confirmed to exist.
+ */
+async function canSee(row: CourseRow, userId: string | null): Promise<boolean> {
+  if (row.visibility !== "private") return true;
+  if (!userId) return false;
+  return row.userId === userId || (await isSiteOwner(userId));
+}
+
 // ---- Public reads --------------------------------------------------------
 
 // Cover bytes. No auth: uuid-addressed and <img> cannot send Authorization.
-// Immutable cache is safe because the URL carries ?v=<updatedAt>.
+// Immutable cache is safe because the URL carries ?v=<updatedAt>. This stays
+// open for private courses too: the course id only ever reaches someone who
+// can see the course, so the URL works as a capability.
 coursesRoutes.get(
   "/covers/:courseId",
   zValidator("param", courseIdParam),
@@ -199,7 +235,7 @@ coursesRoutes.get("/", optionalAuth, zValidator("query", listQuery), async (c) =
   // Fetch the page first, then scope every aggregate to the ids on it, so a
   // request costs what the page costs instead of scanning the whole catalog
   // (plus covers, ratings and comments) on every load.
-  const rows = await listCourses({ limit, cursor });
+  const rows = await listCourses({ limit, cursor, viewer: await viewerFor(userId) });
   const ids = rows.map((r) => r.id);
   const [covers, ratings, comments, mine] = await Promise.all([
     coverMeta(ids),
@@ -235,7 +271,9 @@ coursesRoutes.get(
   async (c) => {
     const { slug } = c.req.valid("param");
     const row = await getCourseBySlug(slug);
-    if (!row) return c.json({ error: "Not found" }, 404);
+    if (!row || !(await canSee(row, c.get("userId")))) {
+      return c.json({ error: "Not found" }, 404);
+    }
     const meta = await metaFor(row.id, c.get("userId"));
     return c.json({ course: serializeCourse(row, meta) });
   },
@@ -266,7 +304,7 @@ coursesRoutes.post(
     }
     const ai = await classifyCourse(text, body.url);
     const title = body.title ?? ai.title;
-    const slug = await generateUniqueSlug(title, slugTaken);
+    const slug = await generateUniqueSlug(title, courseSlugTaken);
     const row = await createCourse({
       userId,
       slug,
@@ -277,6 +315,7 @@ coursesRoutes.post(
       difficulty: ai.difficulty,
       durationMinutes: ai.durationMinutes,
       tags: ai.tags,
+      visibility: body.visibility,
     });
     return c.json({ course: serializeCourse(row, EMPTY_META) }, 201);
   },
@@ -428,7 +467,9 @@ coursesRoutes.put(
     const { id } = c.req.valid("param");
     const { stars } = c.req.valid("json");
     const course = await getCourseById(id);
-    if (!course) return c.json({ error: "Not found" }, 404);
+    if (!course || !(await canSee(course, userId))) {
+      return c.json({ error: "Not found" }, 404);
+    }
     await upsertRating(id, userId, stars);
     const summary = await ratingSummaryFor(id);
     return c.json({ rating: { ...summary, mine: stars } });
@@ -445,7 +486,9 @@ coursesRoutes.delete(
     const userId = c.get("userId") as string;
     const { id } = c.req.valid("param");
     const course = await getCourseById(id);
-    if (!course) return c.json({ error: "Not found" }, 404);
+    if (!course || !(await canSee(course, userId))) {
+      return c.json({ error: "Not found" }, 404);
+    }
     await deleteRating(id, userId);
     const summary = await ratingSummaryFor(id);
     return c.json({ rating: { ...summary, mine: null } });
@@ -461,7 +504,9 @@ coursesRoutes.get(
   async (c) => {
     const { id } = c.req.valid("param");
     const course = await getCourseById(id);
-    if (!course) return c.json({ error: "Not found" }, 404);
+    if (!course || !(await canSee(course, c.get("userId")))) {
+      return c.json({ error: "Not found" }, 404);
+    }
     const comments = await listCourseComments(id);
     return c.json({ comments });
   },
@@ -479,7 +524,9 @@ coursesRoutes.post(
     const { id } = c.req.valid("param");
     const body = c.req.valid("json");
     const course = await getCourseById(id);
-    if (!course) return c.json({ error: "Not found" }, 404);
+    if (!course || !(await canSee(course, userId))) {
+      return c.json({ error: "Not found" }, 404);
+    }
     // SHAN-574: only a top-level comment on this course can take a reply.
     if (body.parent_comment_id) {
       const parent = await getCourseComment(body.parent_comment_id);

@@ -31,6 +31,7 @@ const m = vi.hoisted(() => ({
   deleteCourseComment: vi.fn(),
   fetchCourseText: vi.fn(),
   classifyCourse: vi.fn(),
+  isSiteOwner: vi.fn(),
 }));
 
 // Literal factory (no importOriginal): pulling the real repo in would load
@@ -43,6 +44,8 @@ vi.mock("@/modules/courses/repo", () => {
       "art", "music", "other",
     ],
     COURSE_DIFFICULTIES: ["intro", "intermediate", "advanced"],
+    COURSE_VISIBILITIES: ["public", "private"],
+    isSiteOwner: m.isSiteOwner,
     createCourse: m.createCourse,
     listCourses: m.listCourses,
     getCourseById: m.getCourseById,
@@ -125,6 +128,7 @@ const courseRow = {
   difficulty: "advanced",
   durationMinutes: 28,
   tags: ["integrals"],
+  visibility: "public",
   createdAt: new Date("2026-08-31T00:00:00Z"),
   updatedAt: new Date("2026-08-31T00:00:00Z"),
 };
@@ -138,7 +142,10 @@ function emptyAggregates() {
   m.myRatingFor.mockResolvedValue(null);
   m.commentCounts.mockResolvedValue([]);
   m.commentCountFor.mockResolvedValue(0);
+  m.isSiteOwner.mockResolvedValue(false);
 }
+
+const anonymous = { userId: null, isSiteOwner: false };
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -183,7 +190,11 @@ describe("GET /api/courses", () => {
     const res = await app.request("/api/courses");
     const body = await res.json();
     expect(body.nextCursor).toBeNull();
-    expect(m.listCourses).toHaveBeenCalledWith({ limit: undefined, cursor: undefined });
+    expect(m.listCourses).toHaveBeenCalledWith({
+      limit: undefined,
+      cursor: undefined,
+      viewer: anonymous,
+    });
   });
 
   it("returns nextCursor from the last row when the page is full", async () => {
@@ -192,7 +203,7 @@ describe("GET /api/courses", () => {
     const res = await app.request("/api/courses?limit=2");
     const body = await res.json();
     expect(body.nextCursor).toBe("2026-08-30T12:00:00.000Z_c2");
-    expect(m.listCourses).toHaveBeenCalledWith({ limit: 2, cursor: undefined });
+    expect(m.listCourses).toHaveBeenCalledWith({ limit: 2, cursor: undefined, viewer: anonymous });
   });
 
   it("returns nextCursor null on a short final page", async () => {
@@ -208,6 +219,7 @@ describe("GET /api/courses", () => {
     expect(m.listCourses).toHaveBeenCalledWith({
       limit: 2,
       cursor: "2026-08-31T00:00:00.000Z",
+      viewer: anonymous,
     });
   });
 
@@ -366,6 +378,166 @@ describe("POST /api/courses", () => {
       body: JSON.stringify({ ...goodBody, title: "My Custom Title" }),
     });
     expect(m.createCourse.mock.calls[0][0]).toMatchObject({ title: "My Custom Title" });
+  });
+
+  it("defaults visibility to public and accepts private (SHAN-617)", async () => {
+    m.getCourseByUrl.mockResolvedValue(null);
+    m.fetchCourseText.mockResolvedValue("page text");
+    m.classifyCourse.mockResolvedValue(classification);
+    m.slugTaken.mockResolvedValue(false);
+    m.createCourse.mockImplementation(async (input) => ({ ...courseRow, ...input }));
+    const post = (body: object) =>
+      app.request("/api/courses", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Test-User": "u1" },
+        body: JSON.stringify(body),
+      });
+    await post(goodBody);
+    expect(m.createCourse.mock.calls[0][0]).toMatchObject({ visibility: "public" });
+    const res = await post({ ...goodBody, visibility: "private" });
+    expect(res.status).toBe(201);
+    expect(m.createCourse.mock.calls[1][0]).toMatchObject({ visibility: "private" });
+    expect((await res.json()).course.visibility).toBe("private");
+  });
+
+  it("never mints a slug the site reserves under /courses/", async () => {
+    m.getCourseByUrl.mockResolvedValue(null);
+    m.fetchCourseText.mockResolvedValue("page text");
+    m.classifyCourse.mockResolvedValue({ ...classification, title: "Private" });
+    m.slugTaken.mockResolvedValue(false);
+    m.createCourse.mockImplementation(async (input) => ({ ...courseRow, ...input }));
+    await app.request("/api/courses", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Test-User": "u1" },
+      body: JSON.stringify(goodBody),
+    });
+    const { slug } = m.createCourse.mock.calls[0][0];
+    expect(slug).not.toBe("private");
+    expect(slug).toMatch(/^private-[a-z0-9]{4}$/);
+  });
+
+  it("400s an unknown visibility before fetching anything", async () => {
+    const res = await app.request("/api/courses", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Test-User": "u1" },
+      body: JSON.stringify({ ...goodBody, visibility: "secret" }),
+    });
+    expect(res.status).toBe(400);
+    expect(m.fetchCourseText).not.toHaveBeenCalled();
+  });
+});
+
+describe("private courses (SHAN-617)", () => {
+  const privateRow = { ...courseRow, visibility: "private" };
+
+  it("lists with the caller as the viewer, and the owner flag from isSiteOwner", async () => {
+    m.listCourses.mockResolvedValue([]);
+    await app.request("/api/courses", { headers: { "X-Test-User": "u1" } });
+    expect(m.listCourses).toHaveBeenLastCalledWith({
+      limit: undefined,
+      cursor: undefined,
+      viewer: { userId: "u1", isSiteOwner: false },
+    });
+    m.isSiteOwner.mockResolvedValue(true);
+    await app.request("/api/courses", { headers: { "X-Test-User": "shane" } });
+    expect(m.isSiteOwner).toHaveBeenLastCalledWith("shane");
+    expect(m.listCourses).toHaveBeenLastCalledWith({
+      limit: undefined,
+      cursor: undefined,
+      viewer: { userId: "shane", isSiteOwner: true },
+    });
+  });
+
+  it("does not look up the owner for an anonymous list", async () => {
+    m.listCourses.mockResolvedValue([]);
+    await app.request("/api/courses");
+    expect(m.isSiteOwner).not.toHaveBeenCalled();
+  });
+
+  it("404s the slug for anonymous and for another user", async () => {
+    m.getCourseBySlug.mockResolvedValue(privateRow);
+    expect((await app.request("/api/courses/pi2-heist")).status).toBe(404);
+    const res = await app.request("/api/courses/pi2-heist", {
+      headers: { "X-Test-User": "stranger" },
+    });
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: "Not found" });
+  });
+
+  it("serves the slug to its creator and to the site owner", async () => {
+    m.getCourseBySlug.mockResolvedValue(privateRow);
+    const mine = await app.request("/api/courses/pi2-heist", {
+      headers: { "X-Test-User": "u1" },
+    });
+    expect(mine.status).toBe(200);
+    expect((await mine.json()).course.visibility).toBe("private");
+    expect(m.isSiteOwner).not.toHaveBeenCalled();
+    m.isSiteOwner.mockResolvedValue(true);
+    const owner = await app.request("/api/courses/pi2-heist", {
+      headers: { "X-Test-User": "shane" },
+    });
+    expect(owner.status).toBe(200);
+  });
+
+  it("404s comments, rating and commenting for a stranger without writing", async () => {
+    m.getCourseById.mockResolvedValue(privateRow);
+    const h = { "Content-Type": "application/json", "X-Test-User": "stranger" };
+    const base = `/api/courses/${courseRow.id}`;
+    expect((await app.request(`${base}/comments`)).status).toBe(404);
+    expect(
+      (await app.request(`${base}/comments`, {
+        method: "POST",
+        headers: h,
+        body: JSON.stringify({ content: "hi" }),
+      })).status,
+    ).toBe(404);
+    expect(
+      (await app.request(`${base}/rating`, {
+        method: "PUT",
+        headers: h,
+        body: JSON.stringify({ stars: 5 }),
+      })).status,
+    ).toBe(404);
+    expect((await app.request(`${base}/rating`, { method: "DELETE", headers: h })).status).toBe(
+      404,
+    );
+    expect(m.listCourseComments).not.toHaveBeenCalled();
+    expect(m.createCourseComment).not.toHaveBeenCalled();
+    expect(m.upsertRating).not.toHaveBeenCalled();
+    expect(m.deleteRating).not.toHaveBeenCalled();
+  });
+
+  it("lets the creator rate and comment on their private course", async () => {
+    m.getCourseById.mockResolvedValue(privateRow);
+    m.createCourseComment.mockResolvedValue({ id: "c" });
+    const h = { "Content-Type": "application/json", "X-Test-User": "u1" };
+    const base = `/api/courses/${courseRow.id}`;
+    const rated = await app.request(`${base}/rating`, {
+      method: "PUT",
+      headers: h,
+      body: JSON.stringify({ stars: 4 }),
+    });
+    expect(rated.status).toBe(200);
+    const commented = await app.request(`${base}/comments`, {
+      method: "POST",
+      headers: h,
+      body: JSON.stringify({ content: "note to self" }),
+    });
+    expect(commented.status).toBe(201);
+  });
+
+  it("PATCH accepts visibility on its own and rejects an unknown one", async () => {
+    m.updateCourse.mockResolvedValue(privateRow);
+    const patch = (body: object) =>
+      app.request(`/api/courses/${courseRow.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", "X-Test-User": "u1" },
+        body: JSON.stringify(body),
+      });
+    const ok = await patch({ visibility: "private" });
+    expect(ok.status).toBe(200);
+    expect(m.updateCourse).toHaveBeenCalledWith(courseRow.id, "u1", { visibility: "private" });
+    expect((await patch({ visibility: "hidden" })).status).toBe(400);
   });
 });
 

@@ -337,6 +337,13 @@
       "when": 1792416256984,
       "tag": "0047_strong_sersi",
       "breakpoints": true
+    },
+    {
+      "idx": 48,
+      "version": "7",
+      "when": 1792985405166,
+      "tag": "0048_absurd_yellow_claw",
+      "breakpoints": true
     }
   ]
 }

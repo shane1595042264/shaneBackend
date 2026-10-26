@@ -1278,6 +1278,9 @@ export const scoreboardMatchPlayers = pgTable(
 // per user, upsert) and comment. Covers are uploaded images stored
 // as bytea in a side table so list queries never select image
 // bytes; when absent the frontend renders a generated cover.
+// SHAN-617: a course can be private, for decks on sensitive material.
+// A private course is invisible (404, left out of lists) to everyone
+// but its creator and the site owner.
 // ------------------------------------------------------------------
 export const courses = pgTable(
   "courses",
@@ -1296,6 +1299,8 @@ export const courses = pgTable(
     difficulty: varchar("difficulty", { length: 20 }).notNull().default("intermediate"),
     durationMinutes: integer("duration_minutes"),
     tags: jsonb("tags").notNull().default([]),
+    // public | private (zod-validated, see COURSE_VISIBILITIES)
+    visibility: varchar("visibility", { length: 10 }).notNull().default("public"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },

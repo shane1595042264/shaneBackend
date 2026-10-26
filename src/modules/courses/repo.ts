@@ -19,8 +19,13 @@ export type CourseCategory = (typeof COURSE_CATEGORIES)[number];
 export const COURSE_DIFFICULTIES = ["intro", "intermediate", "advanced"] as const;
 export type CourseDifficulty = (typeof COURSE_DIFFICULTIES)[number];
 
-import { and, asc, desc, eq, getTableColumns, inArray, sql } from "drizzle-orm";
+// SHAN-617: a private course is visible only to its creator and the site owner.
+export const COURSE_VISIBILITIES = ["public", "private"] as const;
+export type CourseVisibility = (typeof COURSE_VISIBILITIES)[number];
+
+import { and, asc, desc, eq, getTableColumns, inArray, or, sql } from "drizzle-orm";
 import { keysetBefore, parseKeysetCursor } from "@/modules/shared/keyset";
+import { ownerEmail } from "@/modules/journal/access-repo";
 import { db } from "@/db/client";
 import { courseComments, courseCovers, courseRatings, courses, users } from "@/db/schema";
 
@@ -35,8 +40,19 @@ export interface CourseRow {
   difficulty: string;
   durationMinutes: number | null;
   tags: unknown;
+  visibility: string;
   createdAt: Date;
   updatedAt: Date;
+}
+
+/**
+ * Who is reading a list. The site owner sees every course; anyone else sees
+ * the public ones plus their own private ones. Omitting the viewer means
+ * anonymous, so a forgotten argument fails closed.
+ */
+export interface CourseViewer {
+  userId: string | null;
+  isSiteOwner: boolean;
 }
 
 export async function createCourse(input: {
@@ -49,17 +65,26 @@ export async function createCourse(input: {
   difficulty: CourseDifficulty;
   durationMinutes: number | null;
   tags: string[];
+  visibility: CourseVisibility;
 }): Promise<CourseRow> {
   const [row] = await db.insert(courses).values(input).returning();
   return row as CourseRow;
 }
 
 export async function listCourses(
-  opts: { limit?: number; cursor?: string } = {},
+  opts: { limit?: number; cursor?: string; viewer?: CourseViewer } = {},
 ): Promise<CourseRow[]> {
   const conditions = [];
   const cursor = parseKeysetCursor(opts.cursor);
   if (cursor) conditions.push(keysetBefore(courses.createdAt, courses.id, cursor));
+  const viewer = opts.viewer;
+  if (!viewer?.isSiteOwner) {
+    conditions.push(
+      viewer?.userId
+        ? or(eq(courses.visibility, "public"), eq(courses.userId, viewer.userId))
+        : eq(courses.visibility, "public"),
+    );
+  }
 
   const query = db
     .select()
@@ -106,6 +131,7 @@ export async function updateCourse(
     durationMinutes: number | null;
     tags: string[];
     url: string;
+    visibility: CourseVisibility;
   }>,
 ): Promise<CourseRow | null> {
   const [row] = await db
@@ -114,6 +140,21 @@ export async function updateCourse(
     .where(and(eq(courses.id, id), eq(courses.userId, userId)))
     .returning();
   return (row as CourseRow) ?? null;
+}
+
+/**
+ * The site owner is the journal's owner account (JOURNAL_OWNER_EMAIL), the one
+ * who invites everyone else. Compared by email rather than through
+ * journal/access-repo's isOwner, which also upserts the owner's membership row
+ * and would turn every catalog load into a write.
+ */
+export async function isSiteOwner(userId: string): Promise<boolean> {
+  const [row] = await db
+    .select({ email: users.email })
+    .from(users)
+    .where(eq(users.id, userId))
+    .limit(1);
+  return !!row && row.email.trim().toLowerCase() === ownerEmail();
 }
 
 export async function deleteCourse(id: string, userId: string): Promise<boolean> {
