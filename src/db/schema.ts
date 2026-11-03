@@ -1290,7 +1290,9 @@ export const courses = pgTable(
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
     slug: varchar("slug", { length: 80 }).notNull().unique(),
-    url: text("url").notNull().unique(),
+    // The slide deck a course launches. Null for a course that is only
+    // interactive lessons (course_content), which is played on shanejli.com.
+    url: text("url").unique(),
     title: varchar("title", { length: 200 }).notNull(),
     description: text("description"),
     // zod-validated enum, see COURSE_CATEGORIES in modules/courses/repo.ts
@@ -1322,6 +1324,47 @@ export const courseCovers = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
+);
+
+// Interactive lessons for a course: one validated JSON document per course
+// (see modules/courses/content-schema.ts), kept in a side table so catalog
+// queries never read it. lesson_count/step_count are denormalised from the
+// document on every write so the catalog can show them without parsing jsonb.
+export const courseContent = pgTable("course_content", {
+  courseId: uuid("course_id")
+    .primaryKey()
+    .references(() => courses.id, { onDelete: "cascade" }),
+  content: jsonb("content").notNull(),
+  lessonCount: integer("lesson_count").notNull(),
+  stepCount: integer("step_count").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+// One row per (learner, course, lesson), written when a lesson is finished.
+// lesson_id is the id from the course's content document, not a FK: editing
+// the document can drop a lesson, and its progress row is then simply unused.
+export const courseProgress = pgTable(
+  "course_progress",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    courseId: uuid("course_id")
+      .notNull()
+      .references(() => courses.id, { onDelete: "cascade" }),
+    lessonId: varchar("lesson_id", { length: 64 }).notNull(),
+    // 0-100, the share of graded steps answered right on the first try.
+    bestScore: integer("best_score").notNull(),
+    lastScore: integer("last_score").notNull(),
+    attempts: integer("attempts").notNull().default(1),
+    completedAt: timestamp("completed_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    unique("course_progress_user_course_lesson_unique").on(t.userId, t.courseId, t.lessonId),
+  ],
 );
 
 export const courseRatings = pgTable(

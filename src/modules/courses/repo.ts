@@ -33,7 +33,7 @@ export interface CourseRow {
   id: string;
   userId: string;
   slug: string;
-  url: string;
+  url: string | null;
   title: string;
   description: string | null;
   category: string;
@@ -58,7 +58,7 @@ export interface CourseViewer {
 export async function createCourse(input: {
   userId: string;
   slug: string;
-  url: string;
+  url: string | null;
   title: string;
   description: string | null;
   category: CourseCategory;
@@ -130,7 +130,7 @@ export async function updateCourse(
     difficulty: CourseDifficulty;
     durationMinutes: number | null;
     tags: string[];
-    url: string;
+    url: string | null;
     visibility: CourseVisibility;
   }>,
 ): Promise<CourseRow | null> {

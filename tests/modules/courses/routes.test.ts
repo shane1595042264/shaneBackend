@@ -32,6 +32,14 @@ const m = vi.hoisted(() => ({
   fetchCourseText: vi.fn(),
   classifyCourse: vi.fn(),
   isSiteOwner: vi.fn(),
+  getContent: vi.fn(),
+  upsertContent: vi.fn(),
+  deleteContent: vi.fn(),
+  contentMeta: vi.fn(),
+  contentMetaFor: vi.fn(),
+  listProgress: vi.fn(),
+  recordProgress: vi.fn(),
+  resetProgress: vi.fn(),
 }));
 
 // Literal factory (no importOriginal): pulling the real repo in would load
@@ -74,6 +82,17 @@ vi.mock("@/modules/courses/repo", () => {
     deleteCourseComment: m.deleteCourseComment,
   };
 });
+
+vi.mock("@/modules/courses/content-repo", () => ({
+  getContent: m.getContent,
+  upsertContent: m.upsertContent,
+  deleteContent: m.deleteContent,
+  contentMeta: m.contentMeta,
+  contentMetaFor: m.contentMetaFor,
+  listProgress: m.listProgress,
+  recordProgress: m.recordProgress,
+  resetProgress: m.resetProgress,
+}));
 
 // Literal class in the factory: routes.ts instanceof-checks the SAME mocked
 // export, so the test's `new CourseFetchError(...)` matches. Importing the
@@ -143,6 +162,8 @@ function emptyAggregates() {
   m.commentCounts.mockResolvedValue([]);
   m.commentCountFor.mockResolvedValue(0);
   m.isSiteOwner.mockResolvedValue(false);
+  m.contentMeta.mockResolvedValue([]);
+  m.contentMetaFor.mockResolvedValue(null);
 }
 
 const anonymous = { userId: null, isSiteOwner: false };
@@ -861,5 +882,307 @@ describe("course comments", () => {
       headers: { "X-Test-User": "stranger" },
     });
     expect(res.status).toBe(404);
+  });
+});
+
+// ---- Interactive lessons ---------------------------------------------------
+
+const lessonDoc = {
+  units: [
+    {
+      title: "The trip",
+      lessons: [
+        {
+          id: "ten-stops",
+          title: "Ten stops",
+          steps: [
+            { type: "teach", body: "A page view makes ten stops." },
+            {
+              type: "choice",
+              prompt: "Where does the pixel send a hit?",
+              choices: [{ text: "The collector", correct: true }, { text: "BigQuery" }],
+            },
+          ],
+        },
+      ],
+    },
+  ],
+};
+
+function req(path: string, method: string, body?: unknown, user: string | null = "u1") {
+  return app.request(path, {
+    method,
+    headers: {
+      "Content-Type": "application/json",
+      ...(user ? { "X-Test-User": user } : {}),
+    },
+    ...(body !== undefined ? { body: typeof body === "string" ? body : JSON.stringify(body) } : {}),
+  });
+}
+
+describe("POST /api/courses with lesson content", () => {
+  it("creates a lessons-only course without fetching or classifying anything", async () => {
+    m.slugTaken.mockResolvedValue(false);
+    m.createCourse.mockImplementation(async (input: Record<string, unknown>) => ({
+      ...courseRow,
+      ...input,
+      id: courseRow.id,
+    }));
+    m.upsertContent.mockResolvedValue({ updatedAt: new Date() });
+    const res = await req("/api/courses", "POST", {
+      title: "Where Dealer Visitors Go",
+      visibility: "private",
+      content: lessonDoc,
+    });
+    expect(res.status).toBe(201);
+    expect(m.fetchCourseText).not.toHaveBeenCalled();
+    expect(m.classifyCourse).not.toHaveBeenCalled();
+    const created = m.createCourse.mock.calls[0][0];
+    expect(created.url).toBeNull();
+    expect(created.title).toBe("Where Dealer Visitors Go");
+    expect(created.category).toBe("other");
+    expect(created.durationMinutes).toBe(1);
+    expect(created.visibility).toBe("private");
+    const [courseId, content, stats] = m.upsertContent.mock.calls[0];
+    expect(courseId).toBe(courseRow.id);
+    expect(content.units[0].id).toBe("the-trip");
+    expect(stats).toMatchObject({ lessons: 1, steps: 2, exercises: 1 });
+    const body = await res.json();
+    expect(body.course.lessonCount).toBe(1);
+    expect(body.course.stepCount).toBe(2);
+    expect(body.course.url).toBeNull();
+  });
+
+  it("400s invalid content with pathed issues and writes nothing", async () => {
+    const res = await req("/api/courses", "POST", {
+      title: "Broken",
+      content: { units: [{ title: "U", lessons: [{ title: "L", steps: [{ type: "teach", body: "only reading" }] }] }] },
+    });
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.issues[0].path).toBe("units[0].lessons[0].steps");
+    expect(m.createCourse).not.toHaveBeenCalled();
+  });
+
+  it("400s a lessons-only course without a title", async () => {
+    const res = await req("/api/courses", "POST", { content: lessonDoc });
+    expect(res.status).toBe(400);
+    expect(m.createCourse).not.toHaveBeenCalled();
+  });
+
+  it("400s a body with neither url nor content", async () => {
+    const res = await req("/api/courses", "POST", { title: "Nothing" });
+    expect(res.status).toBe(400);
+  });
+});
+
+describe("POST /api/courses/content/validate", () => {
+  it("401s signed out", async () => {
+    const res = await req("/api/courses/content/validate", "POST", lessonDoc, null);
+    expect(res.status).toBe(401);
+  });
+
+  it("returns the normalised document and stats", async () => {
+    const res = await req("/api/courses/content/validate", "POST", lessonDoc);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.ok).toBe(true);
+    expect(body.content.version).toBe(1);
+    expect(body.content.units[0].lessons[0].id).toBe("ten-stops");
+    expect(body.stats.exercises).toBe(1);
+  });
+
+  it("answers 200 with issues for a wrong document", async () => {
+    const res = await req("/api/courses/content/validate", "POST", { units: [] });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.ok).toBe(false);
+    expect(body.issues[0]).toEqual({ path: "units", message: "A course needs at least one unit" });
+  });
+
+  it("reports a body that is not JSON", async () => {
+    const res = await req("/api/courses/content/validate", "POST", "{nope");
+    const body = await res.json();
+    expect(body.ok).toBe(false);
+    expect(body.issues[0].message).toBe("Body is not valid JSON");
+  });
+});
+
+describe("GET /api/courses/:id/content", () => {
+  it("serves the document of a public course to anyone", async () => {
+    m.getCourseById.mockResolvedValue(courseRow);
+    m.getContent.mockResolvedValue({
+      content: { version: 1, ...lessonDoc },
+      lessonCount: 1,
+      stepCount: 2,
+      updatedAt: new Date("2026-11-03T00:00:00Z"),
+    });
+    const res = await req(`/api/courses/${courseRow.id}/content`, "GET", undefined, null);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.stats.lessons).toBe(1);
+  });
+
+  it("404s a private course to a stranger, the same as a missing one", async () => {
+    m.getCourseById.mockResolvedValue({ ...courseRow, visibility: "private" });
+    const res = await req(`/api/courses/${courseRow.id}/content`, "GET", undefined, "stranger");
+    expect(res.status).toBe(404);
+    expect(m.getContent).not.toHaveBeenCalled();
+  });
+
+  it("404s a deck-only course", async () => {
+    m.getCourseById.mockResolvedValue(courseRow);
+    m.getContent.mockResolvedValue(null);
+    const res = await req(`/api/courses/${courseRow.id}/content`, "GET");
+    expect(res.status).toBe(404);
+  });
+});
+
+describe("PUT /api/courses/:id/content", () => {
+  beforeEach(() => {
+    m.upsertContent.mockResolvedValue({ updatedAt: new Date() });
+    m.updateCourse.mockImplementation(async () => courseRow);
+  });
+
+  it("lets only the course owner write", async () => {
+    m.getCourseById.mockResolvedValue(courseRow);
+    const res = await req(`/api/courses/${courseRow.id}/content`, "PUT", lessonDoc, "someone-else");
+    expect(res.status).toBe(404);
+    expect(m.upsertContent).not.toHaveBeenCalled();
+  });
+
+  it("stores the normalised document and leaves a deck's duration alone", async () => {
+    m.getCourseById.mockResolvedValue(courseRow);
+    const res = await req(`/api/courses/${courseRow.id}/content`, "PUT", lessonDoc);
+    expect(res.status).toBe(200);
+    expect(m.upsertContent).toHaveBeenCalledTimes(1);
+    expect(m.updateCourse.mock.calls[0][2]).toEqual({});
+    const body = await res.json();
+    expect(body.content.units[0].id).toBe("the-trip");
+  });
+
+  it("syncs a lessons-only course's duration to the lessons", async () => {
+    m.getCourseById.mockResolvedValue({ ...courseRow, url: null });
+    await req(`/api/courses/${courseRow.id}/content`, "PUT", lessonDoc);
+    expect(m.updateCourse.mock.calls[0][2]).toEqual({ durationMinutes: 1 });
+  });
+
+  it("400s an invalid document with issues", async () => {
+    m.getCourseById.mockResolvedValue(courseRow);
+    const res = await req(`/api/courses/${courseRow.id}/content`, "PUT", {
+      units: [{ title: "U", lessons: [{ title: "L", steps: [{ type: "choice", prompt: "?", choices: [{ text: "a" }, { text: "b" }] }] }] }],
+    });
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.issues[0].path).toBe("units[0].lessons[0].steps[0].choices");
+    expect(m.upsertContent).not.toHaveBeenCalled();
+  });
+});
+
+describe("DELETE /api/courses/:id/content", () => {
+  it("refuses to strip the lessons off a lessons-only course", async () => {
+    m.getCourseById.mockResolvedValue({ ...courseRow, url: null });
+    const res = await req(`/api/courses/${courseRow.id}/content`, "DELETE");
+    expect(res.status).toBe(400);
+    expect(m.deleteContent).not.toHaveBeenCalled();
+  });
+
+  it("removes the lessons from a deck course", async () => {
+    m.getCourseById.mockResolvedValue(courseRow);
+    m.deleteContent.mockResolvedValue(true);
+    const res = await req(`/api/courses/${courseRow.id}/content`, "DELETE");
+    expect(res.status).toBe(204);
+  });
+});
+
+describe("PATCH /api/courses/:id url: null", () => {
+  it("400s removing the deck URL from a course without lessons", async () => {
+    m.contentMetaFor.mockResolvedValue(null);
+    const res = await req(`/api/courses/${courseRow.id}`, "PATCH", { url: null });
+    expect(res.status).toBe(400);
+    expect(m.updateCourse).not.toHaveBeenCalled();
+  });
+
+  it("allows it once the course has lessons", async () => {
+    m.contentMetaFor.mockResolvedValue({ lessonCount: 3, stepCount: 20 });
+    m.updateCourse.mockResolvedValue({ ...courseRow, url: null });
+    const res = await req(`/api/courses/${courseRow.id}`, "PATCH", { url: null });
+    expect(res.status).toBe(200);
+    expect((await res.json()).course.lessonCount).toBe(3);
+  });
+});
+
+describe("POST /api/courses/:id/reclassify on a lessons-only course", () => {
+  it("400s instead of fetching a null url", async () => {
+    m.getCourseById.mockResolvedValue({ ...courseRow, url: null });
+    const res = await req(`/api/courses/${courseRow.id}/reclassify`, "POST");
+    expect(res.status).toBe(400);
+    expect(m.fetchCourseText).not.toHaveBeenCalled();
+  });
+});
+
+describe("course progress", () => {
+  const stored = {
+    content: { version: 1, ...lessonDoc },
+    lessonCount: 1,
+    stepCount: 2,
+    updatedAt: new Date(),
+  };
+  const progressRow = {
+    lessonId: "ten-stops",
+    bestScore: 100,
+    lastScore: 100,
+    attempts: 1,
+    completedAt: new Date("2026-11-03T00:00:00Z"),
+    updatedAt: new Date("2026-11-03T00:00:00Z"),
+  };
+
+  it("401s signed out", async () => {
+    const res = await req(`/api/courses/${courseRow.id}/progress`, "GET", undefined, null);
+    expect(res.status).toBe(401);
+  });
+
+  it("lists the learner's own progress", async () => {
+    m.getCourseById.mockResolvedValue(courseRow);
+    m.listProgress.mockResolvedValue([progressRow]);
+    const res = await req(`/api/courses/${courseRow.id}/progress`, "GET", undefined, "learner");
+    expect(res.status).toBe(200);
+    expect(m.listProgress).toHaveBeenCalledWith("learner", courseRow.id);
+    expect((await res.json()).progress[0].lessonId).toBe("ten-stops");
+  });
+
+  it("records a finished lesson", async () => {
+    m.getCourseById.mockResolvedValue(courseRow);
+    m.getContent.mockResolvedValue(stored);
+    m.recordProgress.mockResolvedValue(progressRow);
+    const res = await req(`/api/courses/${courseRow.id}/progress/ten-stops`, "PUT", { score: 100 }, "learner");
+    expect(res.status).toBe(200);
+    expect(m.recordProgress).toHaveBeenCalledWith("learner", courseRow.id, "ten-stops", 100);
+  });
+
+  it("404s a lesson id the course does not have", async () => {
+    m.getCourseById.mockResolvedValue(courseRow);
+    m.getContent.mockResolvedValue(stored);
+    const res = await req(`/api/courses/${courseRow.id}/progress/nope`, "PUT", { score: 50 }, "learner");
+    expect(res.status).toBe(404);
+    expect(m.recordProgress).not.toHaveBeenCalled();
+  });
+
+  it("400s a score outside 0-100", async () => {
+    const res = await req(`/api/courses/${courseRow.id}/progress/ten-stops`, "PUT", { score: 101 }, "learner");
+    expect(res.status).toBe(400);
+  });
+
+  it("404s progress on a private course the learner cannot see", async () => {
+    m.getCourseById.mockResolvedValue({ ...courseRow, visibility: "private" });
+    const res = await req(`/api/courses/${courseRow.id}/progress/ten-stops`, "PUT", { score: 50 }, "stranger");
+    expect(res.status).toBe(404);
+  });
+
+  it("resets the learner's progress", async () => {
+    m.getCourseById.mockResolvedValue(courseRow);
+    const res = await req(`/api/courses/${courseRow.id}/progress`, "DELETE", undefined, "learner");
+    expect(res.status).toBe(204);
+    expect(m.resetProgress).toHaveBeenCalledWith("learner", courseRow.id);
   });
 });

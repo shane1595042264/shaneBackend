@@ -49,6 +49,23 @@ import {
   deleteCourseComment,
 } from "./repo";
 import { encodeKeysetCursor, keysetCursorParam } from "@/modules/shared/keyset";
+import {
+  MAX_CONTENT_BYTES,
+  contentStats,
+  findLesson,
+  validateCourseContent,
+  type ContentIssue,
+} from "./content-schema";
+import {
+  contentMeta,
+  contentMetaFor,
+  deleteContent,
+  getContent,
+  listProgress,
+  recordProgress,
+  resetProgress,
+  upsertContent,
+} from "./content-repo";
 
 // Per-PAT 60s rolling write limit. JWT browser sessions bypass. Distinct
 // bucket so a busy courses session doesn't lock out other modules.
@@ -69,11 +86,42 @@ const slugParam = z.object({ slug: z.string().trim().min(1).max(80) });
 // classifier fetch (SHAN-582).
 const urlSchema = httpUrlSchema;
 
-const createBody = z.object({
-  url: urlSchema,
-  title: trimmedOptional(200),
-  visibility: z.enum(COURSE_VISIBILITIES).default("public"),
+// Two ways to make a course. With `url`, the deck is fetched and classified
+// (the original flow). With `content` and no `url`, it is an interactive
+// course built from the structured lesson format: nothing is fetched and no
+// model is called, so `title` is required and the rest of the metadata comes
+// from the request. Both together = a deck plus lessons. Explicit metadata
+// always wins over the classifier's guess.
+const createBody = z
+  .object({
+    url: urlSchema.optional(),
+    title: trimmedOptional(200),
+    description: trimmedNullish(2000),
+    category: z.enum(COURSE_CATEGORIES).optional(),
+    difficulty: z.enum(COURSE_DIFFICULTIES).optional(),
+    durationMinutes: z.number().int().min(1).max(100_000).nullish(),
+    tags: trimmedLabels(40, 8),
+    visibility: z.enum(COURSE_VISIBILITIES).default("public"),
+    content: z.unknown().optional(),
+  })
+  .refine((b) => b.url !== undefined || b.content !== undefined, {
+    message: "Send a deck `url`, lesson `content`, or both",
+  })
+  .refine((b) => b.url !== undefined || b.title !== undefined, {
+    message: "A course without a deck URL needs a `title`",
+    path: ["title"],
+  });
+
+const lessonParam = z.object({
+  id: uuidId(),
+  lessonId: z.string().trim().min(1).max(64),
 });
+
+const progressBody = z.object({ score: z.number().int().min(0).max(100) });
+
+function contentInvalid(issues: ContentIssue[]) {
+  return { error: "Course content is invalid", issues };
+}
 
 const patchBody = z
   .object({
@@ -83,7 +131,8 @@ const patchBody = z
     difficulty: z.enum(COURSE_DIFFICULTIES).optional(),
     durationMinutes: z.number().int().min(1).max(100_000).nullish(),
     tags: trimmedLabels(40, 8),
-    url: urlSchema.optional(),
+    // null removes the deck link, allowed only while the course has lessons.
+    url: urlSchema.nullable().optional(),
     visibility: z.enum(COURSE_VISIBILITIES).optional(),
   })
   .refine(
@@ -119,6 +168,8 @@ const commentBody = z.object({
 
 interface CourseMeta {
   coverUpdatedAt: Date | null;
+  lessonCount: number;
+  stepCount: number;
   average: number | null;
   count: number;
   commentCount: number;
@@ -147,6 +198,9 @@ function serializeCourse(row: CourseRow, meta: CourseMeta) {
     rating: { average: meta.average, count: meta.count },
     commentCount: meta.commentCount,
     myStars: meta.myStars,
+    // 0 = a deck-only course. Anything else is played on shanejli.com.
+    lessonCount: meta.lessonCount,
+    stepCount: meta.stepCount,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
@@ -154,6 +208,8 @@ function serializeCourse(row: CourseRow, meta: CourseMeta) {
 
 const EMPTY_META: CourseMeta = {
   coverUpdatedAt: null,
+  lessonCount: 0,
+  stepCount: 0,
   average: null,
   count: 0,
   commentCount: 0,
@@ -161,14 +217,17 @@ const EMPTY_META: CourseMeta = {
 };
 
 async function metaFor(courseId: string, userId: string | null): Promise<CourseMeta> {
-  const [cover, rating, comments, mine] = await Promise.all([
+  const [cover, rating, comments, mine, lessons] = await Promise.all([
     coverMetaFor(courseId),
     ratingSummaryFor(courseId),
     commentCountFor(courseId),
     userId ? myRatingFor(courseId, userId) : Promise.resolve(null),
+    contentMetaFor(courseId),
   ]);
   return {
     coverUpdatedAt: cover?.updatedAt ?? null,
+    lessonCount: lessons?.lessonCount ?? 0,
+    stepCount: lessons?.stepCount ?? 0,
     average: rating.average,
     count: rating.count,
     commentCount: comments,
@@ -237,12 +296,14 @@ coursesRoutes.get("/", optionalAuth, zValidator("query", listQuery), async (c) =
   // (plus covers, ratings and comments) on every load.
   const rows = await listCourses({ limit, cursor, viewer: await viewerFor(userId) });
   const ids = rows.map((r) => r.id);
-  const [covers, ratings, comments, mine] = await Promise.all([
+  const [covers, ratings, comments, mine, lessons] = await Promise.all([
     coverMeta(ids),
     ratingSummaries(ids),
     commentCounts(ids),
     userId ? myRatings(userId, ids) : Promise.resolve([]),
+    contentMeta(ids),
   ]);
+  const lessonsBy = new Map(lessons.map((r) => [r.courseId, r]));
   const coverBy = new Map(covers.map((r) => [r.courseId, r.updatedAt]));
   const ratingBy = new Map(ratings.map((r) => [r.courseId, r]));
   const commentBy = new Map(comments.map((r) => [r.courseId, r.count]));
@@ -254,6 +315,8 @@ coursesRoutes.get("/", optionalAuth, zValidator("query", listQuery), async (c) =
     courses: rows.map((row) =>
       serializeCourse(row, {
         coverUpdatedAt: coverBy.get(row.id) ?? null,
+        lessonCount: lessonsBy.get(row.id)?.lessonCount ?? 0,
+        stepCount: lessonsBy.get(row.id)?.stepCount ?? 0,
         average: ratingBy.get(row.id)?.average ?? null,
         count: ratingBy.get(row.id)?.count ?? 0,
         commentCount: commentBy.get(row.id) ?? 0,
@@ -290,34 +353,76 @@ coursesRoutes.post(
   async (c) => {
     const userId = c.get("userId") as string;
     const body = c.req.valid("json");
-    const existing = await getCourseByUrl(body.url);
-    if (existing) {
-      return c.json({ error: "A course with this URL already exists" }, 409);
+    // Validate lessons before anything is written, so a bad document never
+    // leaves a half-made course behind.
+    let lessons: Extract<ReturnType<typeof validateCourseContent>, { ok: true }> | null = null;
+    if (body.content !== undefined) {
+      const result = validateCourseContent(body.content);
+      if (!result.ok) return c.json(contentInvalid(result.issues), 400);
+      lessons = result;
     }
-    let text: string;
-    try {
-      text = await fetchCourseText(body.url);
-    } catch (err) {
-      const message =
-        err instanceof CourseFetchError ? err.message : "Could not fetch course page";
-      return c.json({ error: message }, 502);
+
+    let meta: {
+      title: string;
+      description: string | null;
+      category: (typeof COURSE_CATEGORIES)[number];
+      difficulty: (typeof COURSE_DIFFICULTIES)[number];
+      durationMinutes: number | null;
+      tags: string[];
+    };
+    if (body.url !== undefined) {
+      const existing = await getCourseByUrl(body.url);
+      if (existing) {
+        return c.json({ error: "A course with this URL already exists" }, 409);
+      }
+      let text: string;
+      try {
+        text = await fetchCourseText(body.url);
+      } catch (err) {
+        const message =
+          err instanceof CourseFetchError ? err.message : "Could not fetch course page";
+        return c.json({ error: message }, 502);
+      }
+      const ai = await classifyCourse(text, body.url);
+      meta = {
+        title: body.title ?? ai.title,
+        description: body.description !== undefined ? body.description : ai.description,
+        category: body.category ?? ai.category,
+        difficulty: body.difficulty ?? ai.difficulty,
+        durationMinutes:
+          body.durationMinutes !== undefined ? body.durationMinutes : ai.durationMinutes,
+        tags: body.tags ?? ai.tags,
+      };
+    } else {
+      meta = {
+        title: body.title as string,
+        description: body.description ?? null,
+        category: body.category ?? "other",
+        difficulty: body.difficulty ?? "intro",
+        durationMinutes: body.durationMinutes ?? lessons?.stats.estimatedMinutes ?? null,
+        tags: body.tags ?? [],
+      };
     }
-    const ai = await classifyCourse(text, body.url);
-    const title = body.title ?? ai.title;
-    const slug = await generateUniqueSlug(title, courseSlugTaken);
+
+    const slug = await generateUniqueSlug(meta.title, courseSlugTaken);
     const row = await createCourse({
       userId,
       slug,
-      url: body.url,
-      title,
-      description: ai.description,
-      category: ai.category,
-      difficulty: ai.difficulty,
-      durationMinutes: ai.durationMinutes,
-      tags: ai.tags,
+      url: body.url ?? null,
+      ...meta,
       visibility: body.visibility,
     });
-    return c.json({ course: serializeCourse(row, EMPTY_META) }, 201);
+    if (lessons) await upsertContent(row.id, lessons.content, lessons.stats);
+    return c.json(
+      {
+        course: serializeCourse(row, {
+          ...EMPTY_META,
+          lessonCount: lessons?.stats.lessons ?? 0,
+          stepCount: lessons?.stats.steps ?? 0,
+        }),
+      },
+      201,
+    );
   },
 );
 
@@ -332,11 +437,17 @@ coursesRoutes.patch(
     const userId = c.get("userId") as string;
     const { id } = c.req.valid("param");
     const body = c.req.valid("json");
-    if (body.url !== undefined) {
+    if (body.url) {
       const clash = await getCourseByUrl(body.url);
       if (clash && clash.id !== id) {
         return c.json({ error: "A course with this URL already exists" }, 409);
       }
+    }
+    if (body.url === null && !(await contentMetaFor(id))) {
+      return c.json(
+        { error: "A course needs a deck URL or lessons; add lessons before removing the URL" },
+        400,
+      );
     }
     const row = await updateCourse(id, userId, body);
     if (!row) return c.json({ error: "Not found" }, 404);
@@ -357,6 +468,9 @@ coursesRoutes.post(
     const course = await getCourseById(id);
     if (!course || course.userId !== userId) {
       return c.json({ error: "Not found" }, 404);
+    }
+    if (!course.url) {
+      return c.json({ error: "This course has no deck URL to classify" }, 400);
     }
     let text: string;
     try {
@@ -393,6 +507,196 @@ coursesRoutes.delete(
     const { id } = c.req.valid("param");
     const removed = await deleteCourse(id, userId);
     if (!removed) return c.json({ error: "Not found" }, 404);
+    return c.body(null, 204);
+  },
+);
+
+// ---- Interactive lessons --------------------------------------------------
+
+async function readJsonBody(
+  c: { req: { header: (n: string) => string | undefined; json: () => Promise<unknown> } },
+): Promise<{ ok: true; body: unknown } | { ok: false; tooLarge: boolean }> {
+  const size = Number(c.req.header("Content-Length") ?? 0);
+  if (size > MAX_CONTENT_BYTES * 2) return { ok: false, tooLarge: true };
+  try {
+    return { ok: true, body: await c.req.json() };
+  } catch {
+    return { ok: false, tooLarge: false };
+  }
+}
+
+// Dry run for the lesson editor and API callers: the normalised document (ids
+// filled in) and its stats, or every issue with a path. Always 200 so the
+// editor can tell "your document is wrong" from "the request failed".
+coursesRoutes.post("/content/validate", requireAuth, async (c) => {
+  const read = await readJsonBody(c);
+  if (!read.ok) {
+    if (read.tooLarge) return c.json({ error: "Document too large (limit 512 KB)" }, 413);
+    return c.json({ ok: false, issues: [{ path: "", message: "Body is not valid JSON" }] });
+  }
+  const result = validateCourseContent(read.body);
+  return c.json(result.ok ? { ok: true, content: result.content, stats: result.stats } : result);
+});
+
+coursesRoutes.get(
+  "/:id/content",
+  optionalAuth,
+  zValidator("param", idParam),
+  async (c) => {
+    const { id } = c.req.valid("param");
+    const course = await getCourseById(id);
+    if (!course || !(await canSee(course, c.get("userId")))) {
+      return c.json({ error: "Not found" }, 404);
+    }
+    const row = await getContent(id);
+    if (!row) return c.json({ error: "This course has no lessons" }, 404);
+    return c.json({
+      content: row.content,
+      stats: contentStats(row.content),
+      updatedAt: row.updatedAt,
+    });
+  },
+);
+
+// Replace the whole lesson document. The body IS the document (the same JSON
+// the editor shows), so `curl -X PUT --data @course.json` is the whole upload.
+coursesRoutes.put(
+  "/:id/content",
+  requireAuth,
+  requireScope("entries:write"),
+  coursesWriteLimit,
+  zValidator("param", idParam),
+  async (c) => {
+    const userId = c.get("userId") as string;
+    const { id } = c.req.valid("param");
+    const course = await getCourseById(id);
+    if (!course || course.userId !== userId) {
+      return c.json({ error: "Not found" }, 404);
+    }
+    const read = await readJsonBody(c);
+    if (!read.ok) {
+      if (read.tooLarge) return c.json({ error: "Document too large (limit 512 KB)" }, 413);
+      return c.json(contentInvalid([{ path: "", message: "Body is not valid JSON" }]), 400);
+    }
+    const result = validateCourseContent(read.body);
+    if (!result.ok) return c.json(contentInvalid(result.issues), 400);
+    const saved = await upsertContent(id, result.content, result.stats);
+    // A lessons-only course has no deck to estimate from, so its length is
+    // whatever the lessons add up to. A deck's own estimate is left alone.
+    const row = await updateCourse(
+      id,
+      userId,
+      course.url ? {} : { durationMinutes: result.stats.estimatedMinutes },
+    );
+    const meta = await metaFor(id, userId);
+    return c.json({
+      content: result.content,
+      stats: result.stats,
+      updatedAt: saved.updatedAt,
+      course: serializeCourse(row ?? course, meta),
+    });
+  },
+);
+
+coursesRoutes.delete(
+  "/:id/content",
+  requireAuth,
+  requireScope("entries:write"),
+  coursesWriteLimit,
+  zValidator("param", idParam),
+  async (c) => {
+    const userId = c.get("userId") as string;
+    const { id } = c.req.valid("param");
+    const course = await getCourseById(id);
+    if (!course || course.userId !== userId) {
+      return c.json({ error: "Not found" }, 404);
+    }
+    if (!course.url) {
+      return c.json(
+        { error: "This course is lessons only; delete the course instead of its lessons" },
+        400,
+      );
+    }
+    const removed = await deleteContent(id);
+    if (!removed) return c.json({ error: "This course has no lessons" }, 404);
+    return c.body(null, 204);
+  },
+);
+
+// ---- Progress (any signed-in learner) -------------------------------------
+
+function serializeProgress(p: {
+  lessonId: string;
+  bestScore: number;
+  lastScore: number;
+  attempts: number;
+  completedAt: Date;
+  updatedAt: Date;
+}) {
+  return {
+    lessonId: p.lessonId,
+    bestScore: p.bestScore,
+    lastScore: p.lastScore,
+    attempts: p.attempts,
+    completedAt: p.completedAt,
+    updatedAt: p.updatedAt,
+  };
+}
+
+coursesRoutes.get(
+  "/:id/progress",
+  requireAuth,
+  zValidator("param", idParam),
+  async (c) => {
+    const userId = c.get("userId") as string;
+    const { id } = c.req.valid("param");
+    const course = await getCourseById(id);
+    if (!course || !(await canSee(course, userId))) {
+      return c.json({ error: "Not found" }, 404);
+    }
+    const rows = await listProgress(userId, id);
+    return c.json({ progress: rows.map(serializeProgress) });
+  },
+);
+
+coursesRoutes.put(
+  "/:id/progress/:lessonId",
+  requireAuth,
+  requireScope("reactions:write"),
+  coursesWriteLimit,
+  zValidator("param", lessonParam),
+  zValidator("json", progressBody),
+  async (c) => {
+    const userId = c.get("userId") as string;
+    const { id, lessonId } = c.req.valid("param");
+    const { score } = c.req.valid("json");
+    const course = await getCourseById(id);
+    if (!course || !(await canSee(course, userId))) {
+      return c.json({ error: "Not found" }, 404);
+    }
+    const row = await getContent(id);
+    if (!row || !findLesson(row.content, lessonId)) {
+      return c.json({ error: "No such lesson in this course" }, 404);
+    }
+    const saved = await recordProgress(userId, id, lessonId, score);
+    return c.json({ progress: serializeProgress(saved) });
+  },
+);
+
+coursesRoutes.delete(
+  "/:id/progress",
+  requireAuth,
+  requireScope("reactions:write"),
+  coursesWriteLimit,
+  zValidator("param", idParam),
+  async (c) => {
+    const userId = c.get("userId") as string;
+    const { id } = c.req.valid("param");
+    const course = await getCourseById(id);
+    if (!course || !(await canSee(course, userId))) {
+      return c.json({ error: "Not found" }, 404);
+    }
+    await resetProgress(userId, id);
     return c.body(null, 204);
   },
 );
