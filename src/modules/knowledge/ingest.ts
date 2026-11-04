@@ -75,7 +75,7 @@ export function queueNoteForKnowledge(input: {
   userId: string;
   quote: string;
   content: string;
-  app: "journal" | "blog" | "knowledge";
+  app: "journal" | "blog" | "knowledge" | "course";
 }): void {
   void (async () => {
     try {

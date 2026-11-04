@@ -18,6 +18,7 @@ vi.mock("@/db/schema", () => ({
     parentId: "rn.parentId",
     createdAt: "rn.createdAt",
   },
+  courses: { id: "c.id", visibility: "c.visibility" },
 }));
 vi.mock("drizzle-orm", () => ({
   and: vi.fn((...a: unknown[]) => ({ and: a })),
@@ -88,6 +89,22 @@ describe("reader notes", () => {
     expect(res.status).toBe(201);
     expect(inserted).toMatchObject({ userId: "u1", surface: "blog", resourceId: POST_ID, meta, parentId: null });
     expect(mockQueueNote).toHaveBeenCalledWith({ userId: "u1", quote: "idempotent", content: "Same result twice.", app: "blog" });
+  });
+
+  it("files a course note to knowledge only when the course is public", async () => {
+    selectReturns([{ visibility: "public" }]);
+    expect((await post({ surface: "course", resource: POST_ID, content: "A pixel.", anchor })).status).toBe(201);
+    expect(inserted).toMatchObject({ surface: "course", resourceId: POST_ID });
+    expect(mockQueueNote).toHaveBeenCalledWith(expect.objectContaining({ app: "course" }));
+
+    mockQueueNote.mockClear();
+    selectReturns([{ visibility: "private" }]);
+    expect((await post({ surface: "course", resource: POST_ID, content: "A pixel.", anchor })).status).toBe(201);
+    expect(mockQueueNote).not.toHaveBeenCalled();
+
+    selectReturns([]);
+    expect((await post({ surface: "course", resource: POST_ID, content: "A pixel.", anchor })).status).toBe(201);
+    expect(mockQueueNote).not.toHaveBeenCalled();
   });
 
   it("needs an anchor on a note and forbids one on a reply", async () => {

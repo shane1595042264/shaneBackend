@@ -128,7 +128,7 @@ export interface ExplainInput {
   after: string;
   title?: string;
   heading?: string;
-  surface: "journal" | "blog" | "knowledge";
+  surface: "journal" | "blog" | "knowledge" | "course";
 }
 
 /**

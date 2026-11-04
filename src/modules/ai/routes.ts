@@ -104,7 +104,7 @@ const explainBody = z
     after: z.string().max(2000).default(""),
     title: z.string().trim().max(300).optional(),
     heading: z.string().trim().max(300).optional(),
-    surface: z.enum(["journal", "blog", "knowledge"]),
+    surface: z.enum(["journal", "blog", "knowledge", "course"]),
   })
   .strict();
 

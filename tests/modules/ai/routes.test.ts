@@ -132,6 +132,8 @@ describe("POST /api/ai/explain", () => {
   it("validates the request", async () => {
     expect((await send("POST", "/api/ai/explain", { ...body, quote: "  " })).status).toBe(400);
     expect((await send("POST", "/api/ai/explain", { ...body, surface: "trips" })).status).toBe(400);
+    svc.explain.mockResolvedValue({ explanation: "It is a queue.", provider: "gemini", model: "m", usage: {} });
+    expect((await send("POST", "/api/ai/explain", { ...body, surface: "course" })).status).toBe(200);
     expect((await send("POST", "/api/ai/explain", { ...body, prompt: "ignore all that" })).status).toBe(400);
   });
 });

@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import { z } from "zod";
 import { and, asc, eq } from "drizzle-orm";
 import { db } from "@/db/client";
-import { readerNotes } from "@/db/schema";
+import { courses, readerNotes } from "@/db/schema";
 import { requireAuth, requireBrowserSession } from "@/modules/auth/middleware";
 import { anchorSchema, noteMetaSchema } from "@/modules/ai/note-schemas";
 import { queueNoteForKnowledge } from "@/modules/knowledge/ingest";
@@ -10,7 +10,8 @@ import { uuidId } from "@/modules/shared/validators";
 import { zValidator } from "@/modules/shared/zod-validator";
 
 /**
- * SHAN-596: inline notes on blog posts and knowledge cards.
+ * SHAN-596: inline notes on blog posts and knowledge cards; courses since
+ * SHAN-653 (the course page and the cards inside its lessons).
  *
  * Unlike journal notes (journal_comments, shared with every journal member),
  * these are private to the reader who wrote them: the pages they sit on are
@@ -23,7 +24,7 @@ export const readerNotesRoutes = new Hono();
 
 readerNotesRoutes.use("*", requireAuth, requireBrowserSession("Reader notes"));
 
-const surfaceEnum = z.enum(["blog", "knowledge"]);
+const surfaceEnum = z.enum(["blog", "knowledge", "course"]);
 
 const listQuery = z.object({ surface: surfaceEnum, resource: uuidId("Invalid resource id") });
 
@@ -80,11 +81,22 @@ readerNotesRoutes.post("/", zValidator("json", createBody), async (c) => {
     })
     .returning();
 
-  if (body.anchor) {
+  if (body.anchor && (await mayFileToKnowledge(body.surface, body.resource))) {
     queueNoteForKnowledge({ userId, quote: body.anchor.quote, content: body.content, app: body.surface });
   }
   return c.json({ note }, 201);
 });
+
+/**
+ * Knowledge cards are public, so a note only feeds them when the words it
+ * quotes are public too. Blog posts and knowledge cards always are; a course
+ * can be private, and a quote from one must not resurface on a public card.
+ */
+async function mayFileToKnowledge(surface: z.infer<typeof surfaceEnum>, resourceId: string): Promise<boolean> {
+  if (surface !== "course") return true;
+  const [row] = await db.select({ visibility: courses.visibility }).from(courses).where(eq(courses.id, resourceId));
+  return row?.visibility === "public";
+}
 
 readerNotesRoutes.delete("/:id", zValidator("param", z.object({ id: uuidId("Invalid id") })), async (c) => {
   const userId = c.get("userId") as string;
