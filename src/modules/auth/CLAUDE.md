@@ -46,6 +46,10 @@ Current scopes:
 - `comments:write` — comments
 - `reactions:write` — reactions
 - `knowledge:write` — every knowledge and vocabulary write: POST `/api/knowledge/notes` (Nibbler-style ingest), entry create/edit/delete/bulk-delete/enrich, connections (edit and deletes since SHAN-566)
+- `trips:write` — trip uploads
+- `practice:write` — every Practice write, training plans included
+
+Tea entries (SHAN-605) and skincare (SHAN-694) reuse `entries:write` for their reads as well as their writes, so a narrow token cannot read them through `requireAuth` alone.
 
 ## PAT format and lifecycle
 

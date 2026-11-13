@@ -27,16 +27,22 @@ vi.mock("@/modules/skincare/search", () => ({ searchProducts: m.search }));
 vi.mock("@/modules/shared/rate-limit", () => ({
   createPATRateLimit: () => async (_c: any, next: any) => { await next(); },
 }));
-vi.mock("@/modules/auth/middleware", () => ({
-  requireAuth: async (c: any, next: any) => {
-    const u = c.req.header("X-Test-User");
-    if (!u) return c.json({ error: "auth" }, 401);
-    c.set("userId", u);
-    c.set("tokenScopes", null);
-    await next();
-  },
-  requireScope: () => async (_c: any, next: any) => { await next(); },
-}));
+// Fake only the token resolution; keep the real requireScope so the PAT gate
+// is exercised as shipped. X-Test-Scopes marks the caller as a PAT.
+vi.mock("@/modules/auth/middleware", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/modules/auth/middleware")>();
+  return {
+    ...actual,
+    requireAuth: async (c: any, next: any) => {
+      const u = c.req.header("X-Test-User");
+      if (!u) return c.json({ error: "auth" }, 401);
+      const scopes = c.req.header("X-Test-Scopes");
+      c.set("userId", u);
+      c.set("tokenScopes", scopes === undefined ? null : scopes.split(",").filter(Boolean));
+      await next();
+    },
+  };
+});
 
 import { skincareRoutes } from "@/modules/skincare/routes";
 
@@ -155,5 +161,42 @@ describe("POST /api/skincare/reorder — all or nothing (SHAN-580)", () => {
     const res = await reorder({ timeOfDay: "morning", orderedIds: [A, A] });
     expect(res.status).toBe(400);
     expect(m.reorder).not.toHaveBeenCalled();
+  });
+});
+
+describe("PAT reads need entries:write (SHAN-694)", () => {
+  const reactionsPat = { "X-Test-User": "u1", "X-Test-Scopes": "reactions:write" };
+  const entriesPat = { "X-Test-User": "u1", "X-Test-Scopes": "entries:write" };
+
+  it("403s a reactions-only PAT on GET / before reading the routine", async () => {
+    const res = await app.request("/api/skincare", { headers: reactionsPat });
+    expect(res.status).toBe(403);
+    expect((await res.json()).error).toBe("Token missing required scope: entries:write");
+    expect(m.list).not.toHaveBeenCalled();
+  });
+
+  it("403s a reactions-only PAT on GET /search before calling the proxy", async () => {
+    const res = await app.request("/api/skincare/search?q=cerave", { headers: reactionsPat });
+    expect(res.status).toBe(403);
+    expect(m.search).not.toHaveBeenCalled();
+  });
+
+  it("serves an entries:write PAT", async () => {
+    m.list.mockResolvedValue([ROW]);
+    m.search.mockResolvedValue([]);
+    const list = await app.request("/api/skincare", { headers: entriesPat });
+    expect(list.status).toBe(200);
+    expect((await list.json()).morning).toHaveLength(1);
+    const search = await app.request("/api/skincare/search?q=cerave", { headers: entriesPat });
+    expect(search.status).toBe(200);
+  });
+
+  it("serves a browser session (JWT bypasses scopes)", async () => {
+    m.list.mockResolvedValue([]);
+    m.search.mockResolvedValue([]);
+    expect((await app.request("/api/skincare", { headers: { "X-Test-User": "u1" } })).status).toBe(200);
+    expect(
+      (await app.request("/api/skincare/search?q=cerave", { headers: { "X-Test-User": "u1" } })).status,
+    ).toBe(200);
   });
 });

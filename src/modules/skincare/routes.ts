@@ -88,7 +88,10 @@ function serialize(row: SkincareProductRow) {
 // Owner-scoped read: the two routines, each ordered by position. `startedAt`
 // on each product is the streak/timer anchor the frontend renders "Day N"
 // from. There is no public read — knowing the id isn't a gate here.
-skincareRoutes.get("/", requireAuth, async (c) => {
+//
+// SHAN-694: a PAT needs entries:write, the scope every skincare write already
+// takes. requireAuth alone let a reactions-only token read the whole routine.
+skincareRoutes.get("/", requireAuth, requireScope("entries:write"), async (c) => {
   const userId = c.get("userId") as string;
   const rows = await listSkincareProducts(userId);
   const morning = rows.filter((r) => r.timeOfDay === "morning").map(serialize);
@@ -97,12 +100,14 @@ skincareRoutes.get("/", requireAuth, async (c) => {
 });
 
 // Product-search autofill for the add form. Read-only proxy to Open Beauty
-// Facts (see ./search). requireAuth (not requireScope) — it's a read, and the
-// browser typeahead runs on a JWT session. Always 200 with a list; the proxy
-// swallows upstream errors and returns [] so the form degrades to manual entry.
+// Facts (see ./search). The browser typeahead runs on a JWT session, which
+// bypasses scopes; a PAT needs entries:write like the rest of the module
+// (SHAN-694). Always 200 with a list; the proxy swallows upstream errors and
+// returns [] so the form degrades to manual entry.
 skincareRoutes.get(
   "/search",
   requireAuth,
+  requireScope("entries:write"),
   zValidator("query", searchQuery),
   async (c) => {
     const { q } = c.req.valid("query");
