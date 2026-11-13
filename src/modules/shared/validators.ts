@@ -73,6 +73,11 @@ export const trimmedOptional = (max: number) =>
       return t.length ? t : undefined;
     });
 
+// trimmedOptional for a nullable column on an update route (SHAN-693): an
+// explicit null clears the column, while "" / "   " stay a no-op as above.
+// Without the null branch there was no value at all that could clear it.
+export const trimmedClearable = (max: number) => trimmedOptional(max).or(z.null());
+
 // Optional-nullable provenance string: trim, and collapse an empty (or
 // whitespace-only) value to null so an all-blank hint isn't persisted. Distinct
 // from trimmedOptional in that an explicit null survives as null (the field is

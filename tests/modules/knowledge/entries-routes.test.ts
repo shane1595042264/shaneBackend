@@ -908,6 +908,35 @@ describe("PUT /api/knowledge/entries/:id — whitespace-only hardening (SHAN-433
     // undefined -> Drizzle omits it from the SET clause (no accidental clear).
     expect(patch.definition).toBeUndefined();
   });
+
+  it("clears an optional field sent as an explicit null (SHAN-693)", async () => {
+    selectReturning([{ createdBy: "user-1" }]);
+    const setFn = vi.fn(() => ({
+      where: () => ({ returning: () => Promise.resolve([{ id: validId }]) }),
+    }));
+    mockUpdate.mockImplementation(() => ({ set: setFn }));
+
+    const res = await app.request(`/api/knowledge/entries/${validId}`, {
+      method: "PUT",
+      headers: authHeaders,
+      body: JSON.stringify({ definition: null, exampleSentence: null }),
+    });
+    expect(res.status).toBe(200);
+    const patch = setFn.mock.calls[0]![0] as Record<string, unknown>;
+    expect(patch).toHaveProperty("definition", null);
+    expect(patch).toHaveProperty("exampleSentence", null);
+    expect(patch).not.toHaveProperty("pronunciation");
+  });
+
+  it("still rejects a null word, which is required on the row", async () => {
+    const res = await app.request(`/api/knowledge/entries/${validId}`, {
+      method: "PUT",
+      headers: authHeaders,
+      body: JSON.stringify({ word: null }),
+    });
+    expect(res.status).toBe(400);
+    expect(mockUpdate).not.toHaveBeenCalled();
+  });
 });
 
 describe("GET /api/knowledge/entries — filter param length bounds (SHAN-415)", () => {

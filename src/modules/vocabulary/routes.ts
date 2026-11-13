@@ -12,6 +12,7 @@ import { likeContains } from "@/modules/shared/like";
 import {
   trimmedRequired,
   trimmedOptional,
+  trimmedClearable,
   trimmedLabels,
   pageOffset,
   uuidId,
@@ -211,10 +212,10 @@ vocabularyRoutes.post(
 const updateWordSchema = z.object({
   word: trimmedRequired(255).optional(),
   language: trimmedRequired(50).optional(),
-  definition: trimmedOptional(20000),
-  pronunciation: trimmedOptional(255),
-  partOfSpeech: trimmedOptional(50),
-  exampleSentence: trimmedOptional(2000),
+  definition: trimmedClearable(20000),
+  pronunciation: trimmedClearable(255),
+  partOfSpeech: trimmedClearable(50),
+  exampleSentence: trimmedClearable(2000),
   labels: trimmedLabels(100, 50),
 });
 

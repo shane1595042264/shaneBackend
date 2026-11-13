@@ -6,6 +6,7 @@ import {
   IN_FLIGHT_UPLOAD_MESSAGE,
   trimmedRequired,
   trimmedOptional,
+  trimmedClearable,
   trimmedNullish,
   trimmedLabels,
   pageOffset,
@@ -134,6 +135,24 @@ describe("trimmedOptional", () => {
   });
 
   it("still rejects an oversized value", () => {
+    expect(schema.safeParse("abcdefghijk").success).toBe(false);
+  });
+});
+
+describe("trimmedClearable (SHAN-693)", () => {
+  const schema = trimmedClearable(10);
+
+  it("passes an explicit null through so the column is cleared", () => {
+    expect(schema.parse(null)).toBeNull();
+  });
+
+  it("keeps trimmedOptional's no-op for absent and whitespace-only values", () => {
+    expect(schema.parse(undefined)).toBeUndefined();
+    expect(schema.parse("   ")).toBeUndefined();
+  });
+
+  it("trims a real value and still rejects an oversized one", () => {
+    expect(schema.parse("  hi  ")).toBe("hi");
     expect(schema.safeParse("abcdefghijk").success).toBe(false);
   });
 });

@@ -861,4 +861,22 @@ describe("POST /api/vocabulary/words — whitespace-only hardening (SHAN-433)", 
     expect(res.status).toBe(400);
     expect(mockUpdate).not.toHaveBeenCalled();
   });
+
+  it("clears an optional field on PUT when sent as null, and skips a blank one (SHAN-693)", async () => {
+    selectRows([{ createdBy: "u-shane" }]);
+    const setFn = vi.fn(() => ({
+      where: () => ({ returning: () => Promise.resolve([{ id: validId }]) }),
+    }));
+    mockUpdate.mockImplementation(() => ({ set: setFn }));
+
+    const res = await app.request(`/api/vocabulary/words/${validId}`, {
+      method: "PUT",
+      headers: jwtHeaders("u-shane"),
+      body: JSON.stringify({ pronunciation: null, partOfSpeech: "   " }),
+    });
+    expect(res.status).toBe(200);
+    const patch = setFn.mock.calls[0]![0] as Record<string, unknown>;
+    expect(patch).toHaveProperty("pronunciation", null);
+    expect(patch.partOfSpeech).toBeUndefined();
+  });
 });

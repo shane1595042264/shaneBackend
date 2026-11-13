@@ -17,6 +17,7 @@ import { likeContains } from "@/modules/shared/like";
 import {
   trimmedRequired,
   trimmedOptional,
+  trimmedClearable,
   trimmedNullish,
   trimmedLabels,
   pageOffset,
@@ -480,10 +481,10 @@ const updateWordSchema = z.object({
   word: trimmedRequired(255).optional(),
   language: trimmedRequired(50).optional(),
   category: trimmedRequired(100).optional(),
-  definition: trimmedOptional(20000),
-  pronunciation: trimmedOptional(255),
-  partOfSpeech: trimmedOptional(50),
-  exampleSentence: trimmedOptional(2000),
+  definition: trimmedClearable(20000),
+  pronunciation: trimmedClearable(255),
+  partOfSpeech: trimmedClearable(50),
+  exampleSentence: trimmedClearable(2000),
   labels: trimmedLabels(100, 50),
   // Location-memorization technique (SHAN-339): the distinct places this card has
   // been practiced. long_term_memorized is derived server-side, never trusted from
