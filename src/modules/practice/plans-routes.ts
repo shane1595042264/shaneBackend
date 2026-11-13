@@ -102,6 +102,10 @@ const planCreateSchema = z.object({
   visibility: z.enum(PLAN_VISIBILITIES).default("private"),
   startDate: isoDate.nullish().default(null),
   daysPerWeek: z.number().int().min(1).max(7).nullish().default(null),
+  // SHAN-692: accepted here as well as on PATCH. Left out, zod stripped them
+  // and a plan written in one call got all-day events with no alarm.
+  sessionTime: sessionTime.nullish().default(null),
+  reminderMinutes: reminderMinutes.nullish().default(null),
   days: z.array(dayInput).max(60).optional(),
 });
 
@@ -160,6 +164,8 @@ planRoutes.post(
       visibility: body.visibility,
       startDate: body.startDate ?? null,
       daysPerWeek: body.daysPerWeek ?? null,
+      sessionTime: body.sessionTime ?? null,
+      reminderMinutes: body.reminderMinutes ?? null,
     });
 
     // Nested authoring: positions come from array order, so an agent never has

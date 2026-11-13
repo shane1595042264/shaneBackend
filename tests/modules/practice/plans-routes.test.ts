@@ -482,6 +482,41 @@ describe("calendar settings (SHAN-473)", () => {
     });
     expect(res.status).toBe(400);
   });
+
+  // SHAN-692: create used to strip both, answering 201 with them null.
+  it("POST stores a session time and a reminder on create", async () => {
+    const res = await app.request("/api/practice/plans", {
+      method: "POST",
+      headers: auth(),
+      body: JSON.stringify({ title: "Morning mobility", sessionTime: "07:30", reminderMinutes: 15 }),
+    });
+    expect(res.status).toBe(201);
+    expect(m.createPlan).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionTime: "07:30", reminderMinutes: 15 }),
+    );
+  });
+
+  it("POST defaults both to null when left out", async () => {
+    const res = await app.request("/api/practice/plans", {
+      method: "POST",
+      headers: auth(),
+      body: JSON.stringify({ title: "Morning mobility" }),
+    });
+    expect(res.status).toBe(201);
+    expect(m.createPlan).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionTime: null, reminderMinutes: null }),
+    );
+  });
+
+  it("POST rejects a malformed session time instead of dropping it", async () => {
+    const res = await app.request("/api/practice/plans", {
+      method: "POST",
+      headers: auth(),
+      body: JSON.stringify({ title: "Morning mobility", sessionTime: "7:30am" }),
+    });
+    expect(res.status).toBe(400);
+    expect(m.createPlan).not.toHaveBeenCalled();
+  });
 });
 
 describe("calendar token", () => {

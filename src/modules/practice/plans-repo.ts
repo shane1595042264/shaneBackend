@@ -106,6 +106,8 @@ export async function createPlan(input: {
   visibility: PlanVisibility;
   startDate: string | null;
   daysPerWeek: number | null;
+  sessionTime: string | null;
+  reminderMinutes: number | null;
 }): Promise<PlanRow> {
   const [row] = await db.insert(trainingPlans).values(input).returning();
   return row as PlanRow;
