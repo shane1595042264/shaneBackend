@@ -19,6 +19,7 @@ vi.mock("@/db/schema", () => ({
     createdAt: "rn.createdAt",
   },
   courses: { id: "c.id", visibility: "c.visibility" },
+  blogPosts: { id: "bp.id", status: "bp.status" },
 }));
 vi.mock("drizzle-orm", () => ({
   and: vi.fn((...a: unknown[]) => ({ and: a })),
@@ -85,6 +86,7 @@ describe("reader notes", () => {
 
   it("creates a note with its AI stamp and queues it for knowledge", async () => {
     const meta = { kind: "ai", provider: "openai", model: "gpt-5-nano" };
+    selectReturns([{ status: "published" }]);
     const res = await post({ surface: "blog", resource: POST_ID.toUpperCase(), content: "Same result twice.", anchor, meta });
     expect(res.status).toBe(201);
     expect(inserted).toMatchObject({ userId: "u1", surface: "blog", resourceId: POST_ID, meta, parentId: null });
@@ -105,6 +107,24 @@ describe("reader notes", () => {
     selectReturns([]);
     expect((await post({ surface: "course", resource: POST_ID, content: "A pixel.", anchor })).status).toBe(201);
     expect(mockQueueNote).not.toHaveBeenCalled();
+  });
+
+  it("files a blog note to knowledge only while the post is published", async () => {
+    selectReturns([{ status: "draft" }]);
+    expect((await post({ surface: "blog", resource: POST_ID, content: "Same result twice.", anchor })).status).toBe(201);
+    expect(inserted).toMatchObject({ surface: "blog", resourceId: POST_ID });
+    expect(vi.mocked(eq)).toHaveBeenCalledWith("bp.id", POST_ID);
+    expect(mockQueueNote).not.toHaveBeenCalled();
+
+    selectReturns([]);
+    expect((await post({ surface: "blog", resource: POST_ID, content: "Same result twice.", anchor })).status).toBe(201);
+    expect(mockQueueNote).not.toHaveBeenCalled();
+  });
+
+  it("files a knowledge-card note without a lookup, since cards are always public", async () => {
+    expect((await post({ surface: "knowledge", resource: POST_ID, content: "x", anchor })).status).toBe(201);
+    expect(mockSelect).not.toHaveBeenCalled();
+    expect(mockQueueNote).toHaveBeenCalledWith(expect.objectContaining({ app: "knowledge" }));
   });
 
   it("needs an anchor on a note and forbids one on a reply", async () => {

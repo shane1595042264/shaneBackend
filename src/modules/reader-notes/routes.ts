@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import { z } from "zod";
 import { and, asc, eq } from "drizzle-orm";
 import { db } from "@/db/client";
-import { courses, readerNotes } from "@/db/schema";
+import { blogPosts, courses, readerNotes } from "@/db/schema";
 import { requireAuth, requireBrowserSession } from "@/modules/auth/middleware";
 import { anchorSchema, noteMetaSchema } from "@/modules/ai/note-schemas";
 import { queueNoteForKnowledge } from "@/modules/knowledge/ingest";
@@ -89,11 +89,17 @@ readerNotesRoutes.post("/", zValidator("json", createBody), async (c) => {
 
 /**
  * Knowledge cards are public, so a note only feeds them when the words it
- * quotes are public too. Blog posts and knowledge cards always are; a course
- * can be private, and a quote from one must not resurface on a public card.
+ * quotes are public too. Knowledge cards always are; a course can be private,
+ * and a quote from one must not resurface on a public card. A blog post can be
+ * a draft, readable by its author alone, and a published post can be flipped
+ * back to one (SHAN-695), so it files only while published.
  */
 async function mayFileToKnowledge(surface: z.infer<typeof surfaceEnum>, resourceId: string): Promise<boolean> {
-  if (surface !== "course") return true;
+  if (surface === "knowledge") return true;
+  if (surface === "blog") {
+    const [row] = await db.select({ status: blogPosts.status }).from(blogPosts).where(eq(blogPosts.id, resourceId));
+    return row?.status === "published";
+  }
   const [row] = await db.select({ visibility: courses.visibility }).from(courses).where(eq(courses.id, resourceId));
   return row?.visibility === "public";
 }
