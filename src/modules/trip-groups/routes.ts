@@ -49,7 +49,7 @@ import { users } from "@/db/schema";
 import { db } from "@/db/client";
 import { eq } from "drizzle-orm";
 import { sniffImageMime } from "@/modules/shared/image-validate";
-import { uuidId } from "@/modules/shared/validators";
+import { int4Positive, uuidId } from "@/modules/shared/validators";
 import {
   createNote,
   listNotes,
@@ -793,7 +793,9 @@ tripGroupsRoutes.post(
 
 const noteBody = z.object({
   anchorType: z.enum(["group", "day", "activity"]),
-  anchorDay: z.number().int().min(1).nullable().optional().default(null),
+  // SHAN-696: anchor_day is int4, so an unbounded day reached Postgres and
+  // came back as a 500 "out of range for type integer" instead of a 400.
+  anchorDay: int4Positive.nullable().optional().default(null),
   // Trim before validating so a whitespace-only anchorActivity collapses to ""
   // and trips the "required for activity notes" guard below instead of being
   // stored as a blank anchor. Order matters in zod: .trim() must precede any

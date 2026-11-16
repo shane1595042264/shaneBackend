@@ -1560,6 +1560,28 @@ describe("notes + sections (SHAN-283)", () => {
     expect(r2.status).toBe(400);
   });
 
+  it("anchorDay past int4 is 400 and never reaches the repo; int4 max is accepted (SHAN-696)", async () => {
+    mockGetGroupBySlug.mockResolvedValue(groupRow);
+    mockIsMember.mockResolvedValue(true);
+    mockCreateNote.mockResolvedValue(noteRow);
+    for (const anchorDay of [2147483648, 3000000000]) {
+      const res = await app.request(`/api/trip-groups/${SLUG}/notes`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Test-User": USER_B },
+        body: JSON.stringify({ anchorType: "day", anchorDay, body: "x" }),
+      });
+      expect(res.status).toBe(400);
+    }
+    expect(mockCreateNote).not.toHaveBeenCalled();
+    const ok = await app.request(`/api/trip-groups/${SLUG}/notes`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Test-User": USER_B },
+      body: JSON.stringify({ anchorType: "day", anchorDay: 2147483647, body: "x" }),
+    });
+    expect(ok.status).toBe(201);
+    expect(mockCreateNote).toHaveBeenCalledWith(expect.objectContaining({ anchorDay: 2147483647 }));
+  });
+
   it("note delete allowed for author and owner, not others", async () => {
     mockGetGroupBySlug.mockResolvedValue({ ...groupRow, ownerId: USER_A });
     mockGetNoteById.mockResolvedValue(noteRow); // authored by USER_B
