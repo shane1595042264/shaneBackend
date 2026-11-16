@@ -119,6 +119,57 @@ describe("POST /api/trips (JSON)", () => {
     expect(mockCreate.mock.calls[0][0].title).toBeNull();
   });
 
+  // SHAN-698: "   " used to win the precedence order and be stored as the title.
+  it("a whitespace-only body title falls back to the <title> tag", async () => {
+    mockCreate.mockResolvedValue({
+      id: "t1", slug: "from-html", title: "From HTML", sourceFilename: null, createdAt: new Date(),
+    });
+    const res = await app.request("/api/trips", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Test-User": "u1" },
+      body: JSON.stringify({ html: "<title>From HTML</title>", title: "   " }),
+    });
+    expect(res.status).toBe(201);
+    expect(mockCreate.mock.calls[0][0].title).toBe("From HTML");
+    expect(mockFindDuplicate.mock.calls[0][0].title).toBe("From HTML");
+  });
+
+  it("trims padding off an explicit body title", async () => {
+    mockCreate.mockResolvedValue({
+      id: "t1", slug: "manual", title: "Manual", sourceFilename: null, createdAt: new Date(),
+    });
+    await app.request("/api/trips", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Test-User": "u1" },
+      body: JSON.stringify({ html: "<title>From HTML</title>", title: "  Manual  " }),
+    });
+    expect(mockCreate.mock.calls[0][0].title).toBe("Manual");
+  });
+
+  it("a filename that cleans down to nothing gives a null title, not an empty one", async () => {
+    mockCreate.mockResolvedValue({
+      id: "t1", slug: "abcdefgh", title: null, sourceFilename: "__.html", createdAt: new Date(),
+    });
+    await app.request("/api/trips", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Test-User": "u1" },
+      body: JSON.stringify({ html: "<p>no title</p>", filename: "__.html" }),
+    });
+    expect(mockCreate.mock.calls[0][0].title).toBeNull();
+  });
+
+  it("caps a filename-derived title at 200 chars", async () => {
+    mockCreate.mockResolvedValue({
+      id: "t1", slug: "x", title: "a".repeat(200), sourceFilename: null, createdAt: new Date(),
+    });
+    await app.request("/api/trips", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Test-User": "u1" },
+      body: JSON.stringify({ html: "<p>no title</p>", filename: `${"a".repeat(240)}.html` }),
+    });
+    expect(mockCreate.mock.calls[0][0].title).toBe("a".repeat(200));
+  });
+
   it("rejects empty html", async () => {
     const res = await app.request("/api/trips", {
       method: "POST",
@@ -472,6 +523,31 @@ describe("PATCH /api/trips/:slug", () => {
     });
     expect(res.status).toBe(400);
     expect(mockUpdate).not.toHaveBeenCalled();
+  });
+
+  // SHAN-698: a blank title used to overwrite the stored one with spaces.
+  it("a whitespace-only title is nothing to update, not a blank rename", async () => {
+    mockGet.mockResolvedValue(tripRow("u1"));
+    const res = await app.request("/api/trips/tokyo", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", "X-Test-User": "u1" },
+      body: JSON.stringify({ title: "   " }),
+    });
+    expect(res.status).toBe(400);
+    expect(mockUpdate).not.toHaveBeenCalled();
+  });
+
+  it("a whitespace-only title next to new html re-extracts the title", async () => {
+    mockGet.mockResolvedValue(tripRow("u1"));
+    mockUpdate.mockResolvedValue({
+      id: "t1", slug: "tokyo", title: "New Title", sourceFilename: null, updatedAt: new Date(),
+    });
+    await app.request("/api/trips/tokyo", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", "X-Test-User": "u1" },
+      body: JSON.stringify({ html: "<title>New Title</title>", title: " " }),
+    });
+    expect(mockUpdate.mock.calls[0][1].title).toBe("New Title");
   });
 
   it("404 when slug missing", async () => {

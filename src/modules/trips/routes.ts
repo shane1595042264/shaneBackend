@@ -5,6 +5,7 @@ import { createMiddleware } from "hono/factory";
 import { optionalAuth, requireScope, type AuthVars } from "@/modules/auth/middleware";
 import { TOKEN_PREFIX } from "@/modules/auth/tokens";
 import { encodeKeysetCursor, keysetCursorParam } from "@/modules/shared/keyset";
+import { trimmedOptional } from "@/modules/shared/validators";
 import { findNul, nulRejection } from "@/modules/shared/reject-nul";
 import { extractTitle } from "./title";
 import {
@@ -19,9 +20,17 @@ import {
 export const tripsRoutes = new Hono();
 
 // JSON path for curl / programmatic uploads.
+//
+// SHAN-698: the title is trimmed, and a blank one counts as not provided, the
+// way the multipart path already treated it. An explicit title wins the
+// precedence order, so a bare z.string().min(1) let "   " beat the itinerary's
+// own <title> and stored a title the /trips index rendered as an invisible
+// link. On PATCH a blank-only body is the "Nothing to update" 400.
+const jsonTitle = trimmedOptional(200);
+
 const jsonCreateBody = z.object({
   html: z.string().min(1).max(10 * 1024 * 1024),
-  title: z.string().min(1).max(200).optional(),
+  title: jsonTitle,
   filename: z.string().min(1).max(255).optional(),
   // SHAN-514: opt out of duplicate detection and create a second copy anyway.
   force: z.boolean().optional(),
@@ -29,7 +38,7 @@ const jsonCreateBody = z.object({
 
 const jsonPatchBody = z.object({
   html: z.string().min(1).max(10 * 1024 * 1024).optional(),
-  title: z.string().min(1).max(200).optional(),
+  title: jsonTitle,
   filename: z.string().min(1).max(255).optional(),
 });
 
@@ -149,8 +158,10 @@ tripsRoutes.post("/", optionalAuth, rejectDeadPat, requireScope("trips:write"), 
   }
 
   const titleFromHtml = extractTitle(html);
+  // A filename that cleans down to nothing (".html", "__.html") is no title, not
+  // an empty one, and it gets the same 200-char cap as every other source.
   const filenameTitle = sourceFilename
-    ? sourceFilename.replace(/\.html?$/i, "").replace(/[_-]+/g, " ").trim()
+    ? sourceFilename.replace(/\.html?$/i, "").replace(/[_-]+/g, " ").trim().slice(0, 200) || null
     : null;
   const title = providedTitle ?? titleFromHtml ?? filenameTitle ?? null;
 
