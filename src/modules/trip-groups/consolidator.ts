@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { generateText } from "@/modules/shared/llm";
+import { isoDate } from "@/modules/shared/validators";
 
 /**
  * AI itinerary consolidation (SHAN-272, Phase 3 of SHAN-266). Takes the
@@ -35,13 +36,11 @@ const daySchema = z.object({
   day: z.number().int().min(1),
   title: z.string().min(1).max(300),
   // Calendar date "YYYY-MM-DD" when the ideas pin the trip to real dates
-  // (SHAN-277); null when the trip is still floating.
-  date: z
-    .string()
-    .regex(/^\d{4}-\d{2}-\d{2}$/)
-    .nullable()
-    .optional()
-    .default(null),
+  // (SHAN-277); null when the trip is still floating. A real calendar date,
+  // not just the shape (SHAN-699): "2026-13-01" made the calendar export throw
+  // a 500, and "2026-02-30" reached Google after the previous export had
+  // already been deleted, so every retry wiped and failed again.
+  date: isoDate.nullable().optional().default(null),
   location: z.string().max(300).nullable(),
   // Country grouping for the collapsible sections (SHAN-277).
   country: z.string().max(120).nullable().optional().default(null),

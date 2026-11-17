@@ -1326,6 +1326,43 @@ describe("itinerary day date + country (SHAN-277)", () => {
     expect(res.status).toBe(400);
   });
 
+  // SHAN-699: the regex alone let these through, and the calendar export then
+  // threw (2026-13-01) or sent Google a day that does not exist (2026-02-30).
+  it.each(["2026-02-30", "2026-13-01", "2026-04-31", "2026-00-10"])(
+    "PUT rejects %s, which has the shape but is not a calendar date",
+    async (date) => {
+      mockGetGroupBySlug.mockResolvedValue(groupRow);
+      const itin = {
+        summary: "Impossible date.",
+        days: [{ day: 1, title: "X", date, location: null, country: null, activities: [] }],
+      };
+      const res = await app.request(`/api/trip-groups/${SLUG}/itinerary`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", "X-Test-User": USER_A },
+        body: JSON.stringify({ itinerary: itin }),
+      });
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.details[0].path).toBe("itinerary.days.0.date");
+      expect(mockSaveItinerary).not.toHaveBeenCalled();
+      expect(mockSaveItineraryMerged).not.toHaveBeenCalled();
+    },
+  );
+
+  it("PUT accepts a leap day in a leap year", async () => {
+    mockGetGroupBySlug.mockResolvedValue(groupRow);
+    mockSaveItinerary.mockResolvedValue({ itineraryGeneratedAt: new Date() });
+    const res = await app.request(`/api/trip-groups/${SLUG}/itinerary`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", "X-Test-User": USER_A },
+      body: JSON.stringify({
+        itinerary: { summary: "Leap.", days: [{ day: 1, title: "X", date: "2028-02-29", location: null, activities: [] }] },
+      }),
+    });
+    expect(res.status).toBe(200);
+    expect((await res.json()).itinerary.days[0].date).toBe("2028-02-29");
+  });
+
   it("legacy itineraries without date/country still validate (defaults null)", async () => {
     mockGetGroupBySlug.mockResolvedValue(groupRow);
     mockSaveItinerary.mockResolvedValue({ itineraryGeneratedAt: new Date() });
