@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { generateText } from "@/modules/shared/llm";
-import { isoDate } from "@/modules/shared/validators";
+import { int4Positive, isoDate } from "@/modules/shared/validators";
 
 /**
  * AI itinerary consolidation (SHAN-272, Phase 3 of SHAN-266). Takes the
@@ -33,7 +33,8 @@ const mealsSchema = z
   .default({ breakfast: null, lunch: null, dinner: null });
 
 const daySchema = z.object({
-  day: z.number().int().min(1),
+  // Photos and notes store the day number in int4 columns (SHAN-707).
+  day: int4Positive,
   title: z.string().min(1).max(300),
   // Calendar date "YYYY-MM-DD" when the ideas pin the trip to real dates
   // (SHAN-277); null when the trip is still floating. A real calendar date,
@@ -50,7 +51,22 @@ const daySchema = z.object({
 
 export const itinerarySchema = z.object({
   summary: z.string().min(1).max(5000),
-  days: z.array(daySchema).min(1).max(60),
+  // The day number is the key everywhere downstream (the base merge, approving
+  // a suggestion, the day page, photos, notes), so a repeated one was kept
+  // once and the other day silently dropped (SHAN-707).
+  days: z
+    .array(daySchema)
+    .min(1)
+    .max(60)
+    .superRefine((days, ctx) => {
+      const seen = new Set<number>();
+      days.forEach((d, i) => {
+        if (seen.has(d.day)) {
+          ctx.addIssue({ code: "custom", path: [i, "day"], message: `Day ${d.day} appears more than once` });
+        }
+        seen.add(d.day);
+      });
+    }),
 });
 
 export type TripItinerary = z.infer<typeof itinerarySchema>;

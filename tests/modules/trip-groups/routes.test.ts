@@ -1363,6 +1363,41 @@ describe("itinerary day date + country (SHAN-277)", () => {
     expect((await res.json()).itinerary.days[0].date).toBe("2028-02-29");
   });
 
+  // SHAN-707: the merge keys days by number, so the second "day 3" was dropped.
+  it.each([{ base: undefined }, { base: null }])("PUT rejects a repeated day number (base %o)", async ({ base }) => {
+    mockGetGroupBySlug.mockResolvedValue(groupRow);
+    const day = (n: number, title: string) => ({ day: n, title, location: null, activities: [] });
+    const res = await app.request(`/api/trip-groups/${SLUG}/itinerary`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", "X-Test-User": USER_A },
+      body: JSON.stringify({
+        itinerary: { summary: "Twice.", days: [day(1, "A"), day(3, "Rome"), day(3, "Florence")] },
+        ...(base === undefined ? {} : { base }),
+      }),
+    });
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.details[0].path).toBe("itinerary.days.2.day");
+    expect(body.details[0].message).toBe("Day 3 appears more than once");
+    expect(mockSaveItinerary).not.toHaveBeenCalled();
+    expect(mockSaveItineraryMerged).not.toHaveBeenCalled();
+  });
+
+  // SHAN-707: photos and notes keep the day number in int4 columns.
+  it("PUT rejects a day number past int4", async () => {
+    mockGetGroupBySlug.mockResolvedValue(groupRow);
+    const res = await app.request(`/api/trip-groups/${SLUG}/itinerary`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", "X-Test-User": USER_A },
+      body: JSON.stringify({
+        itinerary: { summary: "Far.", days: [{ day: 2147483648, title: "X", location: null, activities: [] }] },
+      }),
+    });
+    expect(res.status).toBe(400);
+    expect((await res.json()).details[0].path).toBe("itinerary.days.0.day");
+    expect(mockSaveItinerary).not.toHaveBeenCalled();
+  });
+
   it("legacy itineraries without date/country still validate (defaults null)", async () => {
     mockGetGroupBySlug.mockResolvedValue(groupRow);
     mockSaveItinerary.mockResolvedValue({ itineraryGeneratedAt: new Date() });
