@@ -4,7 +4,8 @@ Free-form text → structured flashcard entries, persisted into the shared `voca
 
 ## What lives here
 
-- `classifier.ts` — single LLM call that returns `ClassificationResult` (word/language/definition/...) plus an optional `source` provenance object. Pinned to `claude-haiku-4-5-20251001`; everything else flows through the shared LLM fallback chain (`modules/shared/llm.ts`).
+- `classifier.ts` — single LLM call that returns `ClassificationResult` (word/language/definition/...) plus an optional `source` provenance object. Pinned to `claude-haiku-4-5-20251001`, called with `fast: true` (2026-11-17): Anthropic first if usable, then Groq gpt-oss in JSON mode with low reasoning, then Gemini. Measured: ~0.8s per note on Groq, versus 66-123s per note on 2026-11-17 when every note paid a no-credits Anthropic 400 and then waited out Gemini 3.6 Flash's 60s timeout (retried in place). `modules/shared/llm.ts` now skips a provider for a while after an account error (15 min), a quota 429 (15 min) or a timeout (5 min), and never retries a timeout in place. Classification quality on Groq is a notch below Haiku (e.g. "zh" instead of "chinese"); topping up Anthropic credits brings Haiku back automatically within 15 minutes.
+- Callers wait on `POST /notes`: Nibbler's nibble-api forwards every saved vocab word here from a retrying outbox with a 90s timeout. There is no cross-request dedup (below), so a request the caller gives up on still creates its card and the caller's retry creates another. Keep the classifier well under that timeout.
 - `routes.ts` — the public API. The interesting endpoint is `POST /notes`; the rest (`GET/POST/PUT/DELETE /entries`, `/categories`, etc.) is straightforward CRUD against `vocabWords`.
 - `bilibili.ts` — fire-and-forget hook that re-publishes new entries to a Bilibili integration. Treat its return value as discardable; never `await` it in a request path.
 

@@ -30,6 +30,53 @@ export interface GenerateTextOptions {
   reasoningEffort?: "low" | "medium" | "high";
 }
 
+// ── Provider health ──────────────────────────────────────────────────────────
+// A provider that failed for a reason the next request won't fix is skipped for
+// a while instead of costing every call a round trip. Measured on prod
+// (2026-11-17, POST /knowledge/notes from Nibbler): every note first paid an
+// Anthropic "credit balance is too low" 400, then Gemini 3.6 Flash hung for the
+// full 60s timeout and was retried in place, so single notes took 71s, 123s and
+// 66s; Groq, reached last, answered in about a second. Process-local on
+// purpose: one container, and a restart simply re-probes every provider.
+type Provider = "anthropic" | "gemini" | "groq";
+
+/** No credits / bad key: nothing changes until a human tops up or rotates it. */
+const ACCOUNT_SKIP_MS = 15 * 60_000;
+/** Free-tier quota gone: it refills on the provider's schedule, not ours. */
+const QUOTA_SKIP_MS = 15 * 60_000;
+/** Hung for the whole timeout: a free tier that does that tends to keep doing it. */
+const TIMEOUT_SKIP_MS = 5 * 60_000;
+
+const skipUntil: Record<Provider, number> = { anthropic: 0, gemini: 0, groq: 0 };
+const skipWhy: Record<Provider, string> = { anthropic: "", gemini: "", groq: "" };
+
+function skipProvider(provider: Provider, ms: number, why: string): void {
+  skipUntil[provider] = Date.now() + ms;
+  skipWhy[provider] = why;
+  console.warn(`[llm] skipping ${provider} for ${Math.round(ms / 60_000)} min: ${forLog(why)}`);
+}
+
+/** Why `provider` is being skipped right now, or null if it may be tried. */
+function skipReason(provider: Provider): string | null {
+  if (Date.now() >= skipUntil[provider]) return null;
+  return `skipped until ${new Date(skipUntil[provider]).toISOString()} (${forLog(skipWhy[provider])})`;
+}
+
+/** Tests only: forget every skip so cases don't leak into each other. */
+export function resetProviderHealth(): void {
+  for (const p of Object.keys(skipUntil) as Provider[]) {
+    skipUntil[p] = 0;
+    skipWhy[p] = "";
+  }
+}
+
+/** Anthropic failures that only a human can clear (SHAN-437: the account has no credits). */
+function isAnthropicAccountError(err: unknown): boolean {
+  const status = (err as { status?: number }).status;
+  if (status === 401 || status === 403) return true;
+  return err instanceof Error && /credit balance is too low/i.test(err.message);
+}
+
 export interface GenerateTextResult {
   text: string;
   modelUsed: string;
@@ -52,14 +99,35 @@ class ProviderHttpError extends Error {
   }
 }
 
-/** The request never produced a response at all: timed out, DNS failed, or the
- * connection dropped. Scoped to the `fetch` call itself so a bug in our own
- * response parsing is never mistaken for a flaky network and retried. */
+/** The request never produced a response at all: DNS failed or the connection
+ * dropped. Scoped to the `fetch` call itself so a bug in our own response
+ * parsing is never mistaken for a flaky network and retried. */
 class ProviderNetworkError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "ProviderNetworkError";
   }
+}
+
+/** The provider accepted the request and then said nothing for the whole
+ * PROVIDER_TIMEOUT_MS. Not retried in place: a model that just took 60s to not
+ * answer is not "momentarily overloaded", and three tries made one knowledge
+ * note take two minutes on prod. The chain moves on and skips it for a while. */
+class ProviderTimeoutError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ProviderTimeoutError";
+  }
+}
+
+function isAbortTimeout(err: unknown): boolean {
+  return err instanceof Error && (err.name === "TimeoutError" || err.name === "AbortError");
+}
+
+/** Wrap a failed `fetch`: a deadline becomes ProviderTimeoutError, anything else ProviderNetworkError. */
+function fetchFailure(label: string, err: unknown): Error {
+  const message = `${label} request failed: ${(err as Error).message}`;
+  return isAbortTimeout(err) ? new ProviderTimeoutError(message) : new ProviderNetworkError(message);
 }
 
 /** Worth trying the same model again: the failure is about the provider's
@@ -133,7 +201,13 @@ async function generateWithGemini(
 
         if (isQuotaError(err)) {
           console.warn(`[llm] Gemini ${model} quota exceeded, trying next model...`);
+          skipProvider("gemini", QUOTA_SKIP_MS, (err as Error).message);
           break;
+        }
+
+        if (err instanceof ProviderTimeoutError) {
+          skipProvider("gemini", TIMEOUT_SKIP_MS, err.message);
+          throw err;
         }
 
         if (isRetryableProviderError(err) && attempt < GEMINI_MAX_ATTEMPTS) {
@@ -185,7 +259,7 @@ async function callGeminiModel(
       signal: AbortSignal.timeout(PROVIDER_TIMEOUT_MS),
     });
   } catch (err) {
-    throw new ProviderNetworkError(`Gemini ${model} request failed: ${(err as Error).message}`);
+    throw fetchFailure(`Gemini ${model}`, err);
   }
 
   if (!response.ok) {
@@ -246,7 +320,7 @@ async function callGroqApi(
       signal: AbortSignal.timeout(PROVIDER_TIMEOUT_MS),
     });
   } catch (err) {
-    throw new ProviderNetworkError(`Groq ${model} request failed: ${(err as Error).message}`);
+    throw fetchFailure(`Groq ${model}`, err);
   }
 
   if (!response.ok) {
@@ -272,7 +346,9 @@ async function callGroqApi(
 }
 
 async function generateWithGroq(
-  options: GenerateTextOptions & { maxTokens: number }
+  options: GenerateTextOptions & { maxTokens: number },
+  /** Sleep out a 429 and retry (up to 30s). The fast chain passes false: its caller is waiting. */
+  waitOutRateLimit = true
 ): Promise<GenerateTextResult> {
   const apiKey = process.env.GROQ_API_KEY;
   if (!apiKey) {
@@ -288,6 +364,14 @@ async function generateWithGroq(
       return await callGroqApi(apiKey, model, options);
     } catch (err) {
       const msg = (err as Error).message;
+      if (err instanceof ProviderTimeoutError) {
+        skipProvider("groq", TIMEOUT_SKIP_MS, msg);
+        throw err;
+      }
+      if (msg.includes("429") && !waitOutRateLimit) {
+        if (model !== models[models.length - 1]) continue;
+        throw err;
+      }
       if (msg.includes("429")) {
         // Extract retry delay from error message
         const retryMatch = msg.match(/try again in (\d+(?:\.\d+)?)s/);
@@ -352,7 +436,17 @@ export async function generateSmallText(
 }
 
 export async function generateText(
-  options: GenerateTextOptions & { noFallback?: boolean }
+  options: GenerateTextOptions & {
+    noFallback?: boolean;
+    /**
+     * A short call someone is waiting on (knowledge classification): after
+     * Anthropic, try Groq before Gemini and never sleep out a Groq 429. Groq
+     * answers a classification in about a second; Gemini 3.6 Flash is a
+     * thinking model whose free tier has hung for the full 60s on prod. The
+     * default order (Gemini before Groq) is unchanged for everything else.
+     */
+    fast?: boolean;
+  }
 ): Promise<GenerateTextResult> {
   const {
     system,
@@ -360,39 +454,50 @@ export async function generateText(
     model = "claude-sonnet-4-20250514",
     maxTokens = 4096,
     noFallback = false,
+    fast = false,
+    json,
+    reasoningEffort,
   } = options;
+  const errors: Record<Provider, string | undefined> = { anthropic: undefined, gemini: undefined, groq: undefined };
 
-  // Try Anthropic first
-  let anthropicError: string | undefined;
-  try {
-    return await generateWithAnthropic({ system, prompt, model, maxTokens });
-  } catch (err) {
-    anthropicError = (err as Error).message;
-    if (noFallback) throw err;
-    console.warn("[llm] Anthropic failed, trying Gemini:", anthropicError);
+  // Anthropic first whenever it is usable: the callers pin a Claude model.
+  const anthropicSkip = skipReason("anthropic");
+  if (anthropicSkip) {
+    errors.anthropic = anthropicSkip;
+    if (noFallback) throw new Error(`Anthropic ${anthropicSkip}`);
+  } else {
+    try {
+      return await generateWithAnthropic({ system, prompt, model, maxTokens });
+    } catch (err) {
+      errors.anthropic = (err as Error).message;
+      if (isAnthropicAccountError(err)) skipProvider("anthropic", ACCOUNT_SKIP_MS, errors.anthropic);
+      if (noFallback) throw err;
+      console.warn("[llm] Anthropic failed, trying the fallbacks:", forLog(errors.anthropic));
+    }
   }
 
-  // Fallback to Google Gemini Flash (free tier)
-  let geminiError: string | undefined;
-  try {
-    return await generateWithGemini({ system, prompt, maxTokens });
-  } catch (err) {
-    geminiError = (err as Error).message;
-    console.warn("[llm] Gemini failed, trying Groq:", geminiError);
+  const fallbacks: Provider[] = fast ? ["groq", "gemini"] : ["gemini", "groq"];
+  for (const provider of fallbacks) {
+    const skip = skipReason(provider);
+    if (skip) {
+      errors[provider] = skip;
+      continue;
+    }
+    try {
+      return provider === "gemini"
+        ? await generateWithGemini({ system, prompt, maxTokens })
+        : await generateWithGroq({ system, prompt, maxTokens, json, reasoningEffort }, !fast);
+    } catch (err) {
+      errors[provider] = (err as Error).message;
+      console.warn(`[llm] ${provider} failed:`, forLog(errors[provider]!));
+    }
   }
 
-  // Last resort: Groq Llama (free tier)
-  try {
-    return await generateWithGroq({ system, prompt, maxTokens });
-  } catch (err) {
-    const groqError = (err as Error).message;
-    // The "All LLM providers failed" prefix is a contract: knowledge,
-    // vocabulary and trip-groups routes match on it for 502 semantics, and
-    // app.ts scrubs the whole string before it reaches a client. Gemini's
-    // reason is included because it is the middle link that used to fail
-    // silently into console.warn only (SHAN-527).
-    throw new Error(
-      `All LLM providers failed. Anthropic: ${anthropicError}; Gemini: ${geminiError}; Groq: ${groqError}`
-    );
-  }
+  // The "All LLM providers failed" prefix is a contract: knowledge,
+  // vocabulary and trip-groups routes match on it for 502 semantics, and
+  // app.ts scrubs the whole string before it reaches a client. Every provider
+  // is named, skipped ones included, so the reason survives (SHAN-527).
+  throw new Error(
+    `All LLM providers failed. Anthropic: ${errors.anthropic}; Gemini: ${errors.gemini}; Groq: ${errors.groq}`
+  );
 }

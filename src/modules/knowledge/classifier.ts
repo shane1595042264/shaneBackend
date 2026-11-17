@@ -68,6 +68,12 @@ Now classify this note:
 Note: "${text.replace(/"/g, '\\"')}"`,
     model: "claude-haiku-4-5-20251001",
     maxTokens: 512,
+    // Callers wait on this (Nibbler forwards each saved word here). Groq before
+    // Gemini, JSON mode, low reasoning: about a second instead of the 60-120s
+    // the Gemini free tier took on 2026-11-17. See generateText's `fast`.
+    fast: true,
+    json: true,
+    reasoningEffort: "low",
   });
 
   const cleaned = result.text

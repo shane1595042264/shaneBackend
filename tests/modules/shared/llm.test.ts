@@ -14,7 +14,7 @@ vi.mock("@anthropic-ai/sdk", () => {
 });
 
 // Import after mock is set up
-import { generateText } from "@/modules/shared/llm";
+import { generateText, resetProviderHealth } from "@/modules/shared/llm";
 import Anthropic from "@anthropic-ai/sdk";
 
 describe("generateText", () => {
@@ -22,6 +22,7 @@ describe("generateText", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    resetProviderHealth();
     // Get the mock create function from the mocked Anthropic instance
     const instance = new (Anthropic as unknown as new () => { messages: { create: ReturnType<typeof vi.fn> } })();
     mockCreate = instance.messages.create;
@@ -199,6 +200,7 @@ describe("generateText provider resilience", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    resetProviderHealth();
     const instance = new (Anthropic as unknown as new () => { messages: { create: ReturnType<typeof vi.fn> } })();
     mockCreate = instance.messages.create;
     // Every case here is about what happens AFTER Anthropic is unavailable,
@@ -284,11 +286,11 @@ describe("generateText provider resilience", () => {
     expect(geminiCalls).toHaveLength(1);
   });
 
-  it("retries Gemini when the request never lands at all", async () => {
+  it("retries Gemini when the connection drops before any response", async () => {
     process.env.GOOGLE_AI_API_KEY = "test-gemini-key";
     const fetchMock = vi
       .fn()
-      .mockRejectedValueOnce(Object.assign(new Error("timed out"), { name: "TimeoutError" }))
+      .mockRejectedValueOnce(new TypeError("fetch failed: socket hang up"))
       .mockResolvedValueOnce(geminiOk("second try"));
     vi.stubGlobal("fetch", fetchMock);
 
@@ -296,6 +298,28 @@ describe("generateText provider resilience", () => {
 
     expect(result.text).toBe("second try");
     expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  // 2026-11-17: on prod one knowledge note took 123s because Gemini hung for the
+  // full 60s timeout and was retried in place. A timeout now moves straight on.
+  it("does not retry a Gemini timeout in place, and skips Gemini on the next call", async () => {
+    process.env.GOOGLE_AI_API_KEY = "test-gemini-key";
+    process.env.GROQ_API_KEY = "test-groq-key";
+    const fetchMock = vi.fn().mockImplementation((url: string) => {
+      if (String(url).includes("generativelanguage")) {
+        return Promise.reject(Object.assign(new Error("The operation timed out."), { name: "TimeoutError" }));
+      }
+      return Promise.resolve(groqOk("groq answer"));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const geminiCalls = () => fetchMock.mock.calls.filter((c) => String(c[0]).includes("generativelanguage")).length;
+
+    const first = await generateText({ system: "S", prompt: "P" });
+    expect(first.text).toBe("groq answer");
+    expect(geminiCalls()).toBe(1);
+
+    await generateText({ system: "S", prompt: "P" });
+    expect(geminiCalls()).toBe(1);
   });
 
   it("bounds the Gemini request with an abort signal", async () => {
@@ -331,5 +355,138 @@ describe("generateText provider resilience", () => {
     await expect(generateText({ system: "S", prompt: "P" })).rejects.toThrow(
       /^All LLM providers failed\..*Gemini: .*gemini is unhappy.*Groq: .*GROQ_API_KEY not set/s
     );
+  });
+});
+
+// 2026-11-17: providers that fail for reasons the next request can't fix are
+// skipped for a while, and the knowledge classifier's `fast` chain puts Groq
+// ahead of Gemini.
+describe("generateText provider skipping and the fast chain", () => {
+  let mockCreate: ReturnType<typeof vi.fn>;
+  const ORIGINAL_ENV = { ...process.env };
+
+  function httpResponse(status: number, body: unknown) {
+    return {
+      ok: status >= 200 && status < 300,
+      status,
+      text: async () => (typeof body === "string" ? body : JSON.stringify(body)),
+      json: async () => body,
+    };
+  }
+  const groqOk = (text: string) =>
+    httpResponse(200, { choices: [{ message: { content: text } }], usage: { prompt_tokens: 3, completion_tokens: 4 } });
+  const geminiOk = (text: string) =>
+    httpResponse(200, { candidates: [{ content: { parts: [{ text }] } }], usageMetadata: {} });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    resetProviderHealth();
+    const instance = new (Anthropic as unknown as new () => { messages: { create: ReturnType<typeof vi.fn> } })();
+    mockCreate = instance.messages.create;
+    process.env.GOOGLE_AI_API_KEY = "test-gemini-key";
+    process.env.GROQ_API_KEY = "test-groq-key";
+  });
+
+  afterEach(() => {
+    process.env = { ...ORIGINAL_ENV };
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
+
+  it("stops calling Anthropic after a no-credits error, and says why in the chain error", async () => {
+    mockCreate.mockRejectedValue(new Error('400 {"message":"Your credit balance is too low to access the Anthropic API."}'));
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(geminiOk("ok")));
+
+    await generateText({ system: "S", prompt: "P" });
+    await generateText({ system: "S", prompt: "P" });
+
+    expect(mockCreate).toHaveBeenCalledTimes(1);
+
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(httpResponse(400, "nope")));
+    await expect(generateText({ system: "S", prompt: "P" })).rejects.toThrow(/Anthropic: skipped until .*credit balance/);
+  });
+
+  it("tries Anthropic again once the skip window has passed", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-11-17T21:00:00Z"));
+    mockCreate.mockRejectedValueOnce(new Error("400 Your credit balance is too low"));
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(geminiOk("ok")));
+    await generateText({ system: "S", prompt: "P" });
+
+    vi.setSystemTime(new Date("2026-11-17T21:16:00Z"));
+    mockCreate.mockResolvedValueOnce({ content: [{ type: "text", text: "claude is back" }], usage: { input_tokens: 1, output_tokens: 1 } });
+    const result = await generateText({ system: "S", prompt: "P" });
+
+    expect(result.text).toBe("claude is back");
+    expect(mockCreate).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps calling Anthropic after an ordinary failure such as an overload", async () => {
+    mockCreate.mockRejectedValue(Object.assign(new Error("529 overloaded"), { status: 529 }));
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(geminiOk("ok")));
+
+    await generateText({ system: "S", prompt: "P" });
+    await generateText({ system: "S", prompt: "P" });
+
+    expect(mockCreate).toHaveBeenCalledTimes(2);
+  });
+
+  it("skips Gemini after a quota 429 until the window passes", async () => {
+    mockCreate.mockRejectedValue(new Error("529 overloaded"));
+    const fetchMock = vi.fn().mockImplementation((url: string) =>
+      Promise.resolve(String(url).includes("generativelanguage")
+        ? httpResponse(429, { error: { message: "quota exceeded" } })
+        : groqOk("groq")));
+    vi.stubGlobal("fetch", fetchMock);
+    const geminiCalls = () => fetchMock.mock.calls.filter((c) => String(c[0]).includes("generativelanguage")).length;
+
+    await generateText({ system: "S", prompt: "P" });
+    await generateText({ system: "S", prompt: "P" });
+
+    expect(geminiCalls()).toBe(1);
+  });
+
+  it("fast: asks Groq before Gemini, in JSON mode with the requested reasoning budget", async () => {
+    mockCreate.mockRejectedValue(new Error("400 credit balance is too low"));
+    const fetchMock = vi.fn().mockResolvedValue(groqOk('{"word":"x"}'));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await generateText({ system: "S", prompt: "P", fast: true, json: true, reasoningEffort: "low" });
+
+    expect(result.text).toBe('{"word":"x"}');
+    expect(result.modelUsed).toBe("openai/gpt-oss-120b");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+    expect(body.response_format).toEqual({ type: "json_object" });
+    expect(body.reasoning_effort).toBe("low");
+  });
+
+  it("fast: a Groq 429 moves on at once instead of sleeping, ending at Gemini", async () => {
+    mockCreate.mockRejectedValue(new Error("400 credit balance is too low"));
+    const fetchMock = vi.fn().mockImplementation((url: string) =>
+      Promise.resolve(String(url).includes("groq")
+        ? httpResponse(429, "Rate limit reached. Please try again in 20s.")
+        : geminiOk("gemini")));
+    vi.stubGlobal("fetch", fetchMock);
+    const started = Date.now();
+
+    const result = await generateText({ system: "S", prompt: "P", fast: true });
+
+    expect(result.text).toBe("gemini");
+    expect(Date.now() - started).toBeLessThan(1000);
+    // Both Groq models were tried once each, then Gemini.
+    expect(fetchMock.mock.calls.map((c) => (String(c[0]).includes("groq") ? JSON.parse(c[1].body).model : "gemini")))
+      .toEqual(["openai/gpt-oss-120b", "openai/gpt-oss-20b", "gemini"]);
+  });
+
+  it("default order is unchanged: Gemini before Groq", async () => {
+    mockCreate.mockRejectedValue(new Error("400 credit balance is too low"));
+    const fetchMock = vi.fn().mockResolvedValue(geminiOk("gemini first"));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await generateText({ system: "S", prompt: "P" });
+
+    expect(result.text).toBe("gemini first");
+    expect(String(fetchMock.mock.calls[0][0])).toContain("generativelanguage");
   });
 });
