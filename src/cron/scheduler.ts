@@ -5,12 +5,21 @@ import { ingestActivities } from "./ingest";
 import { fetchAndCacheMonthlySpend } from "@/modules/rng-capitalist/plaid";
 import { db } from "@/db/client";
 import { rngPlaidTokens } from "@/db/schema";
+import { refreshLivePrices, refreshLivePricesIfStale } from "@/modules/ai/live-prices";
 
 function getTodayDate(): string {
   return new Date().toISOString().slice(0, 10);
 }
 
 export function startCronJobs(): void {
+  // SHAN-703: AI list prices. Fetched at boot, then checked hourly and
+  // re-fetched once a day old, so a failed fetch is retried within the hour
+  // rather than the next day. Never throws.
+  void refreshLivePrices();
+  cron.schedule("17 * * * *", () => {
+    void refreshLivePricesIfStale();
+  });
+
   // Every 4 hours: ingest activities for today
   cron.schedule("0 */4 * * *", async () => {
     const date = getTodayDate();

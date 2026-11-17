@@ -70,8 +70,11 @@ describe("catalog", () => {
       "gemini-flash-lite-latest",
       "gemini-2.5-flash-preview-tts",
     ]);
-    expect(ranked[0]).toBe("gemini-3.5-flash-lite");
+    // SHAN-703: 3.5 Flash-Lite has a real price now ($0.30/$2.50), above the
+    // lite tier guess the unlisted 3.1 models still get.
+    expect(ranked[0]).toBe("gemini-3.1-flash-lite");
     expect(ranked.indexOf("gemini-3.1-flash-lite")).toBeLessThan(ranked.indexOf("gemini-3.1-flash-lite-preview"));
+    expect(ranked.indexOf("gemini-3.1-flash-lite-preview")).toBeLessThan(ranked.indexOf("gemini-3.5-flash-lite"));
     expect(ranked.at(-1)).toBe("gemini-2.5-pro");
     expect(ranked).not.toContain("gemini-2.5-flash-preview-tts");
   });
@@ -86,8 +89,8 @@ describe("catalog", () => {
   });
 
   it("uses the longest known prefix and marks tier guesses as estimates", () => {
-    expect(priceOf("openai", "gpt-4.1-mini-2025-04-14")).toEqual({ input: 0.4, output: 1.6, known: true });
-    expect(priceOf("gemini", "gemini-9-flash-lite").known).toBe(false);
+    expect(priceOf("openai", "gpt-4.1-mini-2025-04-14")).toEqual({ input: 0.4, output: 1.6, known: true, source: "table" });
+    expect(priceOf("gemini", "gemini-9-flash-lite")).toMatchObject({ known: false, source: "estimate" });
   });
 
   it("estimates the cost of a call in millionths of a dollar", () => {

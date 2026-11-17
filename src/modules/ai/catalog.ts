@@ -7,7 +7,9 @@
 // models. isTextModel keeps only what can answer a text prompt.
 //
 // Prices are the providers' published list prices in US dollars per million
-// tokens, where known. Model names outlive any table, so an unknown model is
+// tokens. Since SHAN-703 they come first from live-prices.ts (a public price
+// file refreshed daily); the KNOWN table below is the fallback for when that
+// file cannot be fetched. Model names outlive any table, so an unknown model is
 // priced by its tier word ("lite", "nano", "mini", "flash", "haiku", "pro",
 // "opus"...), and that estimate is marked as one. The ranking only has to put
 // the cheap tier first; the key check then calls models in that order until
@@ -15,14 +17,17 @@
 // (gemini-2.5-flash-lite does: listed, then 404 "no longer available").
 
 import type { AiProvider } from "./detect";
+import { livePriceOf } from "./live-prices";
 
 export interface Price {
   /** USD per 1M input tokens. */
   input: number;
   /** USD per 1M output tokens. */
   output: number;
-  /** False when this is a tier estimate for a model the table does not know. */
+  /** False when this is a tier estimate for a model no price list knows. */
   known: boolean;
+  /** Where the number came from: the daily price file, this file's table, or a tier guess. */
+  source: "live" | "table" | "estimate";
 }
 
 const NON_TEXT =
@@ -45,6 +50,7 @@ export function isTextModel(provider: AiProvider, id: string): boolean {
 // Longest matching prefix wins, so "gpt-4.1-mini" beats "gpt-4.1".
 const KNOWN: Record<AiProvider, [prefix: string, input: number, output: number][]> = {
   openai: [
+    ["gpt-5.5", 5, 30],
     ["gpt-5-nano", 0.05, 0.4],
     ["gpt-5-mini", 0.25, 2],
     ["gpt-5", 1.25, 10],
@@ -64,6 +70,10 @@ const KNOWN: Record<AiProvider, [prefix: string, input: number, output: number][
     ["claude-haiku-4-5", 1, 5],
     ["claude-sonnet-4", 3, 15],
     ["claude-opus-4-5", 5, 25],
+    ["claude-haiku-5-5", 0.1, 0.5],
+    ["claude-sonnet-5", 2, 10],
+    ["claude-opus-5", 5, 25],
+    ["claude-opus-5-5", 4, 20],
     ["claude-opus-4-1", 15, 75],
     ["claude-opus-4-0", 15, 75],
   ],
@@ -73,6 +83,8 @@ const KNOWN: Record<AiProvider, [prefix: string, input: number, output: number][
     ["gemini-2.5-flash-lite", 0.1, 0.4],
     ["gemini-2.5-flash", 0.3, 2.5],
     ["gemini-2.5-pro", 1.25, 10],
+    ["gemini-3.5-flash-lite", 0.3, 2.5],
+    ["gemini-3.5-flash", 1.5, 9],
   ],
   xai: [
     ["grok-4-1-fast", 0.2, 0.5],
@@ -108,13 +120,15 @@ function tierPrice(provider: AiProvider, id: string): [number, number] {
 }
 
 export function priceOf(provider: AiProvider, id: string): Price {
+  const live = livePriceOf(provider, id);
+  if (live) return { input: live.input, output: live.output, known: true, source: "live" };
   let best: [string, number, number] | undefined;
   for (const row of KNOWN[provider]) {
     if (id.startsWith(row[0]) && (!best || row[0].length > best[0].length)) best = row;
   }
-  if (best) return { input: best[1], output: best[2], known: true };
+  if (best) return { input: best[1], output: best[2], known: true, source: "table" };
   const [input, output] = tierPrice(provider, id);
-  return { input, output, known: false };
+  return { input, output, known: false, source: "estimate" };
 }
 
 /** Estimated cost of one call, in millionths of a dollar. */

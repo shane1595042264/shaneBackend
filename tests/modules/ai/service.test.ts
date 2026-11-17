@@ -38,11 +38,14 @@ describe("addKey", () => {
       .mockRejectedValueOnce(new ProviderError("model", 404, "no longer available to new users"))
       .mockResolvedValueOnce(ok);
     const row = await addKey("u1", `  ${GEMINI} `);
-    expect(mockGenerate.mock.calls.map((c) => c[2])).toEqual(["gemini-3.5-flash-lite", "gemini-2.5-flash-lite"]);
-    expect(row).toMatchObject({ provider: "gemini", keyHint: "BBBB", defaultModel: "gemini-2.5-flash-lite" });
-    expect(row.models).toEqual(["gemini-3.5-flash-lite", "gemini-2.5-flash-lite", "gemini-2.5-pro"]);
+    // SHAN-703: at real list prices 2.5 Flash-Lite ($0.10/M in) is cheaper
+    // than 3.5 Flash-Lite ($0.30/M), so it is tried first and is the one that
+    // turns out to be retired.
+    expect(mockGenerate.mock.calls.map((c) => c[2])).toEqual(["gemini-2.5-flash-lite", "gemini-3.5-flash-lite"]);
+    expect(row).toMatchObject({ provider: "gemini", keyHint: "BBBB", defaultModel: "gemini-3.5-flash-lite" });
+    expect(row.models).toEqual(["gemini-2.5-flash-lite", "gemini-3.5-flash-lite", "gemini-2.5-pro"]);
     expect(row.keySealed).not.toContain(GEMINI);
-    expect(repo.recordUsage).toHaveBeenCalledWith(expect.objectContaining({ feature: "validate", model: "gemini-2.5-flash-lite" }));
+    expect(repo.recordUsage).toHaveBeenCalledWith(expect.objectContaining({ feature: "validate", model: "gemini-3.5-flash-lite" }));
   });
 
   it("stops at a key the provider rejects", async () => {

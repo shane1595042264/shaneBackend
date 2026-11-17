@@ -6,6 +6,7 @@ import { and, asc, desc, eq, gte, sql } from "drizzle-orm";
 import { db } from "@/db/client";
 import { aiUsageEvents, userAiKeys, userAiSettings } from "@/db/schema";
 import type { AiProvider } from "./detect";
+import { livePricesStatus } from "./live-prices";
 
 export interface KeyRow {
   id: string;
@@ -225,5 +226,7 @@ export async function usageSummary(userId: string, days: number) {
       .orderBy(desc(aiUsageEvents.createdAt))
       .limit(25),
   ]);
-  return { days, totals: totals[0], byModel, daily, recent };
+  // Costs are stored per call at the price of that moment; this says which
+  // price list new calls are being priced from right now (SHAN-703).
+  return { days, totals: totals[0], byModel, daily, recent, prices: livePricesStatus() };
 }
