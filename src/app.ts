@@ -24,6 +24,7 @@ import { scoreboardRoutes } from "@/modules/scoreboard/routes";
 import { coursesRoutes } from "@/modules/courses/routes";
 import { blitzRoutes } from "@/modules/blitz/routes";
 import { blogRoutes } from "@/modules/blog/routes";
+import { blogReadingRoutes } from "@/modules/blog/reading-routes";
 import { aiRoutes } from "@/modules/ai/routes";
 import { readerNotesRoutes } from "@/modules/reader-notes/routes";
 import { createMcpRoutes } from "@/modules/mcp/routes";
@@ -130,6 +131,7 @@ app.route("/api/scoreboard", scoreboardRoutes);
 app.route("/api/courses", coursesRoutes);
 app.route("/api/blitz", blitzRoutes);
 app.route("/api/blog", blogRoutes);
+app.route("/api/blog/reading", blogReadingRoutes);
 app.route("/api/ai", aiRoutes);
 app.route("/api/reader-notes", readerNotesRoutes);
 // SHAN-704: MCP server. Its tools replay requests against this same app

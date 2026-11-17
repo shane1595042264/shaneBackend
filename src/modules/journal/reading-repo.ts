@@ -6,15 +6,9 @@
 import { and, desc, eq, sql } from "drizzle-orm";
 import { db } from "@/db/client";
 import { journalEntries, journalReadingPositions } from "@/db/schema";
+import type { ReadingAnchor } from "@/modules/shared/reading-position";
 
-export interface ReadingAnchor {
-  /** Index of the text block on the reading line, in document order. */
-  block: number;
-  /** How far down that block the reading line sat, as a fraction of its height. */
-  offset: number;
-  /** The block's opening words, to find it again if an edit moved it. */
-  text: string;
-}
+export type { ReadingAnchor };
 
 export interface ReadingPosition {
   date: string;

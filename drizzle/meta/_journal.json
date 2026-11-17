@@ -351,6 +351,13 @@
       "when": 1793747392849,
       "tag": "0049_classy_maria_hill",
       "breakpoints": true
+    },
+    {
+      "idx": 50,
+      "version": "7",
+      "when": 1794938378028,
+      "tag": "0050_young_scorpion",
+      "breakpoints": true
     }
   ]
 }

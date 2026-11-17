@@ -1917,3 +1917,25 @@ export const journalReadingPositions = pgTable(
     index("journal_reading_positions_user_updated_idx").on(t.userId, t.updatedAt),
   ],
 );
+
+// SHAN-705: the same thing for blog posts. Same shape as the journal's so the
+// one client tracker serves both; keyed on the post id, not the slug, so a
+// position follows the post (slugs are stable, but ids are what we join on).
+export const blogReadingPositions = pgTable(
+  "blog_reading_positions",
+  {
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    postId: uuid("post_id")
+      .notNull()
+      .references(() => blogPosts.id, { onDelete: "cascade" }),
+    progress: real("progress").notNull().default(0),
+    anchor: jsonb("anchor").notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ name: "blog_reading_positions_pk", columns: [t.userId, t.postId] }),
+    index("blog_reading_positions_user_updated_idx").on(t.userId, t.updatedAt),
+  ],
+);
