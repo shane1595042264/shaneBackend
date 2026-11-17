@@ -26,6 +26,7 @@ import { blitzRoutes } from "@/modules/blitz/routes";
 import { blogRoutes } from "@/modules/blog/routes";
 import { aiRoutes } from "@/modules/ai/routes";
 import { readerNotesRoutes } from "@/modules/reader-notes/routes";
+import { createMcpRoutes } from "@/modules/mcp/routes";
 import { isoDate } from "@/modules/shared/validators";
 import { notFoundHandler, errorHandler } from "@/modules/shared/http-errors";
 import { conditionalGet } from "@/modules/shared/conditional-get";
@@ -131,6 +132,9 @@ app.route("/api/blitz", blitzRoutes);
 app.route("/api/blog", blogRoutes);
 app.route("/api/ai", aiRoutes);
 app.route("/api/reader-notes", readerNotesRoutes);
+// SHAN-704: MCP server. Its tools replay requests against this same app
+// in-process, with the caller's own Authorization header.
+app.route("/api/mcp", createMcpRoutes((req) => app.fetch(req)));
 app.route("/api/integrations/wechat", wechatRoutes);
 app.route("/api/integrations/calendar", calendarConnectRoutes);
 
