@@ -11,6 +11,7 @@ import { postToBilibili } from "./bilibili";
 import { ingestSingle, mergeSource, type CallerSource } from "./ingest";
 import { applyLocationDelta, normalizeLocations, computeLongTermMemorized } from "./memorization";
 import { reciteRoutes } from "./recite-routes";
+import { buildTermIndex, MAX_TERMS } from "./terms";
 import { optionalAuth, requireAuth, requireScope } from "@/modules/auth/middleware";
 import { createPATRateLimit } from "@/modules/shared/rate-limit";
 import { likeContains } from "@/modules/shared/like";
@@ -267,6 +268,30 @@ knowledgeRoutes.get("/categories", async (c) => {
     .from(vocabWords)
     .orderBy(vocabWords.category);
   return c.json({ categories: result.map((r) => r.category) });
+});
+
+// ---------------------------------------------------------------------------
+// Terms (SHAN-712): the glossary the reading surfaces underline from
+// ---------------------------------------------------------------------------
+
+// Public like every knowledge read, one small row per card, and ETag'd by
+// conditionalGet, so a page that already has it gets a 304.
+knowledgeRoutes.get("/terms", async (c) => {
+  const rows = await db
+    .select({
+      id: vocabWords.id,
+      word: vocabWords.word,
+      definition: vocabWords.definition,
+      category: vocabWords.category,
+      language: vocabWords.language,
+      partOfSpeech: vocabWords.partOfSpeech,
+      pronunciation: vocabWords.pronunciation,
+    })
+    .from(vocabWords)
+    .where(sql`length(trim(coalesce(${vocabWords.definition}, ''))) > 0`)
+    .orderBy(desc(vocabWords.updatedAt), desc(vocabWords.id))
+    .limit(MAX_TERMS);
+  return c.json({ terms: buildTermIndex(rows) });
 });
 
 // ---------------------------------------------------------------------------
