@@ -13,6 +13,7 @@ import {
   type SkincareProductRow,
 } from "./repo";
 import { searchProducts } from "./search";
+import { httpUrlSchema } from "@/modules/shared/outbound-url";
 import {
   trimmedRequired,
   trimmedOptional,
@@ -40,7 +41,9 @@ const createBody = z.object({
   // than persisting "   ". Mirrors the SHAN-433 knowledge/vocab hardening.
   name: trimmedRequired(255),
   brand: trimmedNullish(255),
-  imageUrl: z.string().url().max(2048).optional().nullable(),
+  // SHAN-711: http(s) only. A bare .url() stored javascript:, data: and file:
+  // URLs, which the card then dropped into a CSS url().
+  imageUrl: httpUrlSchema.optional().nullable(),
 });
 
 const patchBody = z
@@ -50,7 +53,7 @@ const patchBody = z
     // stored name; a blank brand clears it (-> null) instead of persisting pad.
     name: trimmedOptional(255),
     brand: trimmedNullish(255),
-    imageUrl: z.string().url().max(2048).optional().nullable(),
+    imageUrl: httpUrlSchema.optional().nullable(),
   })
   .refine(
     (b) =>

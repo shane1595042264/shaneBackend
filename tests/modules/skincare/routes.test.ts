@@ -129,6 +129,38 @@ describe("PATCH /api/skincare/:id — trimming (SHAN-434)", () => {
   });
 });
 
+describe("imageUrl is http(s) only (SHAN-711)", () => {
+  it.each(["javascript:alert(1)", "data:image/png;base64,AAAA", "file:///proc/self/environ"])(
+    "POST rejects %s without hitting the repo",
+    async (imageUrl) => {
+      const res = await post({ timeOfDay: "morning", name: "Cleanser", imageUrl });
+      expect(res.status).toBe(400);
+      expect(m.create).not.toHaveBeenCalled();
+    },
+  );
+
+  it("PATCH rejects a non-http scheme", async () => {
+    const res = await patch({ imageUrl: "javascript:alert(1)" });
+    expect(res.status).toBe(400);
+    expect(m.update).not.toHaveBeenCalled();
+  });
+
+  it("accepts and trims an https URL, parentheses included", async () => {
+    const url = "https://upload.wikimedia.org/a/Bottle_(1).jpg";
+    m.create.mockResolvedValue({ ...ROW, imageUrl: url });
+    const res = await post({ timeOfDay: "morning", name: "Cleanser", imageUrl: `  ${url}  ` });
+    expect(res.status).toBe(201);
+    expect(m.create).toHaveBeenCalledWith(expect.objectContaining({ imageUrl: url }));
+  });
+
+  it("PATCH null still clears the image", async () => {
+    m.update.mockResolvedValue({ ...ROW });
+    const res = await patch({ imageUrl: null });
+    expect(res.status).toBe(200);
+    expect(m.update).toHaveBeenCalledWith(UUID, "u1", expect.objectContaining({ imageUrl: null }));
+  });
+});
+
 describe("POST /api/skincare/reorder — all or nothing (SHAN-580)", () => {
   const A = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
   const B = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
