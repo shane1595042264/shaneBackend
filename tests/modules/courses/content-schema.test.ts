@@ -86,7 +86,7 @@ describe("validateCourseContent", () => {
   });
 
   it("requires at least one exercise per lesson", () => {
-    expect(issues(doc([{ type: "teach", body: "Read me" }]))[0].message).toMatch(/at least one exercise/);
+    expect(issues(doc([{ type: "teach", body: "Read me", visual: { kind: "emoji", emoji: "📘" } }]))[0].message).toMatch(/at least one exercise/);
   });
 
   it("rejects unknown step types and unknown keys", () => {
@@ -137,7 +137,7 @@ describe("validateCourseContent", () => {
   });
 
   it("refuses a document over 512 KB", () => {
-    const big = doc([{ type: "teach", body: "x".repeat(4000) }, choice]);
+    const big = doc([{ type: "teach", body: "x".repeat(4000), visual: { kind: "emoji", emoji: "📘" } }, choice]);
     const units = Array.from({ length: 30 }, (_, i) => ({
       title: `U${i}`,
       lessons: Array.from({ length: 6 }, (_, j) => ({ title: `L${j}`, steps: big.units[0].lessons[0].steps })),
@@ -146,8 +146,54 @@ describe("validateCourseContent", () => {
   });
 
   it("estimates minutes from teach cards and exercises", () => {
-    const r = validateCourseContent(doc([{ type: "teach", body: "a" }, choice, choice, choice]));
+    const r = validateCourseContent(doc([{ type: "teach", body: "a", visual: { kind: "emoji", emoji: "📘" } }, choice, choice, choice]));
     expect(r.ok && r.stats).toEqual({ units: 1, lessons: 1, steps: 4, exercises: 3, estimatedMinutes: 2 });
+  });
+});
+
+describe("teach visuals (SHAN-713)", () => {
+  const teach = (visual?: unknown) => ({ type: "teach", body: "One idea.", ...(visual === undefined ? {} : { visual }) });
+  const IMG = "6f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b";
+
+  it("refuses a teach card with no visual, and says what would do", () => {
+    const [issue] = issues(doc([teach(), choice]));
+    expect(issue.path).toBe("units[0].lessons[0].steps[0].visual");
+    expect(issue.message).toMatch(/Every teach card needs a visual/);
+    expect(issue.message).toMatch(/emoji/);
+  });
+
+  it("accepts each kind, emoji being the floor", () => {
+    for (const v of [
+      { kind: "emoji", emoji: "🧭" },
+      { kind: "emoji", emoji: "👩‍💻", caption: "You, at the keyboard" },
+      { kind: "diagram", mermaid: "flowchart LR\n  A --> B" },
+      { kind: "diagram", mermaid: "%% the trip\nsequenceDiagram\n  A->>B: hi" },
+      { kind: "image", src: `/api/journal/images/${IMG}`, alt: "The collector" },
+    ]) {
+      expect(() => valid(doc([teach(v), choice])), JSON.stringify(v)).not.toThrow();
+    }
+  });
+
+  it("keeps an absolute link to the site's image store as a relative path", () => {
+    for (const host of ["https://shanejli.com", "https://shanebackend-production.up.railway.app"]) {
+      const c = valid(doc([teach({ kind: "image", src: `${host}/api/journal/images/${IMG.toUpperCase()}`, alt: "x" }), choice]));
+      const step = c.units[0].lessons[0].steps[0];
+      expect(step.type === "teach" && step.visual).toEqual({ kind: "image", src: `/api/journal/images/${IMG}`, alt: "x" });
+    }
+  });
+
+  it.each([
+    ["an outside image", { kind: "image", src: "https://example.com/pixel.png", alt: "x" }, /Upload the image/],
+    ["an image with no alt text", { kind: "image", src: `/api/journal/images/${IMG}` }, /Required|empty/],
+    ["prose as a diagram", { kind: "diagram", mermaid: "The pixel sends a hit to the collector." }, /Mermaid source/],
+    ["words as an emoji", { kind: "emoji", emoji: "idea" }, /Emoji only/],
+    ["an emoji with words", { kind: "emoji", emoji: "💡 idea" }, /Emoji only/],
+    ["an unknown kind", { kind: "video", url: "x" }, /visual.kind must be/],
+    ["an unknown key", { kind: "emoji", emoji: "💡", size: 9 }, /Unrecognized key/],
+  ])("refuses %s", (_label, v, message) => {
+    const [issue] = issues(doc([teach(v), choice]));
+    expect(issue.path.startsWith("units[0].lessons[0].steps[0].visual")).toBe(true);
+    expect(issue.message).toMatch(message);
   });
 });
 

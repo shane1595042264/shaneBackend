@@ -14,6 +14,9 @@
 //           { "id"?, "title", "summary"?,
 //             "steps": [ teach | choice | blank | order | match ] } ] } ] }
 //
+// A teach step must carry a `visual` (SHAN-713): a diagram, an image or an
+// emoji.
+//
 // Ids are optional on input and derived from titles. The normalised document
 // that comes back always carries them, and learner progress is keyed by lesson
 // id, so keep them stable once a course is live.
@@ -66,11 +69,93 @@ const gradedExtras = {
   explanation: optionalText(1500),
 };
 
+// SHAN-713: every teach card carries a visual. Courses had become walls of
+// text, so a card that explains something must show something too: a Mermaid
+// diagram, an image from the site's own image store, or, as the floor, an
+// emoji. Enforced here, on every write, so the editor, the API, MCP and any
+// agent all meet the same rule. Reads never re-validate, so a course saved
+// before this rule keeps working; it just has to gain visuals on its next save.
+export const VISUAL_REQUIRED =
+  'Every teach card needs a visual: {"kind": "diagram", "mermaid": "flowchart LR ..."}, {"kind": "image", "src": "/api/journal/images/<id>", "alt": "..."} or at least {"kind": "emoji", "emoji": "🧭"}';
+
+// The first word of a Mermaid document names its diagram type. Checking it
+// catches prose pasted where a diagram should be; the client renders the rest.
+const MERMAID_START =
+  /^\s*(?:%%[^\n]*\n\s*)*(?:---[\s\S]*?---\s*)?(?:graph|flowchart|sequenceDiagram|classDiagram(?:-v2)?|stateDiagram(?:-v2)?|erDiagram|journey|gantt|pie|quadrantChart|requirementDiagram|gitGraph|C4Context|C4Container|C4Component|C4Dynamic|C4Deployment|mindmap|timeline|zenuml|sankey(?:-beta)?|xychart(?:-beta)?|block(?:-beta)?|packet(?:-beta)?|kanban|architecture(?:-beta)?|radar(?:-beta)?|treemap(?:-beta)?)\b/;
+
+// Images come only from the site's own store (POST /api/journal/images), the
+// same place journal and blog images live. The lesson renderer refuses any
+// other image so a course cannot put a third-party tracking pixel in front of
+// its learners. Absolute links to the store are kept as relative paths.
+const IMAGE_SRC =
+  /^(?:https:\/\/(?:shanejli\.com|shanebackend-production\.up\.railway\.app))?(\/api\/journal\/images\/[0-9a-fA-F-]{36})$/;
+
+const caption = optionalText(200);
+
+const diagramVisual = z
+  .object({
+    kind: z.literal("diagram"),
+    mermaid: z
+      .string()
+      .transform((s) => dropLoneSurrogates(s).replace(/\s+$/, ""))
+      .pipe(
+        z
+          .string()
+          .min(1, "Must not be empty")
+          .max(4000, "At most 4000 characters")
+          .regex(MERMAID_START, "A diagram is Mermaid source that starts with its type, like `flowchart LR`")
+      ),
+    caption,
+  })
+  .strict();
+
+const imageVisual = z
+  .object({
+    kind: z.literal("image"),
+    src: z
+      .string()
+      .trim()
+      .regex(IMAGE_SRC, "Upload the image to the site (POST /api/journal/images) and use the /api/journal/images/<id> path it returns")
+      .transform((s) => s.replace(IMAGE_SRC, "$1").toLowerCase()),
+    alt: text(300),
+    caption,
+  })
+  .strict();
+
+const emojiVisual = z
+  .object({
+    kind: z.literal("emoji"),
+    emoji: z
+      .string()
+      .transform((s) => dropLoneSurrogates(s).trim())
+      .pipe(
+        z
+          .string()
+          .min(1, "Must not be empty")
+          .max(32, "At most 32 characters")
+          .refine((e) => /\p{Extended_Pictographic}/u.test(e) && !/[\p{L}\p{N}]/u.test(e), {
+            message: "Emoji only, no letters or digits",
+          })
+      ),
+    caption,
+  })
+  .strict();
+
+const visual = z.discriminatedUnion("kind", [diagramVisual, imageVisual, emojiVisual], {
+  errorMap: (issue, ctx) =>
+    issue.code === "invalid_type" && ctx.data === undefined
+      ? { message: VISUAL_REQUIRED }
+      : issue.code === "invalid_union_discriminator"
+        ? { message: 'visual.kind must be "diagram", "image" or "emoji"' }
+        : { message: ctx.defaultError },
+});
+
 const teachStep = z
   .object({
     type: z.literal("teach"),
     title: optionalText(200),
     body: text(4000),
+    visual,
     code: optionalCode,
     language: optionalText(30),
   })

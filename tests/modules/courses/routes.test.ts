@@ -896,7 +896,7 @@ const lessonDoc = {
           id: "ten-stops",
           title: "Ten stops",
           steps: [
-            { type: "teach", body: "A page view makes ten stops." },
+            { type: "teach", body: "A page view makes ten stops.", visual: { kind: "emoji", emoji: "🛰️" } },
             {
               type: "choice",
               prompt: "Where does the pixel send a hit?",
@@ -956,7 +956,7 @@ describe("POST /api/courses with lesson content", () => {
   it("400s invalid content with pathed issues and writes nothing", async () => {
     const res = await req("/api/courses", "POST", {
       title: "Broken",
-      content: { units: [{ title: "U", lessons: [{ title: "L", steps: [{ type: "teach", body: "only reading" }] }] }] },
+      content: { units: [{ title: "U", lessons: [{ title: "L", steps: [{ type: "teach", body: "only reading", visual: { kind: "emoji", emoji: "📖" } }] }] }] },
     });
     expect(res.status).toBe(400);
     const body = await res.json();
