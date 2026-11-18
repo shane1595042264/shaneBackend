@@ -16,6 +16,7 @@ Each tool in `tools.ts` builds one ordinary API request and the route replays it
 - `read_docs` fetches `https://shanejli.com/docs/raw/<slug>` (or `/llms.txt`), cached 10 minutes. `DOCS_ORIGIN` overrides the origin.
 - `api_get` / `api_write` reach any `/api/...` path. Reads and writes are separate tools so a client can auto-allow the read-only one. Two locks keep them inside `/api` and off `/api/mcp`: the `API_PATH` pattern refuses `.`/`..` segments (and `%2e` spellings, which URL parsing resolves), and `buildUrl` re-checks the normalized path before dispatch. Keep both.
 - `inputSchema` is the single source of truth: published as-is in `tools/list` and enforced by `schema.ts`'s `validate` on `tools/call`. Bad arguments come back as a tool result with `isError`, not a JSON-RPC error, so the model can fix the call.
+- A typed tool's bounds are the route's bounds (SHAN-708). Looser and the model gets a 400 for a call it was told is fine; stricter and the tool refuses what the API takes. `tests/modules/mcp/route-bounds.test.ts` checks each typed string input against the exported zod schema of the route it replays. Add a typed tool, add its strings there.
 - A non-2xx answer becomes `isError` with `HTTP <status>` and the body. Results over `MAX_RESULT_CHARS` (60k) are truncated with a note telling the model to narrow the request.
 
 ## Connecting Claude Code

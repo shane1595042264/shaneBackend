@@ -124,7 +124,7 @@ const bodyContent = z
   .max(MAX_MARKDOWN_BODY, { message: MAX_MARKDOWN_BODY_MESSAGE })
   .refine(noInFlightUpload, { message: IN_FLIGHT_UPLOAD_MESSAGE });
 
-const listQuery = z.object({
+export const listQuery = z.object({
   tag: z.string().trim().min(1).max(MAX_TAG_LEN).optional(),
   q: z.string().trim().min(1).max(100).optional(),
   limit: z.coerce.number().int().min(1).max(100).default(20),

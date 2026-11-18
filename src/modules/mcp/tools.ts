@@ -83,15 +83,15 @@ const queryParams: JsonSchema = {
 
 const source: JsonSchema = {
   anyOf: [
-    { type: "string", minLength: 1, maxLength: 200, description: "Short app name, e.g. \"Claude\"." },
+    { type: "string", minLength: 1, maxLength: 100, description: "Short app name, e.g. \"Claude\"." },
     {
       type: "object",
       additionalProperties: false,
       properties: {
-        app: { type: "string", maxLength: 200 },
-        book: { type: "string", maxLength: 500 },
-        author: { type: "string", maxLength: 500 },
-        location: { type: "string", maxLength: 500 },
+        app: { type: "string", maxLength: 100 },
+        book: { type: "string", maxLength: 255 },
+        author: { type: "string", maxLength: 255 },
+        location: { type: "string", maxLength: 255 },
         rawContext: { type: "string", maxLength: 5000 },
       },
     },
@@ -217,10 +217,10 @@ export const TOOLS: Tool[] = [
     inputSchema: {
       type: "object",
       properties: {
-        search: { type: "string", maxLength: 200 },
+        search: { type: "string", maxLength: 255 },
         category: { type: "string", maxLength: 100, description: "e.g. coding, english, general" },
         label: { type: "string", maxLength: 100 },
-        language: { type: "string", maxLength: 50 },
+        language: { type: "string", maxLength: 100 },
         location: { type: "string", maxLength: 120, description: "Only cards memorized at this place." },
         limit: { type: "integer", minimum: 1, maximum: 100 },
         offset: { type: "integer", minimum: 0, maximum: 1_000_000 },
@@ -269,7 +269,7 @@ export const TOOLS: Tool[] = [
     inputSchema: {
       type: "object",
       properties: {
-        q: { type: "string", maxLength: 200 },
+        q: { type: "string", maxLength: 100 },
         from: { type: "string", pattern: DATE, description: "YYYY-MM-DD, inclusive" },
         to: { type: "string", pattern: DATE, description: "YYYY-MM-DD, inclusive" },
         limit: { type: "integer", minimum: 1, maximum: 100 },
@@ -356,8 +356,8 @@ export const TOOLS: Tool[] = [
     inputSchema: {
       type: "object",
       properties: {
-        q: { type: "string", maxLength: 200 },
-        tag: { type: "string", maxLength: 100 },
+        q: { type: "string", maxLength: 100 },
+        tag: { type: "string", maxLength: 40 },
         limit: { type: "integer", minimum: 1, maximum: 100 },
         cursor: { type: "string", maxLength: 200 },
       },

@@ -43,7 +43,7 @@ const uuidParamSchema = z.object({
 // these public GETs is an economic-DoS surface. Bounds are additive — no .min()
 // so empty/ignored params keep current behavior; every realistic filter is far
 // under the cap. Oversized values now 400 at zod before hitting Postgres.
-const wordsQuerySchema = z.object({
+export const wordsQuerySchema = z.object({
   language: z.string().max(100).optional(),
   label: z.string().max(100).optional(),
   search: z.string().max(255).optional(),
@@ -85,7 +85,7 @@ const sourceObjectSchema = z
   })
   .strict();
 
-const sourceInputSchema = z.union([trimmedRequired(100), sourceObjectSchema]);
+export const sourceInputSchema = z.union([trimmedRequired(100), sourceObjectSchema]);
 
 const singleNoteSchema = z
   .object({

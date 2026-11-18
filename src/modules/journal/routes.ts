@@ -148,7 +148,7 @@ const versionsQuery = z.object({
   cursor: int4PositiveParam.optional(),
 });
 
-const listQuery = z.object({
+export const listQuery = z.object({
   from: isoDate.optional(),
   to: isoDate.optional(),
   q: z.string().trim().min(1).max(100).optional(),
@@ -161,7 +161,7 @@ const listQuery = z.object({
   cursor: isoDate.optional(),
 });
 
-const createBody = z.object({
+export const createBody = z.object({
   date: isoDate,
   // .trim() strips incidental leading/trailing whitespace (internal markdown
   // whitespace is preserved) so a whitespace-only body 400s instead of storing
@@ -279,7 +279,7 @@ journalRoutes.patch("/entries/:date", zValidator("param", dateParam), async (c) 
   )
 );
 
-const appendBody = z.object({
+export const appendBody = z.object({
   content: z
     .string()
     .trim()
