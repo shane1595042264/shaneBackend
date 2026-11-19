@@ -63,6 +63,10 @@ const EVERYDAY = new Set(
 // hurry) gives a popover nothing to show.
 const PLACEHOLDER = /^(?:n\/?a|n\.a\.?|none|null|nil|tbd|todo|[-–—?.…]+)$/i;
 
+// A bare address in a definition. The popover renders no links, so one is
+// dead text there.
+const BARE_URL = /(?:https?:\/\/|www\.)\S+/gi;
+
 function collapse(s: string): string {
   return s.replace(/\s+/g, " ").trim();
 }
@@ -127,16 +131,30 @@ export function shortDefinition(text: string): string {
 }
 
 /**
+ * True when a definition is only a link, or the card's own word and a link
+ * ("5 step combo: https://..."): a dance card saved as a video to watch. The
+ * popover would show a URL nobody can click (SHAN-718); the card itself keeps
+ * it.
+ */
+export function onlyLinks(definition: string, word: string): boolean {
+  if (!definition.match(BARE_URL)) return false;
+  const own = collapse(word).toLowerCase();
+  const rest = definition.replace(BARE_URL, " ").toLowerCase();
+  return !/\p{L}/u.test(own ? rest.split(own).join(" ") : rest);
+}
+
+/**
  * Rows newest first. A string two cards both answer to (the same word saved
  * twice) belongs to the newer card, compared without case; a card left with no
- * string of its own, or with no definition to show, is not a term.
+ * string of its own, or with no definition to show (a link alone counts as
+ * none), is not a term.
  */
 export function buildTermIndex(rows: TermSource[]): KnowledgeTerm[] {
   const claimed = new Set<string>();
   const terms: KnowledgeTerm[] = [];
   for (const row of rows) {
     const definition = shortDefinition(row.definition ?? "");
-    if (!definition) continue;
+    if (!definition || onlyLinks(definition, row.word)) continue;
     const match = termMatches(row.word).filter((m) => {
       const key = m.toLowerCase();
       if (claimed.has(key)) return false;

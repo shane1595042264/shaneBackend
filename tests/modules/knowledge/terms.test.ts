@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   buildTermIndex,
+  onlyLinks,
   shortDefinition,
   termMatches,
   MAX_DEFINITION,
@@ -96,6 +97,22 @@ describe("shortDefinition", () => {
   });
 });
 
+// SHAN-718: prod's dance cards "Alexander Tracing Combo" and "5 step combo".
+describe("onlyLinks", () => {
+  it("is true for a link alone, or the card's own word and a link", () => {
+    expect(onlyLinks("https://www.youtube.com/shorts/_4uy2sROdYQ", "Alexander Tracing Combo")).toBe(true);
+    expect(onlyLinks("5 step combo: https://www.instagram.com/p/C-L1HI4Os9c/", "5 step combo")).toBe(true);
+    expect(onlyLinks("5 Step Combo - www.instagram.com/p/x", " 5 step  combo ")).toBe(true);
+    expect(onlyLinks("https://a.test/1 https://a.test/2", "combo")).toBe(true);
+  });
+
+  it("is false when the definition says something besides the link", () => {
+    expect(onlyLinks("A turn into a slide. https://www.youtube.com/shorts/x", "Alexander Tracing Combo")).toBe(false);
+    expect(onlyLinks("Transport Layer Security.", "TLS")).toBe(false);
+    expect(onlyLinks("", "TLS")).toBe(false);
+  });
+});
+
 describe("buildTermIndex", () => {
   const row = (over: Partial<TermSource>): TermSource => ({
     id: "id",
@@ -133,6 +150,8 @@ describe("buildTermIndex", () => {
       row({ id: "image", word: "Taylor Series", definition: "![image.png](https://x.test/a.png)" }),
       row({ id: "placeholder", word: "hotel lobby", definition: "na" }),
       row({ id: "everyday", word: "your", definition: "你的" }),
+      row({ id: "link", word: "Alexander Tracing Combo", definition: "https://www.youtube.com/shorts/_4uy2sROdYQ" }),
+      row({ id: "word-link", word: "5 step combo", definition: "5 step combo: https://www.instagram.com/p/C-L1HI4Os9c/" }),
     ]);
     expect(terms).toEqual([]);
   });
