@@ -358,6 +358,13 @@
       "when": 1794938378028,
       "tag": "0050_young_scorpion",
       "breakpoints": true
+    },
+    {
+      "idx": 51,
+      "version": "7",
+      "when": 1795122199006,
+      "tag": "0051_sloppy_speed_demon",
+      "breakpoints": true
     }
   ]
 }

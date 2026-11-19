@@ -66,6 +66,15 @@ import {
   resetProgress,
   upsertContent,
 } from "./content-repo";
+import {
+  accountName,
+  getCertificateByCode,
+  getCertificateFor,
+  issueCertificate,
+  normalizeCertificateCode,
+  setCertified,
+  type CertificateRow,
+} from "./certificate-repo";
 
 // Per-PAT 60s rolling write limit. JWT browser sessions bypass. Distinct
 // bucket so a busy courses session doesn't lock out other modules.
@@ -193,6 +202,7 @@ function serializeCourse(row: CourseRow, meta: CourseMeta) {
     durationMinutes: row.durationMinutes,
     tags: Array.isArray(row.tags) ? row.tags : [],
     visibility: row.visibility,
+    certified: row.certified,
     ownerId: row.userId,
     coverUrl: coverUrlFor(row.id, meta.coverUpdatedAt),
     rating: { average: meta.average, count: meta.count },
@@ -239,7 +249,8 @@ async function metaFor(courseId: string, userId: string | null): Promise<CourseM
 // middleware 404s them without probing (SHAN-460), and /courses/private/<slug>
 // is where private courses are read (SHAN-617). A course minted with one of
 // these slugs would be unreachable, so the generator treats them as taken.
-const RESERVED_SLUGS = new Set(["covers", "private"]);
+// SHAN-720: /courses/certificates/<code> is where a certificate is read.
+const RESERVED_SLUGS = new Set(["covers", "private", "certificates"]);
 
 async function courseSlugTaken(slug: string): Promise<boolean> {
   return RESERVED_SLUGS.has(slug) || slugTaken(slug);
@@ -285,6 +296,24 @@ coursesRoutes.get(
         "Content-Disposition": "inline",
       },
     });
+  },
+);
+
+// SHAN-720: anyone holding a certificate's code can verify it; that is the
+// point of printing the code. A certificate for a course that has since gone
+// private is hidden like the course itself.
+coursesRoutes.get(
+  "/certificates/:code",
+  optionalAuth,
+  zValidator("param", z.object({ code: z.string().max(40) })),
+  async (c) => {
+    const code = normalizeCertificateCode(c.req.valid("param").code);
+    const cert = code ? await getCertificateByCode(code) : null;
+    const course = cert ? await getCourseById(cert.courseId) : null;
+    if (!cert || !course || !(await canSee(course, c.get("userId")))) {
+      return c.json({ error: "Not found" }, 404);
+    }
+    return c.json({ certificate: serializeCertificate(cert, course) });
   },
 );
 
@@ -698,6 +727,133 @@ coursesRoutes.delete(
     }
     await resetProgress(userId, id);
     return c.body(null, 204);
+  },
+);
+
+// ---- Certificates (SHAN-720) ---------------------------------------------
+
+const SITE_URL = "https://shanejli.com";
+
+function serializeCertificate(cert: CertificateRow, course: CourseRow) {
+  return {
+    code: cert.code,
+    url: `${SITE_URL}/courses/certificates/${cert.code}`,
+    recipientName: cert.recipientName,
+    courseId: course.id,
+    courseSlug: course.slug,
+    // The title as it was when the certificate was issued.
+    courseTitle: cert.courseTitle,
+    score: cert.score,
+    lessonCount: cert.lessonCount,
+    issuedAt: cert.issuedAt,
+  };
+}
+
+const certificationBody = z.object({ certified: z.boolean() });
+const claimBody = z.object({ name: trimmedOptional(120) });
+
+// Whether a course issues certificates. Only the site owner decides that,
+// because the certificate is issued in his name.
+coursesRoutes.put(
+  "/:id/certification",
+  requireAuth,
+  requireScope("entries:write"),
+  coursesWriteLimit,
+  zValidator("param", idParam),
+  zValidator("json", certificationBody),
+  async (c) => {
+    const userId = c.get("userId") as string;
+    const { id } = c.req.valid("param");
+    const { certified } = c.req.valid("json");
+    const course = await getCourseById(id);
+    if (!course || !(await canSee(course, userId))) {
+      return c.json({ error: "Not found" }, 404);
+    }
+    if (!(await isSiteOwner(userId))) {
+      return c.json({ error: "Only the site owner can certify a course" }, 403);
+    }
+    if (certified) {
+      if (course.visibility === "private") {
+        return c.json({ error: "A private course cannot issue certificates; make it public first" }, 400);
+      }
+      if (!(await contentMetaFor(id))) {
+        return c.json({ error: "Only a course with lessons can issue certificates" }, 400);
+      }
+    }
+    await setCertified(id, certified);
+    const row = (await getCourseById(id)) ?? course;
+    const meta = await metaFor(id, userId);
+    return c.json({ course: serializeCourse(row, meta) });
+  },
+);
+
+coursesRoutes.get(
+  "/:id/certificate",
+  requireAuth,
+  zValidator("param", idParam),
+  async (c) => {
+    const userId = c.get("userId") as string;
+    const { id } = c.req.valid("param");
+    const course = await getCourseById(id);
+    if (!course || !(await canSee(course, userId))) {
+      return c.json({ error: "Not found" }, 404);
+    }
+    const cert = await getCertificateFor(userId, id);
+    if (!cert) return c.json({ error: "No certificate for this course yet" }, 404);
+    return c.json({ certificate: serializeCertificate(cert, course) });
+  },
+);
+
+// Claim the certificate. Issued only when the learner has a finished run of
+// every lesson the course has now; claiming again returns the same one.
+coursesRoutes.post(
+  "/:id/certificate",
+  requireAuth,
+  requireScope("reactions:write"),
+  coursesWriteLimit,
+  zValidator("param", idParam),
+  zValidator("json", claimBody),
+  async (c) => {
+    const userId = c.get("userId") as string;
+    const { id } = c.req.valid("param");
+    const { name } = c.req.valid("json");
+    const course = await getCourseById(id);
+    if (!course || !(await canSee(course, userId))) {
+      return c.json({ error: "Not found" }, 404);
+    }
+    const existing = await getCertificateFor(userId, id);
+    if (existing) return c.json({ certificate: serializeCertificate(existing, course) });
+    if (!course.certified || course.visibility === "private") {
+      return c.json({ error: "This course does not issue certificates" }, 409);
+    }
+    const content = await getContent(id);
+    if (!content) return c.json({ error: "This course does not issue certificates" }, 409);
+    const lessonIds = content.content.units.flatMap((u) => u.lessons.map((l) => l.id));
+    const best = new Map((await listProgress(userId, id)).map((p) => [p.lessonId, p.bestScore]));
+    const missing = lessonIds.filter((l) => !best.has(l));
+    if (lessonIds.length === 0 || missing.length > 0) {
+      return c.json(
+        {
+          error: `Finish every lesson first: ${missing.length} of ${lessonIds.length} still to go`,
+          missing,
+        },
+        409,
+      );
+    }
+    const recipientName = name ?? (await accountName(userId));
+    if (!recipientName) {
+      return c.json({ error: "Send the `name` to put on the certificate" }, 400);
+    }
+    const total = lessonIds.reduce((sum, l) => sum + (best.get(l) ?? 0), 0);
+    const { row, created } = await issueCertificate({
+      userId,
+      courseId: id,
+      recipientName,
+      courseTitle: course.title,
+      score: Math.round(total / lessonIds.length),
+      lessonCount: lessonIds.length,
+    });
+    return c.json({ certificate: serializeCertificate(row, course) }, created ? 201 : 200);
   },
 );
 

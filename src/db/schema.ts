@@ -1303,10 +1303,38 @@ export const courses = pgTable(
     tags: jsonb("tags").notNull().default([]),
     // public | private (zod-validated, see COURSE_VISIBILITIES)
     visibility: varchar("visibility", { length: 10 }).notNull().default("public"),
+    // SHAN-720: a certified course issues a certificate to every learner who
+    // finishes all of its lessons. Only the site owner can set it for now.
+    certified: boolean("certified").notNull().default(false),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [index("courses_created_idx").on(t.createdAt)],
+);
+
+// SHAN-720: one certificate per (learner, course), issued once every lesson of
+// a certified course is finished. The name and title are copied in at issue
+// time, so renaming the course or the account never rewrites a certificate
+// someone has already shared. `code` is the public verification id.
+export const courseCertificates = pgTable(
+  "course_certificates",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    code: varchar("code", { length: 16 }).notNull().unique(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    courseId: uuid("course_id")
+      .notNull()
+      .references(() => courses.id, { onDelete: "cascade" }),
+    recipientName: varchar("recipient_name", { length: 120 }).notNull(),
+    courseTitle: varchar("course_title", { length: 200 }).notNull(),
+    // Mean of the best first-try scores across the course's lessons, 0-100.
+    score: integer("score").notNull(),
+    lessonCount: integer("lesson_count").notNull(),
+    issuedAt: timestamp("issued_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [unique("course_certificates_user_course_unique").on(t.userId, t.courseId)],
 );
 
 export const courseCovers = pgTable(

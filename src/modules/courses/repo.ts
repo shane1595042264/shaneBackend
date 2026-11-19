@@ -41,6 +41,7 @@ export interface CourseRow {
   durationMinutes: number | null;
   tags: unknown;
   visibility: string;
+  certified: boolean;
   createdAt: Date;
   updatedAt: Date;
 }

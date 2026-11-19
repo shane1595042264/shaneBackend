@@ -40,6 +40,11 @@ const m = vi.hoisted(() => ({
   listProgress: vi.fn(),
   recordProgress: vi.fn(),
   resetProgress: vi.fn(),
+  accountName: vi.fn(),
+  getCertificateByCode: vi.fn(),
+  getCertificateFor: vi.fn(),
+  issueCertificate: vi.fn(),
+  setCertified: vi.fn(),
 }));
 
 // Literal factory (no importOriginal): pulling the real repo in would load
@@ -92,6 +97,19 @@ vi.mock("@/modules/courses/content-repo", () => ({
   listProgress: m.listProgress,
   recordProgress: m.recordProgress,
   resetProgress: m.resetProgress,
+}));
+
+vi.mock("@/modules/courses/certificate-repo", () => ({
+  accountName: m.accountName,
+  getCertificateByCode: m.getCertificateByCode,
+  getCertificateFor: m.getCertificateFor,
+  issueCertificate: m.issueCertificate,
+  setCertified: m.setCertified,
+  // Pure, so the real rule runs: 12 Crockford base32 characters.
+  normalizeCertificateCode: (raw: string) => {
+    const code = raw.replace(/[\s-]/g, "").toUpperCase();
+    return /^[0-9A-HJKMNP-TV-Z]{12}$/.test(code) ? code : null;
+  },
 }));
 
 // Literal class in the factory: routes.ts instanceof-checks the SAME mocked
@@ -148,6 +166,7 @@ const courseRow = {
   durationMinutes: 28,
   tags: ["integrals"],
   visibility: "public",
+  certified: false,
   createdAt: new Date("2026-08-31T00:00:00Z"),
   updatedAt: new Date("2026-08-31T00:00:00Z"),
 };
@@ -1184,5 +1203,165 @@ describe("course progress", () => {
     const res = await req(`/api/courses/${courseRow.id}/progress`, "DELETE", undefined, "learner");
     expect(res.status).toBe(204);
     expect(m.resetProgress).toHaveBeenCalledWith("learner", courseRow.id);
+  });
+});
+
+describe("certificates (SHAN-720)", () => {
+  const stored = {
+    content: { version: 1, ...lessonDoc },
+    lessonCount: 1,
+    stepCount: 2,
+    updatedAt: new Date(),
+  };
+  const certified = { ...courseRow, url: null, certified: true };
+  const lessonIds = ["ten-stops"];
+  const cert = {
+    id: "c1",
+    code: "7K3M9QX2ABCD",
+    userId: "learner",
+    courseId: courseRow.id,
+    recipientName: "Ada Lovelace",
+    courseTitle: "The Pi/2 Heist",
+    score: 90,
+    lessonCount: 1,
+    issuedAt: new Date("2026-11-19T00:00:00Z"),
+  };
+  const finishedAll = (score: number) => lessonIds.map((lessonId) => ({ lessonId, bestScore: score }));
+
+  it("serializes certified on a course", async () => {
+    m.getCourseBySlug.mockResolvedValue(certified);
+    const res = await app.request("/api/courses/pi2-heist");
+    expect((await res.json()).course.certified).toBe(true);
+  });
+
+  it("issues a certificate once every lesson is finished", async () => {
+    m.getCourseById.mockResolvedValue(certified);
+    m.getCertificateFor.mockResolvedValue(null);
+    m.getContent.mockResolvedValue(stored);
+    m.listProgress.mockResolvedValue(finishedAll(90));
+    m.accountName.mockResolvedValue("Ada Lovelace");
+    m.issueCertificate.mockResolvedValue({ row: cert, created: true });
+    const res = await req(`/api/courses/${courseRow.id}/certificate`, "POST", {}, "learner");
+    expect(res.status).toBe(201);
+    expect(m.issueCertificate).toHaveBeenCalledWith({
+      userId: "learner",
+      courseId: courseRow.id,
+      recipientName: "Ada Lovelace",
+      courseTitle: certified.title,
+      score: 90,
+      lessonCount: 1,
+    });
+    const body = await res.json();
+    expect(body.certificate.code).toBe("7K3M9QX2ABCD");
+    expect(body.certificate.url).toBe("https://shanejli.com/courses/certificates/7K3M9QX2ABCD");
+    expect(body.certificate.courseSlug).toBe("pi2-heist");
+  });
+
+  it("puts the name the learner sends on it", async () => {
+    m.getCourseById.mockResolvedValue(certified);
+    m.getCertificateFor.mockResolvedValue(null);
+    m.getContent.mockResolvedValue(stored);
+    m.listProgress.mockResolvedValue(finishedAll(80));
+    m.issueCertificate.mockResolvedValue({ row: cert, created: true });
+    await req(`/api/courses/${courseRow.id}/certificate`, "POST", { name: "  Ada K. Lovelace " }, "learner");
+    expect(m.issueCertificate.mock.calls[0][0].recipientName).toBe("Ada K. Lovelace");
+    expect(m.accountName).not.toHaveBeenCalled();
+  });
+
+  it("409s while a lesson is unfinished", async () => {
+    m.getCourseById.mockResolvedValue(certified);
+    m.getCertificateFor.mockResolvedValue(null);
+    m.getContent.mockResolvedValue(stored);
+    m.listProgress.mockResolvedValue([]);
+    const res = await req(`/api/courses/${courseRow.id}/certificate`, "POST", {}, "learner");
+    expect(res.status).toBe(409);
+    expect((await res.json()).missing).toEqual(lessonIds);
+    expect(m.issueCertificate).not.toHaveBeenCalled();
+  });
+
+  it("409s on a course that is not certified", async () => {
+    m.getCourseById.mockResolvedValue({ ...certified, certified: false });
+    m.getCertificateFor.mockResolvedValue(null);
+    const res = await req(`/api/courses/${courseRow.id}/certificate`, "POST", {}, "learner");
+    expect(res.status).toBe(409);
+    expect(m.issueCertificate).not.toHaveBeenCalled();
+  });
+
+  it("returns the certificate already issued instead of issuing another", async () => {
+    m.getCourseById.mockResolvedValue({ ...certified, certified: false });
+    m.getCertificateFor.mockResolvedValue(cert);
+    const res = await req(`/api/courses/${courseRow.id}/certificate`, "POST", {}, "learner");
+    expect(res.status).toBe(200);
+    expect(m.issueCertificate).not.toHaveBeenCalled();
+  });
+
+  it("400s when there is no name to put on it", async () => {
+    m.getCourseById.mockResolvedValue(certified);
+    m.getCertificateFor.mockResolvedValue(null);
+    m.getContent.mockResolvedValue(stored);
+    m.listProgress.mockResolvedValue(finishedAll(100));
+    m.accountName.mockResolvedValue(null);
+    const res = await req(`/api/courses/${courseRow.id}/certificate`, "POST", {}, "learner");
+    expect(res.status).toBe(400);
+  });
+
+  it("GET mine 404s before one is issued", async () => {
+    m.getCourseById.mockResolvedValue(certified);
+    m.getCertificateFor.mockResolvedValue(null);
+    const res = await req(`/api/courses/${courseRow.id}/certificate`, "GET", undefined, "learner");
+    expect(res.status).toBe(404);
+  });
+
+  it("verifies a code publicly, dashes and case ignored", async () => {
+    m.getCertificateByCode.mockResolvedValue(cert);
+    m.getCourseById.mockResolvedValue(certified);
+    const res = await app.request("/api/courses/certificates/7k3m-9qx2-abcd");
+    expect(res.status).toBe(200);
+    expect(m.getCertificateByCode).toHaveBeenCalledWith("7K3M9QX2ABCD");
+    const body = await res.json();
+    expect(body.certificate.recipientName).toBe("Ada Lovelace");
+    expect(body.certificate.score).toBe(90);
+  });
+
+  it("404s a malformed code without a lookup", async () => {
+    const res = await app.request("/api/courses/certificates/not-a-code");
+    expect(res.status).toBe(404);
+    expect(m.getCertificateByCode).not.toHaveBeenCalled();
+  });
+
+  it("hides a certificate whose course went private", async () => {
+    m.getCertificateByCode.mockResolvedValue(cert);
+    m.getCourseById.mockResolvedValue({ ...certified, visibility: "private" });
+    const res = await app.request("/api/courses/certificates/7K3M9QX2ABCD");
+    expect(res.status).toBe(404);
+  });
+
+  it("only the site owner can certify a course", async () => {
+    m.getCourseById.mockResolvedValue(courseRow);
+    m.isSiteOwner.mockResolvedValue(false);
+    const res = await req(`/api/courses/${courseRow.id}/certification`, "PUT", { certified: true }, "u1");
+    expect(res.status).toBe(403);
+    expect(m.setCertified).not.toHaveBeenCalled();
+  });
+
+  it("refuses to certify a course without lessons", async () => {
+    m.getCourseById.mockResolvedValue(courseRow);
+    m.isSiteOwner.mockResolvedValue(true);
+    m.contentMetaFor.mockResolvedValue(null);
+    const res = await req(`/api/courses/${courseRow.id}/certification`, "PUT", { certified: true }, "u1");
+    expect(res.status).toBe(400);
+    expect(m.setCertified).not.toHaveBeenCalled();
+  });
+
+  it("certifies a public course with lessons", async () => {
+    m.getCourseById
+      .mockResolvedValueOnce(courseRow)
+      .mockResolvedValueOnce({ ...courseRow, certified: true });
+    m.isSiteOwner.mockResolvedValue(true);
+    m.contentMetaFor.mockResolvedValue({ lessonCount: 1, stepCount: 2 });
+    const res = await req(`/api/courses/${courseRow.id}/certification`, "PUT", { certified: true }, "u1");
+    expect(res.status).toBe(200);
+    expect(m.setCertified).toHaveBeenCalledWith(courseRow.id, true);
+    expect((await res.json()).course.certified).toBe(true);
   });
 });
