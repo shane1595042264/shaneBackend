@@ -76,9 +76,21 @@ export function termMatches(word: string): string[] {
   return [...new Set(out.filter(usable))].sort((a, b) => b.length - a.length);
 }
 
-/** One paragraph of plain-ish text, cut on a word near MAX_DEFINITION. */
+/**
+ * One paragraph of plain-ish text, cut on a word near MAX_DEFINITION.
+ *
+ * The popover renders only paragraphs, emphasis and code (SHAN-716), so an
+ * image is dropped and a link keeps just its text before the cut: an image
+ * would render as nothing, and a cut inside `![alt](https://...` or
+ * `[text](https://...` is no longer markdown and prints as raw syntax.
+ */
 export function shortDefinition(text: string): string {
-  const t = collapse(text);
+  const t = collapse(
+    text
+      .replace(/!\[[^\]]*\]\([^)]*\)/g, " ")
+      .replace(/<img\b[^>]*>/gi, " ")
+      .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1"),
+  );
   if (t.length <= MAX_DEFINITION) return t;
   const cut = t.slice(0, MAX_DEFINITION);
   const space = cut.lastIndexOf(" ");
@@ -95,7 +107,7 @@ export function buildTermIndex(rows: TermSource[]): KnowledgeTerm[] {
   const claimed = new Set<string>();
   const terms: KnowledgeTerm[] = [];
   for (const row of rows) {
-    const definition = row.definition?.trim();
+    const definition = shortDefinition(row.definition ?? "");
     if (!definition) continue;
     const match = termMatches(row.word).filter((m) => {
       const key = m.toLowerCase();
@@ -108,7 +120,7 @@ export function buildTermIndex(rows: TermSource[]): KnowledgeTerm[] {
       id: row.id,
       word: collapse(row.word),
       match,
-      definition: shortDefinition(definition),
+      definition,
       category: row.category,
       language: row.language,
       partOfSpeech: row.partOfSpeech,

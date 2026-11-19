@@ -63,6 +63,18 @@ describe("shortDefinition", () => {
     expect(out.length).toBeLessThanOrEqual(MAX_DEFINITION + 1);
     expect(out).not.toMatch(/\s…$/);
   });
+
+  it("drops images and keeps a link's text", () => {
+    expect(
+      shortDefinition("A sum of terms. ![image.png](https://x.test/a.png) See [the proof](https://x.test/p) <img src=\"b.png\">"),
+    ).toBe("A sum of terms. See the proof");
+    expect(shortDefinition("![image.png](https://x.test/a.png)")).toBe("");
+  });
+
+  it("never cuts inside image or link markdown", () => {
+    const out = shortDefinition(`${"word ".repeat(70)}![image.png](https://x.test/${"a".repeat(80)}.png) [more](https://x.test/m)`);
+    expect(out).not.toMatch(/[[\]()]|https?:/);
+  });
 });
 
 describe("buildTermIndex", () => {
@@ -99,8 +111,17 @@ describe("buildTermIndex", () => {
       row({ id: "blank", word: "inode", definition: "   " }),
       row({ id: "none", word: "dmesg", definition: null }),
       row({ id: "long", word: "If I ever Fall in Love end combo" }),
+      row({ id: "image", word: "Taylor Series", definition: "![image.png](https://x.test/a.png)" }),
     ]);
     expect(terms).toEqual([]);
+  });
+
+  it("leaves a string to an older card when the newer one has only an image", () => {
+    const terms = buildTermIndex([
+      row({ id: "image", word: "Taylor Series", definition: "![image.png](https://x.test/a.png)" }),
+      row({ id: "text", word: "Taylor series", definition: "A function as an infinite sum of terms." }),
+    ]);
+    expect(terms.map((t) => t.id)).toEqual(["text"]);
   });
 
   it("returns the card's fields with a short definition", () => {
