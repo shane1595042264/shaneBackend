@@ -38,6 +38,31 @@ const MAX_MATCH_WORDS = 5;
 // terms without word boundaries, so two characters already make a term.
 const DENSE = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u;
 
+// SHAN-717: English words so common that a card for one (a vocabulary card
+// for "your", say) would underline something in nearly every post. Function
+// words only, three letters and up (shorter ones are already too short):
+// pronouns, determiners, prepositions, conjunctions, auxiliaries and the
+// commonest adverbs. Such a card stays in the knowledge base; it just is not
+// a term on its own. A phrase that contains one ("your call") is unaffected.
+const EVERYDAY = new Set(
+  (
+    "the and but for nor yet not are was were been being has have had having does did doing done " +
+    "can could will would shall should may might must you your yours yourself yourselves " +
+    "she her hers herself him his himself its itself our ours ourselves they them their theirs themselves " +
+    "myself who whom whose what which this that these those there here where when why how " +
+    "all any both each few more most other some such only own same than too very just also " +
+    "about above across after against along among around before behind below beneath beside between " +
+    "beyond down during except from inside into near off onto out outside over past since through " +
+    "throughout till toward towards under until upon with within without " +
+    "because although though while whether unless either neither " +
+    "now then again once ever never always often still already even soon well much many"
+  ).split(" "),
+);
+
+// A definition that only says there is none yet ("na" on a card saved in a
+// hurry) gives a popover nothing to show.
+const PLACEHOLDER = /^(?:n\/?a|n\.a\.?|none|null|nil|tbd|todo|[-–—?.…]+)$/i;
+
 function collapse(s: string): string {
   return s.replace(/\s+/g, " ").trim();
 }
@@ -45,6 +70,7 @@ function collapse(s: string): string {
 function usable(s: string): boolean {
   if (!/\p{L}/u.test(s)) return false;
   if (s.length > MAX_MATCH_LENGTH || s.split(" ").length > MAX_MATCH_WORDS) return false;
+  if (EVERYDAY.has(s.toLowerCase())) return false;
   return s.length >= (DENSE.test(s) ? 2 : 3);
 }
 
@@ -83,6 +109,7 @@ export function termMatches(word: string): string[] {
  * image is dropped and a link keeps just its text before the cut: an image
  * would render as nothing, and a cut inside `![alt](https://...` or
  * `[text](https://...` is no longer markdown and prints as raw syntax.
+ * A placeholder ("na", "TBD", "-") is no definition (SHAN-717).
  */
 export function shortDefinition(text: string): string {
   const t = collapse(
@@ -91,6 +118,7 @@ export function shortDefinition(text: string): string {
       .replace(/<img\b[^>]*>/gi, " ")
       .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1"),
   );
+  if (PLACEHOLDER.test(t)) return "";
   if (t.length <= MAX_DEFINITION) return t;
   const cut = t.slice(0, MAX_DEFINITION);
   const space = cut.lastIndexOf(" ");

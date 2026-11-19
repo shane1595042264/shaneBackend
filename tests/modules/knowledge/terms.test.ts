@@ -49,6 +49,16 @@ describe("termMatches", () => {
   it("needs a letter", () => {
     expect(termMatches("1234")).toEqual([]);
   });
+
+  // SHAN-717: prod has a vocabulary card for "your" (definition 你的).
+  it("leaves out a lone everyday English word, in any case, but not a phrase that has one", () => {
+    expect(termMatches("your")).toEqual([]);
+    expect(termMatches("Your")).toEqual([]);
+    expect(termMatches("THROUGH")).toEqual([]);
+    expect(termMatches("Data Subject Access Request (which)")).toEqual(["Data Subject Access Request"]);
+    expect(termMatches("your call")).toEqual(["your call"]);
+    expect(termMatches("serendipity")).toEqual(["serendipity"]);
+  });
 });
 
 describe("shortDefinition", () => {
@@ -69,6 +79,15 @@ describe("shortDefinition", () => {
       shortDefinition("A sum of terms. ![image.png](https://x.test/a.png) See [the proof](https://x.test/p) <img src=\"b.png\">"),
     ).toBe("A sum of terms. See the proof");
     expect(shortDefinition("![image.png](https://x.test/a.png)")).toBe("");
+  });
+
+  // SHAN-717: prod's "hotel lobby" card has the definition "na".
+  it("treats a placeholder as no definition", () => {
+    for (const p of ["na", "N/A", "n.a.", " TBD ", "todo", "None", "null", "-", "—", "?", "...", "…"]) {
+      expect(shortDefinition(p)).toBe("");
+    }
+    expect(shortDefinition("NA: North America")).toBe("NA: North America");
+    expect(shortDefinition("Nan")).toBe("Nan");
   });
 
   it("never cuts inside image or link markdown", () => {
@@ -112,6 +131,8 @@ describe("buildTermIndex", () => {
       row({ id: "none", word: "dmesg", definition: null }),
       row({ id: "long", word: "If I ever Fall in Love end combo" }),
       row({ id: "image", word: "Taylor Series", definition: "![image.png](https://x.test/a.png)" }),
+      row({ id: "placeholder", word: "hotel lobby", definition: "na" }),
+      row({ id: "everyday", word: "your", definition: "你的" }),
     ]);
     expect(terms).toEqual([]);
   });
