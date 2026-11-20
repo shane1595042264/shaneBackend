@@ -161,7 +161,8 @@ export async function reviewCourse(
   const { text, truncated } = courseForReview(course, content);
   const result = await generateText({
     system: REVIEW_SYSTEM,
-    prompt: `${truncated ? "(The course is long; it is cut off at the end. Judge what is shown.)\n\n" : ""}${text}`,
+    // The date, or the model calls anything after its training cutoff an error.
+    prompt: `Today is ${new Date().toISOString().slice(0, 10)}.\n${truncated ? "(The course is long; it is cut off at the end. Judge what is shown.)\n" : ""}\n${text}`,
     maxTokens: 2000,
     json: true,
   });

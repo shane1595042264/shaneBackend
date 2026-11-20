@@ -199,3 +199,11 @@ describe("runReview", () => {
     expect(m.getReview).toHaveBeenCalledTimes(2);
   });
 });
+
+describe("the review prompt", () => {
+  it("carries today's date, so recent events in a course are not called errors", async () => {
+    m.generateText.mockResolvedValue({ text: '{"approved": true, "summary": "Good.", "feedback": []}', modelUsed: "x" });
+    await reviewCourse(meta, content);
+    expect(m.generateText.mock.calls[0][0].prompt).toMatch(/^Today is \d{4}-\d{2}-\d{2}\.\n\nTitle: Contour integrals/);
+  });
+});
