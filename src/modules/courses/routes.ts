@@ -680,11 +680,15 @@ coursesRoutes.put(
     if (!prior || contentHash(prior.content) !== hash) {
       const latest = await latestReview(id);
       if (course.certified || latest?.status === "pending") {
-        if (course.certified) await setCertified(id, false);
         if (course.visibility !== "private") {
           review = await createReview({ courseId: id, submittedBy: userId, contentHash: hash });
-          startReview(review.id);
         }
+        // After createReview, and even when the course read as uncertified: a
+        // verdict on the old version can land while this request runs, and it
+        // must not leave the new lessons certified (SHAN-724). From here on the
+        // runner skips that verdict, since its review is no longer the newest.
+        await setCertified(id, false);
+        if (review) startReview(review.id);
       }
     }
     // A lessons-only course has no deck to estimate from, so its length is

@@ -10,7 +10,7 @@ const m = vi.hoisted(() => ({
   stalePendingReviews: vi.fn(),
   getCourseById: vi.fn(),
   getContent: vi.fn(),
-  setCertified: vi.fn(),
+  certifyIfLatest: vi.fn(),
 }));
 
 vi.mock("@/modules/shared/llm", () => ({ generateText: m.generateText }));
@@ -19,10 +19,10 @@ vi.mock("@/modules/courses/review-repo", () => ({
   markAttempt: m.markAttempt,
   finishReview: m.finishReview,
   stalePendingReviews: m.stalePendingReviews,
+  certifyIfLatest: m.certifyIfLatest,
 }));
 vi.mock("@/modules/courses/repo", () => ({ getCourseById: m.getCourseById }));
 vi.mock("@/modules/courses/content-repo", () => ({ getContent: m.getContent }));
-vi.mock("@/modules/courses/certificate-repo", () => ({ setCertified: m.setCertified }));
 
 import {
   MAX_REVIEW_CHARS,
@@ -149,7 +149,7 @@ describe("runReview", () => {
       feedback: [],
       modelUsed: "anthropic/claude",
     });
-    expect(m.setCertified).toHaveBeenCalledWith("c1", true);
+    expect(m.certifyIfLatest).toHaveBeenCalledWith("c1", "r1", true);
   });
 
   it("rejects with the feedback and leaves the course uncertified", async () => {
@@ -159,7 +159,7 @@ describe("runReview", () => {
     });
     await runReview("r1");
     expect(m.finishReview.mock.calls[0][1]).toMatchObject({ status: "rejected", feedback: ["Add an exam on branch cuts"] });
-    expect(m.setCertified).toHaveBeenCalledWith("c1", false);
+    expect(m.certifyIfLatest).toHaveBeenCalledWith("c1", "r1", false);
   });
 
   it("leaves the submission pending when every provider is down", async () => {
@@ -169,7 +169,7 @@ describe("runReview", () => {
     warn.mockRestore();
     expect(m.markAttempt).toHaveBeenCalledWith("r1");
     expect(m.finishReview).not.toHaveBeenCalled();
-    expect(m.setCertified).not.toHaveBeenCalled();
+    expect(m.certifyIfLatest).not.toHaveBeenCalled();
   });
 
   it("supersedes a submission whose lessons changed before it was read", async () => {
@@ -183,7 +183,7 @@ describe("runReview", () => {
     m.generateText.mockResolvedValue({ text: '{"approved": true, "summary": "Good.", "feedback": []}', modelUsed: "x" });
     m.finishReview.mockResolvedValue(false);
     await runReview("r1");
-    expect(m.setCertified).not.toHaveBeenCalled();
+    expect(m.certifyIfLatest).not.toHaveBeenCalled();
   });
 
   it("skips a review that is no longer pending", async () => {

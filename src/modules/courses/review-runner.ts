@@ -11,9 +11,9 @@
 
 import { getCourseById } from "./repo";
 import { getContent } from "./content-repo";
-import { setCertified } from "./certificate-repo";
 import { contentHash, reviewCourse } from "./review";
 import {
+  certifyIfLatest,
   finishReview,
   getReview,
   markAttempt,
@@ -71,8 +71,10 @@ export async function runReview(id: string): Promise<ReviewRow | null> {
       feedback: verdict.feedback,
       modelUsed: verdict.modelUsed.slice(0, 80),
     });
-    // Not written = superseded while the model read it; the newer review decides.
-    if (written) await setCertified(course.id, verdict.approved);
+    // Not written = superseded while the model read it; the newer review
+    // decides. Written can still be too late: an edit saved since then queued a
+    // newer review, and certifyIfLatest leaves the course to that one.
+    if (written) await certifyIfLatest(course.id, id, verdict.approved);
     console.log(`[courses] review ${id}: ${verdict.approved ? "approved" : "rejected"} by ${verdict.modelUsed}`);
     return getReview(id);
   } finally {

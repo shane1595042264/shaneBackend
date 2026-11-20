@@ -1967,6 +1967,11 @@ describe("certification review (SHAN-723)", () => {
       expect(m.createReview).toHaveBeenCalledTimes(1);
       expect(m.startReview).toHaveBeenCalledWith("r1");
       expect((await res.json()).review.status).toBe("pending");
+      // SHAN-724: uncertify only once the newer review exists, so a verdict on
+      // the old version that lands in between cannot re-certify the new one.
+      expect(m.setCertified.mock.invocationCallOrder[0]).toBeGreaterThan(
+        m.createReview.mock.invocationCallOrder[0],
+      );
     });
 
     it("re-saving the same lessons changes nothing", async () => {
@@ -1985,8 +1990,10 @@ describe("certification review (SHAN-723)", () => {
       m.getContent.mockResolvedValue(other);
       m.latestReview.mockResolvedValue(reviewRow({ status: "pending", contentHash: "older" }));
       await req(`/api/courses/${courseRow.id}/content`, "PUT", rigorousDoc);
-      expect(m.setCertified).not.toHaveBeenCalled();
       expect(m.createReview).toHaveBeenCalledTimes(1);
+      // SHAN-724: the course read as uncertified, but the old review may have
+      // approved it since; the new lessons must not inherit that.
+      expect(m.setCertified).toHaveBeenCalledWith(courseRow.id, false);
     });
 
     it("leaves a course nobody is waiting on alone", async () => {

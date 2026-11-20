@@ -7,7 +7,7 @@
 // version nobody can take any more means nothing.
 import { and, asc, desc, eq, isNull, lt, or, sql } from "drizzle-orm";
 import { db } from "@/db/client";
-import { courseReviews } from "@/db/schema";
+import { courseReviews, courses } from "@/db/schema";
 
 export type ReviewStatus = "pending" | "approved" | "rejected" | "superseded";
 
@@ -93,6 +93,31 @@ export async function finishReview(
     })
     .where(and(eq(courseReviews.id, id), eq(courseReviews.status, "pending")))
     .returning({ id: courseReviews.id });
+  return rows.length > 0;
+}
+
+/**
+ * Apply a verdict to the course, only while this review is still the course's
+ * newest submission (SHAN-724). An edit saved while the model was reading
+ * queues a newer review, and the old verdict must not certify lessons nobody
+ * has read. One statement, so no submission can slip in between the check and
+ * the write. True when written.
+ */
+export async function certifyIfLatest(courseId: string, reviewId: string, certified: boolean): Promise<boolean> {
+  const rows = await db
+    .update(courses)
+    .set({ certified, updatedAt: new Date() })
+    .where(
+      and(
+        eq(courses.id, courseId),
+        sql`not exists (
+          select 1 from course_reviews newer
+          where newer.course_id = ${courseId}
+            and newer.created_at > (select created_at from course_reviews where id = ${reviewId})
+        )`,
+      ),
+    )
+    .returning({ id: courses.id });
   return rows.length > 0;
 }
 
