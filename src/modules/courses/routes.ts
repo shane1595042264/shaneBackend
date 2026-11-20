@@ -51,6 +51,7 @@ import {
 import { encodeKeysetCursor, keysetCursorParam } from "@/modules/shared/keyset";
 import {
   MAX_CONTENT_BYTES,
+  certificationGaps,
   contentStats,
   findLesson,
   validateCourseContent,
@@ -61,11 +62,16 @@ import {
   contentMetaFor,
   deleteContent,
   getContent,
+  listExamResults,
   listProgress,
+  recordExamResult,
   recordProgress,
   resetProgress,
   upsertContent,
+  type ExamResultRow,
 } from "./content-repo";
+import { gradeExam, withoutExamAnswers } from "./exam";
+import { buildHints, judgeRecital } from "@/modules/knowledge/recite";
 import {
   accountName,
   getCertificateByCode,
@@ -82,6 +88,10 @@ const coursesWriteLimit = createPATRateLimit({
   bucket: "courses-write",
   limitPerMinute: 60,
 });
+// SHAN-721: every recital can be a model call, and an exam can hold dozens,
+// so a PAT gets its own budget for each. A person typing will not come near it.
+const reciteLimit = createPATRateLimit({ bucket: "courses-recite", limitPerMinute: 60 });
+const examLimit = createPATRateLimit({ bucket: "courses-exam", limitPerMinute: 10 });
 
 type Vars = { Variables: { userId: string | null; tokenScopes: string[] | null } };
 export const coursesRoutes = new Hono<Vars>();
@@ -127,6 +137,22 @@ const lessonParam = z.object({
 });
 
 const progressBody = z.object({ score: z.number().int().min(0).max(100) });
+
+const reciteParam = z.object({
+  id: uuidId(),
+  lessonId: z.string().trim().min(1).max(64),
+  step: z.coerce.number().int().min(0).max(39),
+});
+const reciteBody = z
+  .object({
+    answer: z.string().trim().min(1, "Type your answer first").max(5000),
+    /** 1-based try at this step; picks the hint a miss reveals. */
+    attempt: z.number().int().min(1).max(50).default(1),
+  })
+  .strict();
+// One entry per step; graded by type in exam.ts, where a malformed answer is
+// a wrong one rather than a 400, the way a blank line on a paper exam is.
+const examBody = z.object({ answers: z.array(z.unknown()).max(40) }).strict();
 
 function contentInvalid(issues: ContentIssue[]) {
   return { error: "Course content is invalid", issues };
@@ -579,8 +605,11 @@ coursesRoutes.get(
     }
     const row = await getContent(id);
     if (!row) return c.json({ error: "This course has no lessons" }, 404);
+    // SHAN-721: exams are graded on the server, so only the author, who
+    // edits them, is sent their answers.
+    const author = course.userId === c.get("userId");
     return c.json({
-      content: row.content,
+      content: author ? row.content : withoutExamAnswers(row.content),
       stats: contentStats(row.content),
       updatedAt: row.updatedAt,
     });
@@ -609,6 +638,15 @@ coursesRoutes.put(
     }
     const result = validateCourseContent(read.body);
     if (!result.ok) return c.json(contentInvalid(result.issues), 400);
+    if (course.certified) {
+      const gaps = certificationGaps(result.content);
+      if (gaps.length > 0) {
+        return c.json(
+          contentInvalid([{ path: "units", message: `A certificate course must keep ${gaps.join(" and ")}` }]),
+          400,
+        );
+      }
+    }
     const saved = await upsertContent(id, result.content, result.stats);
     // A lessons-only course has no deck to estimate from, so its length is
     // whatever the lessons add up to. A deck's own estimate is left alone.
@@ -683,8 +721,8 @@ coursesRoutes.get(
     if (!course || !(await canSee(course, userId))) {
       return c.json({ error: "Not found" }, 404);
     }
-    const rows = await listProgress(userId, id);
-    return c.json({ progress: rows.map(serializeProgress) });
+    const [rows, exams] = await Promise.all([listProgress(userId, id), listExamResults(userId, id)]);
+    return c.json({ progress: rows.map(serializeProgress), exams: exams.map(serializeExamResult) });
   },
 );
 
@@ -704,11 +742,115 @@ coursesRoutes.put(
       return c.json({ error: "Not found" }, 404);
     }
     const row = await getContent(id);
-    if (!row || !findLesson(row.content, lessonId)) {
+    const lesson = row ? findLesson(row.content, lessonId) : null;
+    if (!lesson) {
       return c.json({ error: "No such lesson in this course" }, 404);
+    }
+    if (lesson.exam) {
+      return c.json({ error: "An exam is scored by submitting it to POST /api/courses/:id/exams/:lessonId" }, 409);
     }
     const saved = await recordProgress(userId, id, lessonId, score);
     return c.json({ progress: serializeProgress(saved) });
+  },
+);
+
+// ---- Recite steps and exams (SHAN-721) ------------------------------------
+
+function serializeExamResult(r: ExamResultRow) {
+  return {
+    lessonId: r.lessonId,
+    bestScore: r.bestScore,
+    lastScore: r.lastScore,
+    attempts: r.attempts,
+    passedAt: r.passedAt,
+    updatedAt: r.updatedAt,
+  };
+}
+
+// Grade one recital in a practice lesson. Nothing is stored: the lesson's
+// score still comes from the player, like every other practice step. A miss
+// returns the next hint, gentlest first.
+coursesRoutes.post(
+  "/:id/lessons/:lessonId/steps/:step/recite",
+  requireAuth,
+  requireScope("reactions:write"),
+  reciteLimit,
+  zValidator("param", reciteParam),
+  zValidator("json", reciteBody),
+  async (c) => {
+    const userId = c.get("userId") as string;
+    const { id, lessonId, step: index } = c.req.valid("param");
+    const { answer, attempt } = c.req.valid("json");
+    const course = await getCourseById(id);
+    if (!course || !(await canSee(course, userId))) {
+      return c.json({ error: "Not found" }, 404);
+    }
+    const row = await getContent(id);
+    const lesson = row ? findLesson(row.content, lessonId) : null;
+    const step = lesson?.steps[index];
+    if (!lesson || step?.type !== "recite") {
+      return c.json({ error: "No such recite step in this course" }, 404);
+    }
+    // Probing the grader, and its hints, would hand out an exam's answers.
+    if (lesson.exam) {
+      return c.json({ error: "Exam answers are graded only when the exam is submitted" }, 409);
+    }
+    let verdict;
+    try {
+      verdict = await judgeRecital({ prompt: step.prompt, reference: step.answer, recital: answer });
+    } catch (err) {
+      console.error("[courses] recite grading failed with no fallback left:", (err as Error).message);
+      return c.json({ error: "Grading is unavailable right now. Try again in a moment." }, 503);
+    }
+    if (verdict.correct) return c.json(verdict);
+    const hints = buildHints({ definition: step.answer });
+    const hintNumber = Math.min(attempt, hints.length);
+    return c.json({ ...verdict, hint: hints[hintNumber - 1] ?? null, hintNumber, hintsTotal: hints.length });
+  },
+);
+
+// Submit an exam: every answer at once, graded here, recorded apart from
+// practice progress. Says which steps were wrong, never what was right, so a
+// resit is still a test.
+coursesRoutes.post(
+  "/:id/exams/:lessonId",
+  requireAuth,
+  requireScope("reactions:write"),
+  examLimit,
+  zValidator("param", lessonParam),
+  zValidator("json", examBody),
+  async (c) => {
+    const userId = c.get("userId") as string;
+    const { id, lessonId } = c.req.valid("param");
+    const { answers } = c.req.valid("json");
+    const course = await getCourseById(id);
+    if (!course || !(await canSee(course, userId))) {
+      return c.json({ error: "Not found" }, 404);
+    }
+    const row = await getContent(id);
+    const lesson = row ? findLesson(row.content, lessonId) : null;
+    if (!lesson?.exam) {
+      return c.json({ error: "No such exam in this course" }, 404);
+    }
+    let grade;
+    try {
+      grade = await gradeExam(lesson, answers, judgeRecital);
+    } catch (err) {
+      console.error("[courses] exam grading failed with no fallback left:", (err as Error).message);
+      return c.json({ error: "Grading is unavailable right now. Nothing was recorded; try again in a moment." }, 503);
+    }
+    const passMark = lesson.exam.passMark;
+    const passed = grade.score >= passMark;
+    const saved = await recordExamResult(userId, id, lessonId, grade.score, passed);
+    return c.json({
+      score: grade.score,
+      right: grade.right,
+      graded: grade.graded,
+      passMark,
+      passed,
+      steps: grade.steps,
+      result: serializeExamResult(saved),
+    });
   },
 );
 
@@ -776,8 +918,14 @@ coursesRoutes.put(
       if (course.visibility === "private") {
         return c.json({ error: "A private course cannot issue certificates; make it public first" }, 400);
       }
-      if (!(await contentMetaFor(id))) {
+      const content = await getContent(id);
+      if (!content) {
         return c.json({ error: "Only a course with lessons can issue certificates" }, 400);
+      }
+      // SHAN-721: a certificate means recall under test, not clicking through.
+      const gaps = certificationGaps(content.content);
+      if (gaps.length > 0) {
+        return c.json({ error: `A certificate course needs ${gaps.join(" and ")}`, missing: gaps }, 400);
       }
     }
     await setCertified(id, certified);
@@ -828,13 +976,24 @@ coursesRoutes.post(
     }
     const content = await getContent(id);
     if (!content) return c.json({ error: "This course does not issue certificates" }, 409);
-    const lessonIds = content.content.units.flatMap((u) => u.lessons.map((l) => l.id));
-    const best = new Map((await listProgress(userId, id)).map((p) => [p.lessonId, p.bestScore]));
+    const lessons = content.content.units.flatMap((u) => u.lessons);
+    const lessonIds = lessons.map((l) => l.id);
+    const [progress, exams] = await Promise.all([listProgress(userId, id), listExamResults(userId, id)]);
+    const practiceBest = new Map(progress.map((p) => [p.lessonId, p.bestScore]));
+    const examBest = new Map(exams.map((e) => [e.lessonId, e.bestScore]));
+    // SHAN-721: a practice lesson counts once finished. An exam counts only
+    // from a server-graded sitting at or above the pass mark it has now.
+    const best = new Map<string, number>();
+    for (const l of lessons) {
+      const score = l.exam ? examBest.get(l.id) : practiceBest.get(l.id);
+      if (score !== undefined && (!l.exam || score >= l.exam.passMark)) best.set(l.id, score);
+    }
     const missing = lessonIds.filter((l) => !best.has(l));
     if (lessonIds.length === 0 || missing.length > 0) {
+      const examLeft = lessons.some((l) => l.exam && !best.has(l.id));
       return c.json(
         {
-          error: `Finish every lesson first: ${missing.length} of ${lessonIds.length} still to go`,
+          error: `Finish every lesson${examLeft ? " and pass the exam" : ""} first: ${missing.length} of ${lessonIds.length} still to go`,
           missing,
         },
         409,

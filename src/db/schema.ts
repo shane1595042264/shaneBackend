@@ -1395,6 +1395,32 @@ export const courseProgress = pgTable(
   ],
 );
 
+// SHAN-721: exam lessons are graded on the server and kept apart from
+// course_progress, whose score the client reports. One row per learner per
+// exam; passed_at is set by the first attempt that reaches the pass mark.
+export const courseExamResults = pgTable(
+  "course_exam_results",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    courseId: uuid("course_id")
+      .notNull()
+      .references(() => courses.id, { onDelete: "cascade" }),
+    lessonId: varchar("lesson_id", { length: 64 }).notNull(),
+    bestScore: integer("best_score").notNull(),
+    lastScore: integer("last_score").notNull(),
+    attempts: integer("attempts").notNull().default(1),
+    passedAt: timestamp("passed_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    unique("course_exam_results_user_course_lesson_unique").on(t.userId, t.courseId, t.lessonId),
+  ],
+);
+
 export const courseRatings = pgTable(
   "course_ratings",
   {

@@ -12,10 +12,16 @@
 //       { "id"?, "title", "summary"?,
 //         "lessons": [
 //           { "id"?, "title", "summary"?,
-//             "steps": [ teach | choice | blank | order | match ] } ] } ] }
+//             "exam"?: { "passMark"? },
+//             "steps": [ teach | choice | blank | order | match | recite ] } ] } ] }
 //
 // A teach step must carry a `visual` (SHAN-713): a diagram, an image or an
 // emoji.
+//
+// SHAN-721: a recite step is the one exercise graded by a model: the learner
+// types the answer from memory and the knowledge recite grader judges whether
+// it means the same as the author's. A lesson with `exam` is graded on the
+// server in one go (exam.ts) and is served to learners without its answers.
 //
 // Ids are optional on input and derived from titles. The normalised document
 // that comes back always carries them, and learner progress is keyed by lesson
@@ -295,13 +301,25 @@ function refineMatch(s: z.infer<typeof matchStep>, ctx: z.RefinementCtx) {
     }
 }
 
+// SHAN-721: the learner types `answer` back from memory. Graded for meaning,
+// not wording, so the answer is the reference a recital is held to: write the
+// defining facts, not every fact.
+const reciteStep = z
+  .object({
+    type: z.literal("recite"),
+    prompt: text(1000),
+    answer: text(2000),
+    ...gradedExtras,
+  })
+  .strict();
+
 // zod v3 only accepts plain objects in a discriminated union, so the per-type
 // rules run on the union rather than on each member.
 const step = z
-  .discriminatedUnion("type", [teachStep, choiceStep, blankStep, orderStep, matchStep], {
+  .discriminatedUnion("type", [teachStep, choiceStep, blankStep, orderStep, matchStep, reciteStep], {
     errorMap: (issue, ctx) =>
       issue.code === "invalid_union_discriminator"
-        ? { message: 'type must be one of "teach", "choice", "blank", "order", "match"' }
+        ? { message: 'type must be one of "teach", "choice", "blank", "order", "match", "recite"' }
         : { message: ctx.defaultError },
   })
   .superRefine((s, ctx) => {
@@ -311,11 +329,27 @@ const step = z
     else if (s.type === "match") refineMatch(s, ctx);
   });
 
+export const DEFAULT_PASS_MARK = 80;
+
+// SHAN-721: an exam is answered once, graded on the server, and passed at
+// `passMark` percent.
+const exam = z
+  .object({
+    passMark: z
+      .number()
+      .int("passMark is a whole percentage")
+      .min(50, "passMark is at least 50")
+      .max(100, "passMark is at most 100")
+      .default(DEFAULT_PASS_MARK),
+  })
+  .strict();
+
 const lesson = z
   .object({
     id,
     title: text(120),
     summary: optionalText(300),
+    exam: exam.optional(),
     steps: z.array(step).min(1, "A lesson needs at least one step").max(40, "A lesson takes at most 40 steps"),
   })
   .strict()
@@ -324,7 +358,20 @@ const lesson = z
       ctx.addIssue({
         code: "custom",
         path: ["steps"],
-        message: "A lesson needs at least one exercise (choice, blank, order or match)",
+        message: "A lesson needs at least one exercise (choice, blank, order, match or recite)",
+      });
+    }
+    if (l.exam) {
+      l.steps.forEach((s, i) => {
+        // A match marks every pair right or wrong as it is made, which would
+        // grade the exam card by card in front of the learner.
+        if (s.type === "match") {
+          ctx.addIssue({
+            code: "custom",
+            path: ["steps", i, "type"],
+            message: "An exam cannot hold a match step; use choice, blank, order or recite",
+          });
+        }
       });
     }
   });
@@ -354,6 +401,7 @@ export interface CourseLesson {
   id: string;
   title: string;
   summary?: string;
+  exam?: { passMark: number };
   steps: CourseStep[];
 }
 export interface CourseUnit {
@@ -494,6 +542,7 @@ export function validateCourseContent(input: unknown): ValidationResult {
         id: l.id ?? uniqueId(slugify(l.title), lessonIds),
         title: l.title,
         ...(l.summary ? { summary: l.summary } : {}),
+        ...(l.exam ? { exam: l.exam } : {}),
         steps: l.steps,
       })),
     })),
@@ -510,4 +559,19 @@ export function findLesson(content: CourseContent, lessonId: string): CourseLess
     for (const l of u.lessons) if (l.id === lessonId) return l;
   }
   return null;
+}
+
+/**
+ * SHAN-721: what a certificate course must contain. Counted on the stored
+ * document, so the certification switch and a content save on a certified
+ * course apply the same rule.
+ */
+export function certificationGaps(content: CourseContent): string[] {
+  const lessons = content.units.flatMap((u) => u.lessons);
+  const gaps: string[] = [];
+  if (!lessons.some((l) => l.steps.some((s) => s.type === "recite"))) {
+    gaps.push("at least one recite step");
+  }
+  if (!lessons.some((l) => l.exam)) gaps.push("an exam lesson");
+  return gaps;
 }

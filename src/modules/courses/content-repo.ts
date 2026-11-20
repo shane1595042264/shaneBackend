@@ -1,8 +1,9 @@
 // src/modules/courses/content-repo.ts
-// Interactive lessons (course_content) and learner progress (course_progress).
+// Interactive lessons (course_content), learner progress (course_progress) and
+// exam results (course_exam_results, SHAN-721).
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { db } from "@/db/client";
-import { courseContent, courseProgress } from "@/db/schema";
+import { courseContent, courseExamResults, courseProgress } from "@/db/schema";
 import type { ContentStats, CourseContent } from "./content-schema";
 
 export interface ContentRow {
@@ -128,4 +129,66 @@ export async function resetProgress(userId: string, courseId: string): Promise<v
   await db
     .delete(courseProgress)
     .where(and(eq(courseProgress.userId, userId), eq(courseProgress.courseId, courseId)));
+  await db
+    .delete(courseExamResults)
+    .where(and(eq(courseExamResults.userId, userId), eq(courseExamResults.courseId, courseId)));
+}
+
+export interface ExamResultRow {
+  lessonId: string;
+  bestScore: number;
+  lastScore: number;
+  attempts: number;
+  passedAt: Date | null;
+  updatedAt: Date;
+}
+
+export async function listExamResults(userId: string, courseId: string): Promise<ExamResultRow[]> {
+  return db
+    .select({
+      lessonId: courseExamResults.lessonId,
+      bestScore: courseExamResults.bestScore,
+      lastScore: courseExamResults.lastScore,
+      attempts: courseExamResults.attempts,
+      passedAt: courseExamResults.passedAt,
+      updatedAt: courseExamResults.updatedAt,
+    })
+    .from(courseExamResults)
+    .where(and(eq(courseExamResults.userId, userId), eq(courseExamResults.courseId, courseId)));
+}
+
+/**
+ * Record one graded sitting. The best score is kept, and passed_at is set by
+ * the first sitting that passed and never cleared by a worse one after it.
+ */
+export async function recordExamResult(
+  userId: string,
+  courseId: string,
+  lessonId: string,
+  score: number,
+  passed: boolean,
+): Promise<ExamResultRow> {
+  const now = new Date();
+  const [row] = await db
+    .insert(courseExamResults)
+    .values({ userId, courseId, lessonId, bestScore: score, lastScore: score, passedAt: passed ? now : null })
+    .onConflictDoUpdate({
+      target: [courseExamResults.userId, courseExamResults.courseId, courseExamResults.lessonId],
+      set: {
+        attempts: sql`${courseExamResults.attempts} + 1`,
+        bestScore: sql`greatest(${courseExamResults.bestScore}, excluded.best_score)`,
+        lastScore: sql`excluded.last_score`,
+        passedAt: sql`coalesce(${courseExamResults.passedAt}, excluded.passed_at)`,
+        updatedAt: now,
+      },
+    })
+    .returning({
+      lessonId: courseExamResults.lessonId,
+      bestScore: courseExamResults.bestScore,
+      lastScore: courseExamResults.lastScore,
+      attempts: courseExamResults.attempts,
+      passedAt: courseExamResults.passedAt,
+      updatedAt: courseExamResults.updatedAt,
+    });
+  return row;
 }
