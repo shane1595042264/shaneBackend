@@ -1444,6 +1444,39 @@ export const courseRecallResults = pgTable(
   (t) => [unique("course_recall_results_user_course_unique").on(t.userId, t.courseId)],
 );
 
+// SHAN-723: a course is certified by review, not by a switch. The author
+// submits it; a model reads the whole course and approves or rejects it with
+// feedback. One row per submission, newest first; `content_hash` is the
+// version of the lesson document that was reviewed, so an edit after approval
+// is detected even when nothing else about the course changed.
+export const courseReviews = pgTable(
+  "course_reviews",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    courseId: uuid("course_id")
+      .notNull()
+      .references(() => courses.id, { onDelete: "cascade" }),
+    submittedBy: uuid("submitted_by")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    contentHash: varchar("content_hash", { length: 64 }).notNull(),
+    // pending | approved | rejected | superseded (see review-repo.ts)
+    status: varchar("status", { length: 12 }).notNull().default("pending"),
+    summary: text("summary"),
+    // string[]: what to change to be approved (empty on approval)
+    feedback: jsonb("feedback").notNull().default([]),
+    modelUsed: varchar("model_used", { length: 80 }),
+    attempts: integer("attempts").notNull().default(0),
+    lastAttemptAt: timestamp("last_attempt_at", { withTimezone: true }),
+    reviewedAt: timestamp("reviewed_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("course_reviews_course_idx").on(t.courseId, t.createdAt),
+    index("course_reviews_status_idx").on(t.status),
+  ],
+);
+
 export const courseRatings = pgTable(
   "course_ratings",
   {

@@ -6,6 +6,7 @@ import { fetchAndCacheMonthlySpend } from "@/modules/rng-capitalist/plaid";
 import { db } from "@/db/client";
 import { rngPlaidTokens } from "@/db/schema";
 import { refreshLivePrices, refreshLivePricesIfStale } from "@/modules/ai/live-prices";
+import { retryPendingReviews } from "@/modules/courses/review-runner";
 
 function getTodayDate(): string {
   return new Date().toISOString().slice(0, 10);
@@ -18,6 +19,12 @@ export function startCronJobs(): void {
   void refreshLivePrices();
   cron.schedule("17 * * * *", () => {
     void refreshLivePricesIfStale();
+  });
+
+  // SHAN-723: course certification reviews a provider outage left pending.
+  // Each is retried once it has gone untried for 10 minutes.
+  cron.schedule("*/5 * * * *", () => {
+    void retryPendingReviews().catch((err) => console.error("[cron] Course review retry failed:", err));
   });
 
   // Every 4 hours: ingest activities for today

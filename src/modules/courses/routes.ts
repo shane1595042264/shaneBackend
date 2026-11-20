@@ -95,6 +95,9 @@ import {
   setCertified,
   type CertificateRow,
 } from "./certificate-repo";
+import { contentHash } from "./review";
+import { createReview, latestReview, type ReviewRow } from "./review-repo";
+import { startReview } from "./review-runner";
 
 // Per-PAT 60s rolling write limit. JWT browser sessions bypass. Distinct
 // bucket so a busy courses session doesn't lock out other modules.
@@ -106,6 +109,8 @@ const coursesWriteLimit = createPATRateLimit({
 // so a PAT gets its own budget for each. A person typing will not come near it.
 const reciteLimit = createPATRateLimit({ bucket: "courses-recite", limitPerMinute: 60 });
 const examLimit = createPATRateLimit({ bucket: "courses-exam", limitPerMinute: 10 });
+// SHAN-723: a submission is a long model read of the whole course.
+const reviewLimit = createPATRateLimit({ bucket: "courses-review", limitPerMinute: 5 });
 
 type Vars = { Variables: { userId: string | null; tokenScopes: string[] | null } };
 export const coursesRoutes = new Hono<Vars>();
@@ -665,7 +670,23 @@ coursesRoutes.put(
         );
       }
     }
+    const prior = await getContent(id);
     const saved = await upsertContent(id, result.content, result.stats);
+    // SHAN-723: a certified course, or one waiting on its review, goes back to
+    // review when its lessons change. It stops issuing certificates until a
+    // reviewer has read the new version.
+    const hash = contentHash(result.content);
+    let review: ReviewRow | null = null;
+    if (!prior || contentHash(prior.content) !== hash) {
+      const latest = await latestReview(id);
+      if (course.certified || latest?.status === "pending") {
+        if (course.certified) await setCertified(id, false);
+        if (course.visibility !== "private") {
+          review = await createReview({ courseId: id, submittedBy: userId, contentHash: hash });
+          startReview(review.id);
+        }
+      }
+    }
     // A lessons-only course has no deck to estimate from, so its length is
     // whatever the lessons add up to. A deck's own estimate is left alone.
     const row = await updateCourse(
@@ -679,6 +700,7 @@ coursesRoutes.put(
       stats: result.stats,
       updatedAt: saved.updatedAt,
       course: serializeCourse(row ?? course, meta),
+      ...(review ? { review: serializeReview(review, hash) } : {}),
     });
   },
 );
@@ -912,8 +934,9 @@ function serializeCertificate(cert: CertificateRow, course: CourseRow) {
 const certificationBody = z.object({ certified: z.boolean() });
 const claimBody = z.object({ name: trimmedOptional(120) });
 
-// Whether a course issues certificates. Only the site owner decides that,
-// because the certificate is issued in his name.
+// SHAN-723: a course is certified by review (POST /:id/review). What is left
+// of the old switch is the site owner's veto: he can withdraw a course's
+// certification, and only a review can give it back.
 coursesRoutes.put(
   "/:id/certification",
   requireAuth,
@@ -930,26 +953,120 @@ coursesRoutes.put(
       return c.json({ error: "Not found" }, 404);
     }
     if (!(await isSiteOwner(userId))) {
-      return c.json({ error: "Only the site owner can certify a course" }, 403);
+      return c.json({ error: "Only the site owner can withdraw a course's certification" }, 403);
     }
     if (certified) {
-      if (course.visibility === "private") {
-        return c.json({ error: "A private course cannot issue certificates; make it public first" }, 400);
-      }
-      const content = await getContent(id);
-      if (!content) {
-        return c.json({ error: "Only a course with lessons can issue certificates" }, 400);
-      }
-      // SHAN-721: a certificate means recall under test, not clicking through.
-      const gaps = certificationGaps(content.content);
-      if (gaps.length > 0) {
-        return c.json({ error: `A certificate course needs ${gaps.join(" and ")}`, missing: gaps }, 400);
-      }
+      return c.json(
+        { error: "Courses are certified by review: the author submits it with POST /api/courses/:id/review" },
+        409,
+      );
     }
-    await setCertified(id, certified);
+    await setCertified(id, false);
     const row = (await getCourseById(id)) ?? course;
     const meta = await metaFor(id, userId);
     return c.json({ course: serializeCourse(row, meta) });
+  },
+);
+
+// ---- Certification review (SHAN-723) --------------------------------------
+
+function serializeReview(r: ReviewRow, currentHash: string | null) {
+  return {
+    id: r.id,
+    status: r.status,
+    summary: r.summary,
+    feedback: r.feedback,
+    // How many times the reviewer has been tried; > 1 while pending means the
+    // models were unavailable and it is being retried.
+    attempts: r.attempts,
+    submittedAt: r.createdAt,
+    reviewedAt: r.reviewedAt,
+    // False once the lessons have changed since this version was reviewed.
+    current: currentHash !== null && r.contentHash === currentHash,
+  };
+}
+
+// Submit a course for certification. Answers 202 with a pending review; the
+// verdict lands a minute or so later and is read with GET /:id/review.
+coursesRoutes.post(
+  "/:id/review",
+  requireAuth,
+  requireScope("entries:write"),
+  reviewLimit,
+  zValidator("param", idParam),
+  async (c) => {
+    const userId = c.get("userId") as string;
+    const { id } = c.req.valid("param");
+    const course = await getCourseById(id);
+    if (!course || course.userId !== userId) {
+      return c.json({ error: "Not found" }, 404);
+    }
+    if (course.visibility === "private") {
+      return c.json({ error: "A private course cannot issue certificates; make it public first" }, 400);
+    }
+    const content = await getContent(id);
+    if (!content) {
+      return c.json({ error: "Only a course with lessons can issue certificates" }, 400);
+    }
+    // SHAN-721: a certificate means recall under test, not clicking through.
+    const gaps = certificationGaps(content.content);
+    if (gaps.length > 0) {
+      return c.json({ error: `A certificate course needs ${gaps.join(" and ")}`, missing: gaps }, 400);
+    }
+    const hash = contentHash(content.content);
+    const latest = await latestReview(id);
+    if (latest?.contentHash === hash) {
+      if (latest.status === "pending") {
+        // Submitting again while it waits retries it now (it may have been
+        // stuck behind an outage) without queueing a second one.
+        startReview(latest.id);
+        return c.json({ review: serializeReview(latest, hash) }, 202);
+      }
+      if (latest.status === "approved" && course.certified) {
+        return c.json({ review: serializeReview(latest, hash) });
+      }
+      if (latest.status === "rejected") {
+        return c.json(
+          {
+            error: "This version was already reviewed. Change the lessons using the feedback, then submit again.",
+            review: serializeReview(latest, hash),
+          },
+          409,
+        );
+      }
+      if (latest.status === "approved") {
+        return c.json(
+          {
+            error: "The site owner withdrew this course's certification. Change the lessons, then submit again.",
+            review: serializeReview(latest, hash),
+          },
+          409,
+        );
+      }
+    }
+    const review = await createReview({ courseId: id, submittedBy: userId, contentHash: hash });
+    startReview(review.id);
+    return c.json({ review: serializeReview(review, hash) }, 202);
+  },
+);
+
+// The newest review and its verdict, for the author and the site owner.
+coursesRoutes.get(
+  "/:id/review",
+  requireAuth,
+  zValidator("param", idParam),
+  async (c) => {
+    const userId = c.get("userId") as string;
+    const { id } = c.req.valid("param");
+    const course = await getCourseById(id);
+    if (!course || !(course.userId === userId || (await isSiteOwner(userId)))) {
+      return c.json({ error: "Not found" }, 404);
+    }
+    const [latest, content] = await Promise.all([latestReview(id), getContent(id)]);
+    return c.json({
+      review: latest ? serializeReview(latest, content ? contentHash(content.content) : null) : null,
+      certified: course.certified,
+    });
   },
 );
 

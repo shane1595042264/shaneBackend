@@ -1,6 +1,7 @@
 // tests/modules/courses/routes.test.ts
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { Hono } from "hono";
+import { createHash } from "node:crypto";
 
 const m = vi.hoisted(() => ({
   createCourse: vi.fn(),
@@ -50,6 +51,9 @@ const m = vi.hoisted(() => ({
   getRecallResult: vi.fn(),
   recordRecallResult: vi.fn(),
   judgeRecital: vi.fn(),
+  latestReview: vi.fn(),
+  createReview: vi.fn(),
+  startReview: vi.fn(),
 }));
 
 // Literal factory (no importOriginal): pulling the real repo in would load
@@ -118,6 +122,18 @@ vi.mock("@/modules/knowledge/recite", () => ({
   ],
 }));
 
+// SHAN-723. The real review.ts imports @/modules/shared/llm, so only its
+// pure version hash is reproduced here, the same way.
+vi.mock("@/modules/courses/review", async () => {
+  const { createHash } = await import("node:crypto");
+  return { contentHash: (c: unknown) => createHash("sha256").update(JSON.stringify(c)).digest("hex") };
+});
+vi.mock("@/modules/courses/review-repo", () => ({
+  latestReview: m.latestReview,
+  createReview: m.createReview,
+}));
+vi.mock("@/modules/courses/review-runner", () => ({ startReview: m.startReview }));
+
 vi.mock("@/modules/courses/certificate-repo", () => ({
   accountName: m.accountName,
   getCertificateByCode: m.getCertificateByCode,
@@ -169,6 +185,7 @@ vi.mock("@/modules/auth/middleware", () => ({
 }));
 
 import { coursesRoutes } from "@/modules/courses/routes";
+import { validateCourseContent } from "@/modules/courses/content-schema";
 import { CourseFetchError } from "@/modules/courses/classifier";
 
 const app = new Hono().route("/api/courses", coursesRoutes);
@@ -204,6 +221,7 @@ function emptyAggregates() {
   m.contentMetaFor.mockResolvedValue(null);
   m.listExamResults.mockResolvedValue([]);
   m.getRecallResult.mockResolvedValue(null);
+  m.latestReview.mockResolvedValue(null);
 }
 
 const anonymous = { userId: null, isSiteOwner: false };
@@ -1368,34 +1386,32 @@ describe("certificates (SHAN-720)", () => {
     expect(res.status).toBe(404);
   });
 
-  it("only the site owner can certify a course", async () => {
-    m.getCourseById.mockResolvedValue(courseRow);
+  it("only the site owner can withdraw a certification", async () => {
+    m.getCourseById.mockResolvedValue({ ...courseRow, certified: true });
     m.isSiteOwner.mockResolvedValue(false);
-    const res = await req(`/api/courses/${courseRow.id}/certification`, "PUT", { certified: true }, "u1");
+    const res = await req(`/api/courses/${courseRow.id}/certification`, "PUT", { certified: false }, "u1");
     expect(res.status).toBe(403);
     expect(m.setCertified).not.toHaveBeenCalled();
   });
 
-  it("refuses to certify a course without lessons", async () => {
+  it("no longer certifies by switch, even for the site owner (SHAN-723)", async () => {
     m.getCourseById.mockResolvedValue(courseRow);
     m.isSiteOwner.mockResolvedValue(true);
-    m.getContent.mockResolvedValue(null);
     const res = await req(`/api/courses/${courseRow.id}/certification`, "PUT", { certified: true }, "u1");
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(409);
+    expect((await res.json()).error).toContain("/review");
     expect(m.setCertified).not.toHaveBeenCalled();
   });
 
-  it("certifies a public course with recite steps and an exam", async () => {
+  it("lets the site owner withdraw a certification", async () => {
     m.getCourseById
-      .mockResolvedValueOnce(courseRow)
-      .mockResolvedValueOnce({ ...courseRow, certified: true });
+      .mockResolvedValueOnce({ ...courseRow, certified: true })
+      .mockResolvedValueOnce(courseRow);
     m.isSiteOwner.mockResolvedValue(true);
-    m.getContent.mockResolvedValue(rigorous);
-    m.contentMetaFor.mockResolvedValue({ lessonCount: 2, stepCount: 3 });
-    const res = await req(`/api/courses/${courseRow.id}/certification`, "PUT", { certified: true }, "u1");
+    const res = await req(`/api/courses/${courseRow.id}/certification`, "PUT", { certified: false }, "u1");
     expect(res.status).toBe(200);
-    expect(m.setCertified).toHaveBeenCalledWith(courseRow.id, true);
-    expect((await res.json()).course.certified).toBe(true);
+    expect(m.setCertified).toHaveBeenCalledWith(courseRow.id, false);
+    expect((await res.json()).course.certified).toBe(false);
   });
 });
 
@@ -1603,14 +1619,13 @@ describe("certificates need the exam (SHAN-721)", () => {
   const certified = { ...courseRow, url: null, certified: true };
   const practiceDone = [{ lessonId: "ten-stops", bestScore: 100 }];
 
-  it("refuses to certify a course with no recite step or exam", async () => {
+  it("refuses to review a course with no recite step or exam", async () => {
     m.getCourseById.mockResolvedValue(courseRow);
-    m.isSiteOwner.mockResolvedValue(true);
     m.getContent.mockResolvedValue({ content: { version: 1, ...lessonDoc }, lessonCount: 1, stepCount: 2, updatedAt: new Date() });
-    const res = await req(`/api/courses/${courseRow.id}/certification`, "PUT", { certified: true }, "u1");
+    const res = await req(`/api/courses/${courseRow.id}/review`, "POST", undefined, "u1");
     expect(res.status).toBe(400);
     expect((await res.json()).missing).toEqual(["at least one recite step", "an exam lesson"]);
-    expect(m.setCertified).not.toHaveBeenCalled();
+    expect(m.createReview).not.toHaveBeenCalled();
   });
 
   it("refuses a content save that drops the exam from a certified course", async () => {
@@ -1813,5 +1828,182 @@ describe("recall check (SHAN-722)", () => {
   it("401s signed out", async () => {
     const res = await req(url, "GET", undefined, null);
     expect(res.status).toBe(401);
+  });
+});
+
+// ---- SHAN-723: certification by review --------------------------------------
+
+describe("certification review (SHAN-723)", () => {
+  const hashOf = (c: unknown) => createHash("sha256").update(JSON.stringify(c)).digest("hex");
+  const url = `/api/courses/${courseRow.id}/review`;
+  const reviewRow = (over: Record<string, unknown> = {}) => ({
+    id: "r1",
+    courseId: courseRow.id,
+    submittedBy: "u1",
+    contentHash: hashOf(rigorousDoc),
+    status: "pending",
+    summary: null,
+    feedback: [],
+    modelUsed: null,
+    attempts: 0,
+    lastAttemptAt: null,
+    reviewedAt: null,
+    createdAt: new Date("2026-11-20T00:00:00Z"),
+    ...over,
+  });
+  const other = { ...rigorous, content: { version: 1, units: [] } };
+
+  beforeEach(() => {
+    m.createReview.mockImplementation(async (input: Record<string, unknown>) => reviewRow(input));
+  });
+
+  it("queues a review of the current version and answers 202", async () => {
+    m.getCourseById.mockResolvedValue(courseRow);
+    m.getContent.mockResolvedValue(rigorous);
+    const res = await req(url, "POST", undefined, "u1");
+    expect(res.status).toBe(202);
+    expect(m.createReview).toHaveBeenCalledWith({ courseId: courseRow.id, submittedBy: "u1", contentHash: hashOf(rigorousDoc) });
+    expect(m.startReview).toHaveBeenCalledWith("r1");
+    expect((await res.json()).review).toMatchObject({ status: "pending", current: true });
+  });
+
+  it("is the author's to submit; anyone else gets the same 404 as a missing course", async () => {
+    m.getCourseById.mockResolvedValue(courseRow);
+    const res = await req(url, "POST", undefined, "someone-else");
+    expect(res.status).toBe(404);
+    expect(m.createReview).not.toHaveBeenCalled();
+  });
+
+  it("refuses a private course and a course without lessons", async () => {
+    m.getCourseById.mockResolvedValue({ ...courseRow, visibility: "private" });
+    expect((await req(url, "POST", undefined, "u1")).status).toBe(400);
+    m.getCourseById.mockResolvedValue(courseRow);
+    m.getContent.mockResolvedValue(null);
+    expect((await req(url, "POST", undefined, "u1")).status).toBe(400);
+    expect(m.createReview).not.toHaveBeenCalled();
+  });
+
+  it("resubmitting a version still pending kicks it again instead of queueing another", async () => {
+    m.getCourseById.mockResolvedValue(courseRow);
+    m.getContent.mockResolvedValue(rigorous);
+    m.latestReview.mockResolvedValue(reviewRow({ id: "r0", attempts: 3 }));
+    const res = await req(url, "POST", undefined, "u1");
+    expect(res.status).toBe(202);
+    expect(m.createReview).not.toHaveBeenCalled();
+    expect(m.startReview).toHaveBeenCalledWith("r0");
+  });
+
+  it("will not re-review a rejected version until the lessons change", async () => {
+    m.getCourseById.mockResolvedValue(courseRow);
+    m.getContent.mockResolvedValue(rigorous);
+    m.latestReview.mockResolvedValue(reviewRow({ status: "rejected", feedback: ["Add an exam on residues"] }));
+    const res = await req(url, "POST", undefined, "u1");
+    expect(res.status).toBe(409);
+    expect((await res.json()).review.feedback).toEqual(["Add an exam on residues"]);
+    expect(m.createReview).not.toHaveBeenCalled();
+  });
+
+  it("reviews a changed version after a rejection", async () => {
+    m.getCourseById.mockResolvedValue(courseRow);
+    m.getContent.mockResolvedValue(rigorous);
+    m.latestReview.mockResolvedValue(reviewRow({ status: "rejected", contentHash: "older" }));
+    const res = await req(url, "POST", undefined, "u1");
+    expect(res.status).toBe(202);
+    expect(m.createReview).toHaveBeenCalled();
+  });
+
+  it("an approved, certified version is simply returned", async () => {
+    m.getCourseById.mockResolvedValue({ ...courseRow, certified: true });
+    m.getContent.mockResolvedValue(rigorous);
+    m.latestReview.mockResolvedValue(reviewRow({ status: "approved" }));
+    const res = await req(url, "POST", undefined, "u1");
+    expect(res.status).toBe(200);
+    expect(m.createReview).not.toHaveBeenCalled();
+  });
+
+  it("an approved version the site owner withdrew needs a change first", async () => {
+    m.getCourseById.mockResolvedValue(courseRow);
+    m.getContent.mockResolvedValue(rigorous);
+    m.latestReview.mockResolvedValue(reviewRow({ status: "approved" }));
+    const res = await req(url, "POST", undefined, "u1");
+    expect(res.status).toBe(409);
+    expect(m.createReview).not.toHaveBeenCalled();
+  });
+
+  it("GET shows the author the verdict and whether it is about the current lessons", async () => {
+    m.getCourseById.mockResolvedValue(courseRow);
+    m.getContent.mockResolvedValue(rigorous);
+    m.latestReview.mockResolvedValue(
+      reviewRow({ status: "rejected", contentHash: "older", summary: "Shallow.", feedback: ["Cover branch cuts"] }),
+    );
+    const res = await req(url, "GET", undefined, "u1");
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.review).toMatchObject({ status: "rejected", summary: "Shallow.", feedback: ["Cover branch cuts"], current: false });
+    expect(body.certified).toBe(false);
+  });
+
+  it("GET is hidden from everyone but the author and the site owner", async () => {
+    m.getCourseById.mockResolvedValue(courseRow);
+    m.isSiteOwner.mockResolvedValue(false);
+    expect((await req(url, "GET", undefined, "learner")).status).toBe(404);
+    m.isSiteOwner.mockResolvedValue(true);
+    expect((await req(url, "GET", undefined, "owner")).status).toBe(200);
+  });
+
+  describe("editing the lessons", () => {
+    beforeEach(() => {
+      m.upsertContent.mockResolvedValue({ updatedAt: new Date() });
+      m.updateCourse.mockImplementation(async () => courseRow);
+    });
+
+    it("uncertifies a certified course and sends the new version to review", async () => {
+      m.getCourseById.mockResolvedValue({ ...courseRow, certified: true });
+      m.getContent.mockResolvedValue(other);
+      m.latestReview.mockResolvedValue(reviewRow({ status: "approved", contentHash: "older" }));
+      const res = await req(`/api/courses/${courseRow.id}/content`, "PUT", rigorousDoc);
+      expect(res.status).toBe(200);
+      expect(m.setCertified).toHaveBeenCalledWith(courseRow.id, false);
+      expect(m.createReview).toHaveBeenCalledTimes(1);
+      expect(m.startReview).toHaveBeenCalledWith("r1");
+      expect((await res.json()).review.status).toBe("pending");
+    });
+
+    it("re-saving the same lessons changes nothing", async () => {
+      const normalised = validateCourseContent(rigorousDoc);
+      if (!normalised.ok) throw new Error("fixture is invalid");
+      m.getCourseById.mockResolvedValue({ ...courseRow, certified: true });
+      m.getContent.mockResolvedValue({ ...rigorous, content: normalised.content });
+      const res = await req(`/api/courses/${courseRow.id}/content`, "PUT", rigorousDoc);
+      expect(res.status).toBe(200);
+      expect(m.setCertified).not.toHaveBeenCalled();
+      expect(m.createReview).not.toHaveBeenCalled();
+    });
+
+    it("re-queues a review that was waiting on the old version", async () => {
+      m.getCourseById.mockResolvedValue(courseRow);
+      m.getContent.mockResolvedValue(other);
+      m.latestReview.mockResolvedValue(reviewRow({ status: "pending", contentHash: "older" }));
+      await req(`/api/courses/${courseRow.id}/content`, "PUT", rigorousDoc);
+      expect(m.setCertified).not.toHaveBeenCalled();
+      expect(m.createReview).toHaveBeenCalledTimes(1);
+    });
+
+    it("leaves a course nobody is waiting on alone", async () => {
+      m.getCourseById.mockResolvedValue(courseRow);
+      m.getContent.mockResolvedValue(other);
+      m.latestReview.mockResolvedValue(reviewRow({ status: "rejected", contentHash: "older" }));
+      await req(`/api/courses/${courseRow.id}/content`, "PUT", rigorousDoc);
+      expect(m.createReview).not.toHaveBeenCalled();
+      expect(m.setCertified).not.toHaveBeenCalled();
+    });
+
+    it("uncertifies a certified course made private without queueing a review", async () => {
+      m.getCourseById.mockResolvedValue({ ...courseRow, certified: true, visibility: "private" });
+      m.getContent.mockResolvedValue(other);
+      await req(`/api/courses/${courseRow.id}/content`, "PUT", rigorousDoc);
+      expect(m.setCertified).toHaveBeenCalledWith(courseRow.id, false);
+      expect(m.createReview).not.toHaveBeenCalled();
+    });
   });
 });
