@@ -1421,6 +1421,29 @@ export const courseExamResults = pgTable(
   ],
 );
 
+// SHAN-722: the spaced recall check on a certificate course, one row per
+// learner per course. updated_at is the last sitting: a failed one restarts
+// the day's wait before the next.
+export const courseRecallResults = pgTable(
+  "course_recall_results",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    courseId: uuid("course_id")
+      .notNull()
+      .references(() => courses.id, { onDelete: "cascade" }),
+    bestScore: integer("best_score").notNull(),
+    lastScore: integer("last_score").notNull(),
+    attempts: integer("attempts").notNull().default(1),
+    passedAt: timestamp("passed_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [unique("course_recall_results_user_course_unique").on(t.userId, t.courseId)],
+);
+
 export const courseRatings = pgTable(
   "course_ratings",
   {

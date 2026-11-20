@@ -372,6 +372,13 @@
       "when": 1795143818057,
       "tag": "0052_optimal_morgan_stark",
       "breakpoints": true
+    },
+    {
+      "idx": 53,
+      "version": "7",
+      "when": 1795165371796,
+      "tag": "0053_typical_nextwave",
+      "breakpoints": true
     }
   ]
 }

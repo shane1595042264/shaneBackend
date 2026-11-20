@@ -1,9 +1,10 @@
 // src/modules/courses/content-repo.ts
-// Interactive lessons (course_content), learner progress (course_progress) and
-// exam results (course_exam_results, SHAN-721).
+// Interactive lessons (course_content), learner progress (course_progress),
+// exam results (course_exam_results, SHAN-721) and recall checks
+// (course_recall_results, SHAN-722).
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { db } from "@/db/client";
-import { courseContent, courseExamResults, courseProgress } from "@/db/schema";
+import { courseContent, courseExamResults, courseProgress, courseRecallResults } from "@/db/schema";
 import type { ContentStats, CourseContent } from "./content-schema";
 
 export interface ContentRow {
@@ -132,6 +133,9 @@ export async function resetProgress(userId: string, courseId: string): Promise<v
   await db
     .delete(courseExamResults)
     .where(and(eq(courseExamResults.userId, userId), eq(courseExamResults.courseId, courseId)));
+  await db
+    .delete(courseRecallResults)
+    .where(and(eq(courseRecallResults.userId, userId), eq(courseRecallResults.courseId, courseId)));
 }
 
 export interface ExamResultRow {
@@ -190,5 +194,55 @@ export async function recordExamResult(
       passedAt: courseExamResults.passedAt,
       updatedAt: courseExamResults.updatedAt,
     });
+  return row;
+}
+
+export interface RecallResultRow {
+  bestScore: number;
+  lastScore: number;
+  attempts: number;
+  passedAt: Date | null;
+  updatedAt: Date;
+}
+
+const recallColumns = {
+  bestScore: courseRecallResults.bestScore,
+  lastScore: courseRecallResults.lastScore,
+  attempts: courseRecallResults.attempts,
+  passedAt: courseRecallResults.passedAt,
+  updatedAt: courseRecallResults.updatedAt,
+};
+
+export async function getRecallResult(userId: string, courseId: string): Promise<RecallResultRow | null> {
+  const [row] = await db
+    .select(recallColumns)
+    .from(courseRecallResults)
+    .where(and(eq(courseRecallResults.userId, userId), eq(courseRecallResults.courseId, courseId)))
+    .limit(1);
+  return row ?? null;
+}
+
+/** Record one graded recall sitting; same keep-the-best rules as an exam. */
+export async function recordRecallResult(
+  userId: string,
+  courseId: string,
+  score: number,
+  passed: boolean,
+): Promise<RecallResultRow> {
+  const now = new Date();
+  const [row] = await db
+    .insert(courseRecallResults)
+    .values({ userId, courseId, bestScore: score, lastScore: score, passedAt: passed ? now : null })
+    .onConflictDoUpdate({
+      target: [courseRecallResults.userId, courseRecallResults.courseId],
+      set: {
+        attempts: sql`${courseRecallResults.attempts} + 1`,
+        bestScore: sql`greatest(${courseRecallResults.bestScore}, excluded.best_score)`,
+        lastScore: sql`excluded.last_score`,
+        passedAt: sql`coalesce(${courseRecallResults.passedAt}, excluded.passed_at)`,
+        updatedAt: now,
+      },
+    })
+    .returning(recallColumns);
   return row;
 }

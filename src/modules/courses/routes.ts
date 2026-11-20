@@ -62,15 +62,29 @@ import {
   contentMetaFor,
   deleteContent,
   getContent,
+  getRecallResult,
   listExamResults,
   listProgress,
   recordExamResult,
   recordProgress,
+  recordRecallResult,
   resetProgress,
   upsertContent,
+  type ContentRow,
   type ExamResultRow,
+  type RecallResultRow,
 } from "./content-repo";
 import { gradeExam, withoutExamAnswers } from "./exam";
+import {
+  RECALL_PASS_MARK,
+  drawRecall,
+  lessonStanding,
+  recallDrawId,
+  recallLesson,
+  recallSeed,
+  recallUnlocksAt,
+  recallView,
+} from "./recall";
 import { buildHints, judgeRecital } from "@/modules/knowledge/recite";
 import {
   accountName,
@@ -153,6 +167,10 @@ const reciteBody = z
 // One entry per step; graded by type in exam.ts, where a malformed answer is
 // a wrong one rather than a 400, the way a blank line on a paper exam is.
 const examBody = z.object({ answers: z.array(z.unknown()).max(40) }).strict();
+// SHAN-722: `draw` names the cards the answers belong to (GET /:id/recall).
+const recallBody = z
+  .object({ draw: z.string().trim().min(1).max(64), answers: z.array(z.unknown()).max(40) })
+  .strict();
 
 function contentInvalid(issues: ContentIssue[]) {
   return { error: "Course content is invalid", issues };
@@ -978,17 +996,14 @@ coursesRoutes.post(
     if (!content) return c.json({ error: "This course does not issue certificates" }, 409);
     const lessons = content.content.units.flatMap((u) => u.lessons);
     const lessonIds = lessons.map((l) => l.id);
-    const [progress, exams] = await Promise.all([listProgress(userId, id), listExamResults(userId, id)]);
-    const practiceBest = new Map(progress.map((p) => [p.lessonId, p.bestScore]));
-    const examBest = new Map(exams.map((e) => [e.lessonId, e.bestScore]));
+    const [progress, exams, recall] = await Promise.all([
+      listProgress(userId, id),
+      listExamResults(userId, id),
+      getRecallResult(userId, id),
+    ]);
     // SHAN-721: a practice lesson counts once finished. An exam counts only
     // from a server-graded sitting at or above the pass mark it has now.
-    const best = new Map<string, number>();
-    for (const l of lessons) {
-      const score = l.exam ? examBest.get(l.id) : practiceBest.get(l.id);
-      if (score !== undefined && (!l.exam || score >= l.exam.passMark)) best.set(l.id, score);
-    }
-    const missing = lessonIds.filter((l) => !best.has(l));
+    const { best, missing } = lessonStanding(content.content, progress, exams);
     if (lessonIds.length === 0 || missing.length > 0) {
       const examLeft = lessons.some((l) => l.exam && !best.has(l.id));
       return c.json(
@@ -996,6 +1011,13 @@ coursesRoutes.post(
           error: `Finish every lesson${examLeft ? " and pass the exam" : ""} first: ${missing.length} of ${lessonIds.length} still to go`,
           missing,
         },
+        409,
+      );
+    }
+    // SHAN-722: and the knowledge has to have lasted a day.
+    if (!recall?.passedAt) {
+      return c.json(
+        { error: "Pass the recall check first. It opens a day after your last lesson.", recall: "pending" },
         409,
       );
     }
@@ -1013,6 +1035,138 @@ coursesRoutes.post(
       lessonCount: lessonIds.length,
     });
     return c.json({ certificate: serializeCertificate(row, course) }, created ? 201 : 200);
+  },
+);
+
+// ---- Recall check (SHAN-722) ---------------------------------------------
+
+function serializeRecallResult(r: RecallResultRow) {
+  return {
+    bestScore: r.bestScore,
+    lastScore: r.lastScore,
+    attempts: r.attempts,
+    passedAt: r.passedAt,
+    updatedAt: r.updatedAt,
+  };
+}
+
+type RecallState =
+  | { ok: false; status: 404; error: string }
+  | {
+      ok: true;
+      content: ContentRow;
+      result: RecallResultRow | null;
+      missing: string[];
+      /** Null until every lesson is done. */
+      unlocksAt: Date | null;
+      seed: string;
+    };
+
+// What the GET and the POST both need to know about one learner's recall
+// check on one course. Only a public certified course has one.
+async function recallState(id: string, userId: string): Promise<RecallState> {
+  const course = await getCourseById(id);
+  if (!course || !(await canSee(course, userId))) return { ok: false, status: 404, error: "Not found" };
+  const content = course.certified && course.visibility !== "private" ? await getContent(id) : null;
+  if (!content) return { ok: false, status: 404, error: "This course has no recall check" };
+  const [progress, exams, result] = await Promise.all([
+    listProgress(userId, id),
+    listExamResults(userId, id),
+    getRecallResult(userId, id),
+  ]);
+  const { missing, lastActivity } = lessonStanding(content.content, progress, exams);
+  const lastFailed = result && !result.passedAt ? result.updatedAt : null;
+  return {
+    ok: true,
+    content,
+    result,
+    missing,
+    unlocksAt: missing.length > 0 ? null : recallUnlocksAt(lastActivity, lastFailed),
+    seed: recallSeed(userId, id, result?.attempts ?? 0, content.updatedAt),
+  };
+}
+
+// Where the learner stands on the recall check, and its cards while it is
+// open: "lessons" until every lesson is done and every exam passed, "waiting"
+// for a day after that, then "open", then "passed".
+coursesRoutes.get(
+  "/:id/recall",
+  requireAuth,
+  zValidator("param", idParam),
+  async (c) => {
+    const userId = c.get("userId") as string;
+    const { id } = c.req.valid("param");
+    const s = await recallState(id, userId);
+    if (!s.ok) return c.json({ error: s.error }, s.status);
+    const status = s.result?.passedAt
+      ? "passed"
+      : !s.unlocksAt
+        ? "lessons"
+        : s.unlocksAt.getTime() > Date.now()
+          ? "waiting"
+          : "open";
+    const cards = drawRecall(s.content.content, s.seed);
+    return c.json({
+      recall: {
+        status,
+        passMark: RECALL_PASS_MARK,
+        questions: cards.length,
+        lessonsLeft: s.missing.length,
+        unlocksAt: status === "passed" ? null : s.unlocksAt,
+        result: s.result ? serializeRecallResult(s.result) : null,
+        draw: status === "open" ? { id: recallDrawId(s.seed), steps: recallView(cards, s.seed) } : null,
+      },
+    });
+  },
+);
+
+// Submit a sitting. Graded like an exam: it says which cards were wrong, never
+// what was right, and a failed sitting closes the check for another day.
+coursesRoutes.post(
+  "/:id/recall",
+  requireAuth,
+  requireScope("reactions:write"),
+  examLimit,
+  zValidator("param", idParam),
+  zValidator("json", recallBody),
+  async (c) => {
+    const userId = c.get("userId") as string;
+    const { id } = c.req.valid("param");
+    const { draw, answers } = c.req.valid("json");
+    const s = await recallState(id, userId);
+    if (!s.ok) return c.json({ error: s.error }, s.status);
+    if (s.result?.passedAt) return c.json({ error: "You have already passed the recall check" }, 409);
+    if (!s.unlocksAt) {
+      return c.json({ error: "Finish every lesson first", lessonsLeft: s.missing.length }, 409);
+    }
+    if (s.unlocksAt.getTime() > Date.now()) {
+      return c.json({ error: "The recall check is not open yet", unlocksAt: s.unlocksAt }, 409);
+    }
+    // The course was edited, or a sitting landed from another tab, since these
+    // cards were served.
+    if (draw !== recallDrawId(s.seed)) {
+      return c.json({ error: "These questions are out of date. Reload the recall check and try again." }, 409);
+    }
+    let grade;
+    try {
+      grade = await gradeExam(recallLesson(drawRecall(s.content.content, s.seed)), answers, judgeRecital);
+    } catch (err) {
+      console.error("[courses] recall grading failed with no fallback left:", (err as Error).message);
+      return c.json({ error: "Grading is unavailable right now. Nothing was recorded; try again in a moment." }, 503);
+    }
+    const passed = grade.score >= RECALL_PASS_MARK;
+    const saved = await recordRecallResult(userId, id, grade.score, passed);
+    return c.json({
+      score: grade.score,
+      right: grade.right,
+      graded: grade.graded,
+      passMark: RECALL_PASS_MARK,
+      passed,
+      steps: grade.steps,
+      result: serializeRecallResult(saved),
+      // When the next sitting opens, after a failed one.
+      unlocksAt: passed ? null : recallUnlocksAt(null, saved.updatedAt),
+    });
   },
 );
 
