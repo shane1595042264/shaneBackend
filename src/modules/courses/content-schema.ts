@@ -237,15 +237,23 @@ function refineBlank(s: z.infer<typeof blankStep>, ctx: z.RefinementCtx) {
       }
     });
     if (s.bank) {
-      const answers = new Set(blanks.map((a) => (a[0] ?? "").toLowerCase()));
+      // Compared the way answers are graded (SHAN-728): "Paris." beside
+      // [[Paris]] is a second right tile, and a tile reading as a listed
+      // alternative grades wrong, since a bank accepts only the first answer.
+      const answers = new Set(blanks.flat().map(normalizeAnswer));
+      const seen = new Set<string>();
       s.bank.forEach((d, i) => {
-        if (answers.has(d.toLowerCase())) {
+        const k = normalizeAnswer(d);
+        if (answers.has(k)) {
           ctx.addIssue({
             code: "custom",
             path: ["bank", i],
             message: "A distractor cannot also be an answer",
           });
+        } else if (seen.has(k)) {
+          ctx.addIssue({ code: "custom", path: ["bank", i], message: "Duplicate distractor" });
         }
+        seen.add(k);
       });
     }
 }
@@ -440,6 +448,24 @@ export function parseBlanks(textValue: string): string[][] {
     );
   }
   return out;
+}
+
+/**
+ * Typed answers forgive case, surrounding space, runs of space, curly quotes
+ * and trailing punctuation, nothing fuzzier. Mirrors normalizeAnswer in the
+ * frontend player. Lives here so the validator compares distractors the way
+ * the grader (exam.ts) compares answers.
+ */
+export function normalizeAnswer(s: string): string {
+  return s
+    .normalize("NFKC")
+    .replace(/[‘’]/g, "'")
+    .replace(/[“”]/g, '"')
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/[.,;:!?]+$/, "")
+    .trim();
 }
 
 function slugify(s: string): string {

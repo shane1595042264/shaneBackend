@@ -8,25 +8,10 @@
 // player's grading in shaneFrontend lib/course-lessons.ts, so a step reads the
 // same in practice and in an exam.
 
-import { parseBlanks, type CourseContent, type CourseLesson, type CourseStep } from "./content-schema";
+import { normalizeAnswer, parseBlanks, type CourseContent, type CourseLesson, type CourseStep } from "./content-schema";
 import type { ReciteVerdict } from "@/modules/knowledge/recite";
 
-/**
- * Typed answers forgive case, surrounding space, runs of space, curly quotes
- * and trailing punctuation, nothing fuzzier. Mirrors normalizeAnswer in the
- * frontend player.
- */
-export function normalizeAnswer(s: string): string {
-  return s
-    .normalize("NFKC")
-    .replace(/[‘’]/g, "'")
-    .replace(/[“”]/g, '"')
-    .toLowerCase()
-    .replace(/\s+/g, " ")
-    .trim()
-    .replace(/[.,;:!?]+$/, "")
-    .trim();
-}
+export { normalizeAnswer };
 
 /**
  * SHAN-726: a sitting closes the exam for a day. A result says which steps

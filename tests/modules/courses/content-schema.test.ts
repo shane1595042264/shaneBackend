@@ -114,6 +114,25 @@ describe("validateCourseContent", () => {
     expect(found[0].path).toBe("units[0].lessons[0].steps[0].bank[1]");
   });
 
+  it("compares distractors the way answers are graded (SHAN-728)", () => {
+    const bank = (text: string, b: string[]) => issues(doc([{ type: "blank", text, bank: b }]));
+    // Trailing punctuation and spacing are forgiven when grading, so these grade right.
+    expect(bank("Capital: [[Paris]].", ["Rome", "Paris."])[0]).toMatchObject({
+      path: "units[0].lessons[0].steps[0].bank[1]",
+      message: "A distractor cannot also be an answer",
+    });
+    expect(bank("Capital: [[New York]].", ["new  york"])[0].path).toBe("units[0].lessons[0].steps[0].bank[0]");
+    // A listed alternative reads as an answer but grades wrong as a tile.
+    expect(bank("Hits go to [[collector|the collector]].", ["the collector"])[0].path).toBe(
+      "units[0].lessons[0].steps[0].bank[0]",
+    );
+    expect(bank("Hits go to [[Bronze]].", ["Gold", "gold!"])[0]).toMatchObject({
+      path: "units[0].lessons[0].steps[0].bank[1]",
+      message: "Duplicate distractor",
+    });
+    valid(doc([{ type: "blank", text: "Hits go to [[Bronze]].", bank: ["Gold", "Silver"] }]));
+  });
+
   it("rejects duplicate order items and duplicate match sides", () => {
     expect(issues(doc([{ type: "order", prompt: "Order", items: ["a", "A"] }]))[0].path).toBe(
       "units[0].lessons[0].steps[0].items[1]",
