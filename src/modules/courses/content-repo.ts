@@ -2,7 +2,7 @@
 // Interactive lessons (course_content), learner progress (course_progress),
 // exam results (course_exam_results, SHAN-721) and recall checks
 // (course_recall_results, SHAN-722).
-import { and, eq, inArray, isNull, lte, sql } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, isNull, lte, sql } from "drizzle-orm";
 import { db } from "@/db/client";
 import { courseContent, courseExamResults, courseProgress, courseRecallResults } from "@/db/schema";
 import type { ContentStats, CourseContent } from "./content-schema";
@@ -143,9 +143,18 @@ export async function resetProgress(userId: string, courseId: string): Promise<v
         lte(courseExamResults.updatedAt, new Date(Date.now() - EXAM_RESIT_GAP_MS)),
       ),
     );
+  // SHAN-727: and a recall check not yet passed stays. Its attempts seed the
+  // next draw, so clearing it would serve the first sitting's cards again,
+  // already marked right or wrong.
   await db
     .delete(courseRecallResults)
-    .where(and(eq(courseRecallResults.userId, userId), eq(courseRecallResults.courseId, courseId)));
+    .where(
+      and(
+        eq(courseRecallResults.userId, userId),
+        eq(courseRecallResults.courseId, courseId),
+        isNotNull(courseRecallResults.passedAt),
+      ),
+    );
 }
 
 export interface ExamResultRow {
