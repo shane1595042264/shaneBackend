@@ -28,6 +28,20 @@ export function normalizeAnswer(s: string): string {
     .trim();
 }
 
+/**
+ * SHAN-726: a sitting closes the exam for a day. A result says which steps
+ * were wrong, so with resits on demand a learner keeps the right answers,
+ * changes the wrong ones and passes without knowing anything: a 4-option
+ * exam falls in four sittings. A day per sitting makes that four days of
+ * waiting, longer than learning it, as the recall check already does.
+ */
+export const EXAM_RESIT_GAP_MS = 24 * 60 * 60 * 1000;
+
+/** When the next sitting opens, a day after the last one was recorded. */
+export function examResitAt(lastSitting: Date): Date {
+  return new Date(lastSitting.getTime() + EXAM_RESIT_GAP_MS);
+}
+
 /** A random number generator that returns the same sequence for the same seed. */
 export function seededRandom(seed: string): () => number {
   let h = 2166136261;

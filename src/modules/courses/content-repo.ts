@@ -2,10 +2,12 @@
 // Interactive lessons (course_content), learner progress (course_progress),
 // exam results (course_exam_results, SHAN-721) and recall checks
 // (course_recall_results, SHAN-722).
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, lte, sql } from "drizzle-orm";
 import { db } from "@/db/client";
 import { courseContent, courseExamResults, courseProgress, courseRecallResults } from "@/db/schema";
 import type { ContentStats, CourseContent } from "./content-schema";
+import { EXAM_RESIT_GAP_MS } from "./exam";
+import { RECALL_GAP_MS } from "./recall";
 
 export interface ContentRow {
   content: CourseContent;
@@ -130,9 +132,17 @@ export async function resetProgress(userId: string, courseId: string): Promise<v
   await db
     .delete(courseProgress)
     .where(and(eq(courseProgress.userId, userId), eq(courseProgress.courseId, courseId)));
+  // SHAN-726: a sitting from the last day stays, so clearing progress cannot
+  // skip the wait before an exam's next sitting.
   await db
     .delete(courseExamResults)
-    .where(and(eq(courseExamResults.userId, userId), eq(courseExamResults.courseId, courseId)));
+    .where(
+      and(
+        eq(courseExamResults.userId, userId),
+        eq(courseExamResults.courseId, courseId),
+        lte(courseExamResults.updatedAt, new Date(Date.now() - EXAM_RESIT_GAP_MS)),
+      ),
+    );
   await db
     .delete(courseRecallResults)
     .where(and(eq(courseRecallResults.userId, userId), eq(courseRecallResults.courseId, courseId)));
@@ -164,6 +174,11 @@ export async function listExamResults(userId: string, courseId: string): Promise
 /**
  * Record one graded sitting. The best score is kept, and passed_at is set by
  * the first sitting that passed and never cleared by a worse one after it.
+ *
+ * SHAN-726: with `wait`, the sitting is recorded only if the last one is a
+ * day old, in the same statement, and null comes back otherwise. Checking
+ * first and writing after would let a burst of parallel sittings through,
+ * each one telling the learner which answers were wrong.
  */
 export async function recordExamResult(
   userId: string,
@@ -171,11 +186,20 @@ export async function recordExamResult(
   lessonId: string,
   score: number,
   passed: boolean,
-): Promise<ExamResultRow> {
+  wait = true,
+): Promise<ExamResultRow | null> {
   const now = new Date();
   const [row] = await db
     .insert(courseExamResults)
-    .values({ userId, courseId, lessonId, bestScore: score, lastScore: score, passedAt: passed ? now : null })
+    .values({
+      userId,
+      courseId,
+      lessonId,
+      bestScore: score,
+      lastScore: score,
+      passedAt: passed ? now : null,
+      updatedAt: now,
+    })
     .onConflictDoUpdate({
       target: [courseExamResults.userId, courseExamResults.courseId, courseExamResults.lessonId],
       set: {
@@ -185,6 +209,9 @@ export async function recordExamResult(
         passedAt: sql`coalesce(${courseExamResults.passedAt}, excluded.passed_at)`,
         updatedAt: now,
       },
+      ...(wait
+        ? { setWhere: lte(courseExamResults.updatedAt, new Date(now.getTime() - EXAM_RESIT_GAP_MS)) }
+        : {}),
     })
     .returning({
       lessonId: courseExamResults.lessonId,
@@ -194,7 +221,7 @@ export async function recordExamResult(
       passedAt: courseExamResults.passedAt,
       updatedAt: courseExamResults.updatedAt,
     });
-  return row;
+  return row ?? null;
 }
 
 export interface RecallResultRow {
@@ -222,17 +249,21 @@ export async function getRecallResult(userId: string, courseId: string): Promise
   return row ?? null;
 }
 
-/** Record one graded recall sitting; same keep-the-best rules as an exam. */
+/**
+ * Record one graded recall sitting; same keep-the-best rules as an exam, and
+ * (SHAN-726) the same guard in the statement: a sitting lands only on a check
+ * not yet passed whose last sitting is a day old, else null.
+ */
 export async function recordRecallResult(
   userId: string,
   courseId: string,
   score: number,
   passed: boolean,
-): Promise<RecallResultRow> {
+): Promise<RecallResultRow | null> {
   const now = new Date();
   const [row] = await db
     .insert(courseRecallResults)
-    .values({ userId, courseId, bestScore: score, lastScore: score, passedAt: passed ? now : null })
+    .values({ userId, courseId, bestScore: score, lastScore: score, passedAt: passed ? now : null, updatedAt: now })
     .onConflictDoUpdate({
       target: [courseRecallResults.userId, courseRecallResults.courseId],
       set: {
@@ -242,7 +273,11 @@ export async function recordRecallResult(
         passedAt: sql`coalesce(${courseRecallResults.passedAt}, excluded.passed_at)`,
         updatedAt: now,
       },
+      setWhere: and(
+        isNull(courseRecallResults.passedAt),
+        lte(courseRecallResults.updatedAt, new Date(now.getTime() - RECALL_GAP_MS)),
+      ),
     })
     .returning(recallColumns);
-  return row;
+  return row ?? null;
 }

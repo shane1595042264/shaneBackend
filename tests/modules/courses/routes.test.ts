@@ -1567,7 +1567,7 @@ describe("POST /api/courses/:id/exams/:lessonId", () => {
       { index: 1, correct: false, feedback: "Not quite." },
     ]);
     expect(JSON.stringify(body)).not.toContain("Atomicity");
-    expect(m.recordExamResult).toHaveBeenCalledWith("learner", courseRow.id, "final", 50, false);
+    expect(m.recordExamResult).toHaveBeenCalledWith("learner", courseRow.id, "final", 50, false, true);
   });
 
   it("passes at the pass mark", async () => {
@@ -1577,7 +1577,7 @@ describe("POST /api/courses/:id/exams/:lessonId", () => {
     m.recordExamResult.mockResolvedValue(examRow(100, true));
     const res = await req(url("final"), "POST", { answers: [[0], "Atomicity, consistency, isolation, durability"] }, "learner");
     expect((await res.json()).passed).toBe(true);
-    expect(m.recordExamResult).toHaveBeenCalledWith("learner", courseRow.id, "final", 100, true);
+    expect(m.recordExamResult).toHaveBeenCalledWith("learner", courseRow.id, "final", 100, true, true);
   });
 
   it("404s a lesson that is not an exam", async () => {
@@ -1612,6 +1612,69 @@ describe("POST /api/courses/:id/exams/:lessonId", () => {
     const res = await req(`/api/courses/${courseRow.id}/progress`, "GET", undefined, "learner");
     const body = await res.json();
     expect(body.exams[0]).toMatchObject({ lessonId: "final", bestScore: 90 });
+  });
+});
+
+describe("a day between exam sittings (SHAN-726)", () => {
+  const url = `/api/courses/${courseRow.id}/exams/final`;
+  const DAY = 24 * 60 * 60 * 1000;
+  const ago = (ms: number) => new Date(Date.now() - ms);
+
+  it("refuses a resit within a day of the last sitting, before grading anything", async () => {
+    m.getCourseById.mockResolvedValue(courseRow);
+    m.getContent.mockResolvedValue(rigorous);
+    const sat = ago(60 * 1000);
+    m.listExamResults.mockResolvedValue([{ ...examRow(50, false), updatedAt: sat }]);
+    const res = await req(url, "POST", { answers: [[0], "atoms"] }, "learner");
+    expect(res.status).toBe(409);
+    expect(new Date((await res.json()).resitAt).getTime()).toBe(sat.getTime() + DAY);
+    expect(m.judgeRecital).not.toHaveBeenCalled();
+    expect(m.recordExamResult).not.toHaveBeenCalled();
+  });
+
+  it("takes a resit a day later", async () => {
+    m.getCourseById.mockResolvedValue(courseRow);
+    m.getContent.mockResolvedValue(rigorous);
+    m.listExamResults.mockResolvedValue([{ ...examRow(50, false), updatedAt: ago(DAY + 1000) }]);
+    m.judgeRecital.mockResolvedValue({ correct: true, score: 100, feedback: "Yes.", judge: "match" });
+    m.recordExamResult.mockResolvedValue({ ...examRow(100, true), updatedAt: new Date() });
+    const res = await req(url, "POST", { answers: [[0], "ACID"] }, "learner");
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(new Date(body.result.resitAt).getTime()).toBeGreaterThan(Date.now() + DAY - 60 * 1000);
+  });
+
+  it("refuses a sitting that lost the race to a parallel one, without its grade", async () => {
+    m.getCourseById.mockResolvedValue(courseRow);
+    m.getContent.mockResolvedValue(rigorous);
+    m.judgeRecital.mockResolvedValue({ correct: false, score: 10, feedback: "Not quite.", judge: "ai" });
+    m.recordExamResult.mockResolvedValue(null);
+    const res = await req(url, "POST", { answers: [[0], "atoms"] }, "learner");
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.steps).toBeUndefined();
+    expect(body.score).toBeUndefined();
+  });
+
+  it("lets the course's author sit it again at once", async () => {
+    m.getCourseById.mockResolvedValue(courseRow);
+    m.getContent.mockResolvedValue(rigorous);
+    m.listExamResults.mockResolvedValue([{ ...examRow(50, false), updatedAt: ago(60 * 1000) }]);
+    m.judgeRecital.mockResolvedValue({ correct: true, score: 100, feedback: "Yes.", judge: "match" });
+    m.recordExamResult.mockResolvedValue(examRow(100, true));
+    const res = await req(url, "POST", { answers: [[0], "ACID"] }, "u1");
+    expect(res.status).toBe(200);
+    expect((await res.json()).result.resitAt).toBeNull();
+    expect(m.recordExamResult).toHaveBeenCalledWith("u1", courseRow.id, "final", 100, true, false);
+  });
+
+  it("says when the next sitting opens beside the results", async () => {
+    m.getCourseById.mockResolvedValue(courseRow);
+    m.listProgress.mockResolvedValue([]);
+    const sat = ago(60 * 60 * 1000);
+    m.listExamResults.mockResolvedValue([{ ...examRow(60, false), updatedAt: sat }]);
+    const body = await (await req(`/api/courses/${courseRow.id}/progress`, "GET", undefined, "learner")).json();
+    expect(new Date(body.exams[0].resitAt).getTime()).toBe(sat.getTime() + DAY);
   });
 });
 
@@ -1801,6 +1864,18 @@ describe("recall check (SHAN-722)", () => {
     const res = await req(url, "POST", { draw: draw.id, answers: ["x", "x", "x"] }, "learner");
     expect(res.status).toBe(503);
     expect(m.recordRecallResult).not.toHaveBeenCalled();
+  });
+
+  it("refuses a sitting that lost the race to a parallel one, without its grade (SHAN-726)", async () => {
+    m.getCourseById.mockResolvedValue(certified);
+    m.getContent.mockResolvedValue(rigorous);
+    finished(ago(2 * DAY));
+    const draw = (await (await req(url, "GET", undefined, "learner")).json()).recall.draw;
+    m.judgeRecital.mockResolvedValue({ correct: false, score: 10, feedback: "Not quite.", judge: "ai" });
+    m.recordRecallResult.mockResolvedValue(null);
+    const res = await req(url, "POST", { draw: draw.id, answers: ["x", "x", "x"] }, "learner");
+    expect(res.status).toBe(409);
+    expect((await res.json()).steps).toBeUndefined();
   });
 
   it("says passed, and takes no more sittings, once passed", async () => {

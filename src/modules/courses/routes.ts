@@ -74,7 +74,7 @@ import {
   type ExamResultRow,
   type RecallResultRow,
 } from "./content-repo";
-import { gradeExam, withoutExamAnswers } from "./exam";
+import { examResitAt, gradeExam, withoutExamAnswers } from "./exam";
 import {
   RECALL_PASS_MARK,
   drawRecall,
@@ -766,7 +766,11 @@ coursesRoutes.get(
       return c.json({ error: "Not found" }, 404);
     }
     const [rows, exams] = await Promise.all([listProgress(userId, id), listExamResults(userId, id)]);
-    return c.json({ progress: rows.map(serializeProgress), exams: exams.map(serializeExamResult) });
+    const author = course.userId === userId;
+    return c.json({
+      progress: rows.map(serializeProgress),
+      exams: exams.map((e) => serializeExamResult(e, author)),
+    });
   },
 );
 
@@ -800,7 +804,9 @@ coursesRoutes.put(
 
 // ---- Recite steps and exams (SHAN-721) ------------------------------------
 
-function serializeExamResult(r: ExamResultRow) {
+// `author`: the course's author holds the answers, so a wait protects nothing
+// and only gets in the way of trying the exam out.
+function serializeExamResult(r: ExamResultRow, author: boolean) {
   return {
     lessonId: r.lessonId,
     bestScore: r.bestScore,
@@ -808,6 +814,8 @@ function serializeExamResult(r: ExamResultRow) {
     attempts: r.attempts,
     passedAt: r.passedAt,
     updatedAt: r.updatedAt,
+    // SHAN-726: when the next sitting opens; in the past once it has.
+    resitAt: author ? null : examResitAt(r.updatedAt),
   };
 }
 
@@ -854,8 +862,8 @@ coursesRoutes.post(
 );
 
 // Submit an exam: every answer at once, graded here, recorded apart from
-// practice progress. Says which steps were wrong, never what was right, so a
-// resit is still a test.
+// practice progress. Says which steps were wrong, never what was right, and
+// (SHAN-726) the next sitting waits a day, so a resit is still a test.
 coursesRoutes.post(
   "/:id/exams/:lessonId",
   requireAuth,
@@ -876,6 +884,14 @@ coursesRoutes.post(
     if (!lesson?.exam) {
       return c.json({ error: "No such exam in this course" }, 404);
     }
+    const author = course.userId === userId;
+    if (!author) {
+      const last = (await listExamResults(userId, id)).find((e) => e.lessonId === lessonId);
+      const resitAt = last ? examResitAt(last.updatedAt) : null;
+      if (resitAt && resitAt.getTime() > Date.now()) {
+        return c.json({ error: "You can sit this exam again a day after your last sitting", resitAt }, 409);
+      }
+    }
     let grade;
     try {
       grade = await gradeExam(lesson, answers, judgeRecital);
@@ -885,7 +901,18 @@ coursesRoutes.post(
     }
     const passMark = lesson.exam.passMark;
     const passed = grade.score >= passMark;
-    const saved = await recordExamResult(userId, id, lessonId, grade.score, passed);
+    const saved = await recordExamResult(userId, id, lessonId, grade.score, passed, !author);
+    if (!saved) {
+      // Another sitting landed while this one was being graded.
+      const other = (await listExamResults(userId, id)).find((e) => e.lessonId === lessonId);
+      return c.json(
+        {
+          error: "You can sit this exam again a day after your last sitting",
+          resitAt: other ? examResitAt(other.updatedAt) : null,
+        },
+        409,
+      );
+    }
     return c.json({
       score: grade.score,
       right: grade.right,
@@ -893,7 +920,7 @@ coursesRoutes.post(
       passMark,
       passed,
       steps: grade.steps,
-      result: serializeExamResult(saved),
+      result: serializeExamResult(saved, author),
     });
   },
 );
@@ -1277,6 +1304,10 @@ coursesRoutes.post(
     }
     const passed = grade.score >= RECALL_PASS_MARK;
     const saved = await recordRecallResult(userId, id, grade.score, passed);
+    if (!saved) {
+      // SHAN-726: another sitting landed while this one was being graded.
+      return c.json({ error: "These questions are out of date. Reload the recall check and try again." }, 409);
+    }
     return c.json({
       score: grade.score,
       right: grade.right,
