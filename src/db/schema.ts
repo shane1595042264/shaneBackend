@@ -1329,7 +1329,7 @@ export const courseCertificates = pgTable(
       .references(() => courses.id, { onDelete: "cascade" }),
     recipientName: varchar("recipient_name", { length: 120 }).notNull(),
     courseTitle: varchar("course_title", { length: 200 }).notNull(),
-    // Mean of the best first-try scores across the course's lessons, 0-100.
+    // Mean of the server-graded best scores (each exam, the recall check), 0-100.
     score: integer("score").notNull(),
     lessonCount: integer("lesson_count").notNull(),
     issuedAt: timestamp("issued_at", { withTimezone: true }).notNull().defaultNow(),

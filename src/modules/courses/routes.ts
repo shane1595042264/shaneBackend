@@ -1173,13 +1173,16 @@ coursesRoutes.post(
     if (!recipientName) {
       return c.json({ error: "Send the `name` to put on the certificate" }, 400);
     }
-    const total = lessonIds.reduce((sum, l) => sum + (best.get(l) ?? 0), 0);
+    // SHAN-729: the score counts only sittings the server graded, each exam's
+    // best and the recall check's best. A practice score is whatever the
+    // browser sent, so averaging it in let a learner print 100% by PUTting it.
+    const graded = [...lessons.filter((l) => l.exam).map((l) => best.get(l.id) ?? 0), recall.bestScore];
     const { row, created } = await issueCertificate({
       userId,
       courseId: id,
       recipientName,
       courseTitle: course.title,
-      score: Math.round(total / lessonIds.length),
+      score: Math.round(graded.reduce((sum, s) => sum + s, 0) / graded.length),
       lessonCount: lessonIds.length,
     });
     return c.json({ certificate: serializeCertificate(row, course) }, created ? 201 : 200);

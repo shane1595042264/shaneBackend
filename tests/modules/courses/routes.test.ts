@@ -1723,18 +1723,33 @@ describe("certificates need the exam (SHAN-721)", () => {
     expect(res.status).toBe(409);
   });
 
-  it("issues once the exam is passed, averaging the exam's best score in", async () => {
+  it("issues once the exam is passed, scoring the exam and the recall check", async () => {
     m.getCourseById.mockResolvedValue(certified);
     m.getCertificateFor.mockResolvedValue(null);
     m.getContent.mockResolvedValue(rigorous);
     m.listProgress.mockResolvedValue(practiceDone);
     m.listExamResults.mockResolvedValue([examRow(90, true)]);
     m.accountName.mockResolvedValue("Ada Lovelace");
-    m.getRecallResult.mockResolvedValue(recallPassed);
-    m.issueCertificate.mockResolvedValue({ row: { id: "c1", code: "7K3M9QX2ABCD", userId: "learner", courseId: courseRow.id, recipientName: "Ada Lovelace", courseTitle: "T", score: 95, lessonCount: 2, issuedAt: new Date() }, created: true });
+    m.getRecallResult.mockResolvedValue({ ...recallPassed, bestScore: 81 });
+    m.issueCertificate.mockResolvedValue({ row: { id: "c1", code: "7K3M9QX2ABCD", userId: "learner", courseId: courseRow.id, recipientName: "Ada Lovelace", courseTitle: "T", score: 86, lessonCount: 2, issuedAt: new Date() }, created: true });
     const res = await req(`/api/courses/${courseRow.id}/certificate`, "POST", {}, "learner");
     expect(res.status).toBe(201);
-    expect(m.issueCertificate.mock.calls[0][0]).toMatchObject({ score: 95, lessonCount: 2 });
+    expect(m.issueCertificate.mock.calls[0][0]).toMatchObject({ score: 86, lessonCount: 2 });
+  });
+
+  it("leaves a self-reported practice score out of the certificate's score (SHAN-729)", async () => {
+    m.getCourseById.mockResolvedValue(certified);
+    m.getCertificateFor.mockResolvedValue(null);
+    m.getContent.mockResolvedValue(rigorous);
+    m.listExamResults.mockResolvedValue([examRow(80, true)]);
+    m.accountName.mockResolvedValue("Ada Lovelace");
+    m.getRecallResult.mockResolvedValue({ ...recallPassed, bestScore: 80 });
+    m.issueCertificate.mockResolvedValue({ row: { id: "c1", code: "7K3M9QX2ABCD", userId: "learner", courseId: courseRow.id, recipientName: "Ada Lovelace", courseTitle: "T", score: 80, lessonCount: 2, issuedAt: new Date() }, created: true });
+    m.listProgress.mockResolvedValue(practiceDone);
+    await req(`/api/courses/${courseRow.id}/certificate`, "POST", {}, "learner");
+    m.listProgress.mockResolvedValue([{ lessonId: "ten-stops", bestScore: 0 }]);
+    await req(`/api/courses/${courseRow.id}/certificate`, "POST", {}, "learner");
+    expect(m.issueCertificate.mock.calls.map((call) => call[0].score)).toEqual([80, 80]);
   });
 });
 
