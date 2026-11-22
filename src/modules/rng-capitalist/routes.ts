@@ -9,7 +9,7 @@ import { classifyProduct } from "./classifier";
 import { generateText } from "@/modules/shared/llm";
 import { calculateThreshold, rollD20, determineVerdict } from "./engine";
 import { createLinkToken, exchangePublicToken, getCurrentBalance, getLastMonthSpend, isPlaidConfigured } from "./plaid";
-import { requireAuth, requireBrowserSession } from "@/modules/auth/middleware";
+import { requireAuth, requireBrowserSession, requireScope } from "@/modules/auth/middleware";
 import { createPATRateLimit } from "@/modules/shared/rate-limit";
 import { trimmedOptional } from "@/modules/shared/validators";
 import { httpUrlSchema } from "@/modules/shared/outbound-url";
@@ -20,6 +20,13 @@ export const rngRoutes = new Hono<AuthEnv>();
 
 // All RNG routes require authentication
 rngRoutes.use("*", requireAuth);
+
+// SHAN-732: a PAT needs entries:write for everything else here. /budget hands
+// back the live bank balance and /history every past price and balance, and a
+// denied evaluate bans a category for 30 days, so requireAuth alone let a
+// reactions-only token read the owner's finances and write their ledger. Same
+// scope tea entries (SHAN-605) and skincare (SHAN-694) take. JWTs bypass.
+const rngScope = requireScope("entries:write");
 
 // Per-PAT rate limits. JWTs (browser sessions) bypass — tokenId is null.
 // evaluate fires the LLM (classifyProduct on URL scrape OR generateText on
@@ -63,7 +70,7 @@ export const evaluateSchema = z.object({
   message: "Provide either a URL or product_name + price",
 });
 
-rngRoutes.post("/evaluate", evaluateRateLimit, zValidator("json", evaluateSchema), async (c) => {
+rngRoutes.post("/evaluate", rngScope, evaluateRateLimit, zValidator("json", evaluateSchema), async (c) => {
   const body = c.req.valid("json");
   const userId = c.get("userId");
 
@@ -165,7 +172,7 @@ is_entertainment: true if entertainment/luxury/want, false if necessity`,
   });
 });
 
-rngRoutes.get("/budget", plaidRateLimit, async (c) => {
+rngRoutes.get("/budget", rngScope, plaidRateLimit, async (c) => {
   const userId = c.get("userId");
   const balance = await getCurrentBalance(userId);
   const lastMonthSpend = await getLastMonthSpend(userId);
@@ -187,7 +194,7 @@ export const historyQuerySchema = z.object({
   cursor: keysetCursorParam.optional(),
 });
 
-rngRoutes.get("/history", zValidator("query", historyQuerySchema), async (c) => {
+rngRoutes.get("/history", rngScope, zValidator("query", historyQuerySchema), async (c) => {
   const userId = c.get("userId");
   const { limit, cursor } = c.req.valid("query");
   const conditions = [eq(rngDecisions.userId, userId)];
@@ -215,7 +222,7 @@ rngRoutes.get("/history", zValidator("query", historyQuerySchema), async (c) => 
   return c.json({ decisions, nextCursor });
 });
 
-rngRoutes.get("/bans", async (c) => {
+rngRoutes.get("/bans", rngScope, async (c) => {
   const userId = c.get("userId");
   const bans = await db.select().from(rngBanList).where(and(gt(rngBanList.expiresAt, new Date()), eq(rngBanList.userId, userId))).orderBy(desc(rngBanList.expiresAt));
   return c.json({ bans });
