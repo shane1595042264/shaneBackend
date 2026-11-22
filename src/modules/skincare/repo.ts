@@ -65,7 +65,10 @@ export async function createSkincareProduct(input: {
 // Owner-scoped partial update. Only the fields present in the patch are
 // written. Moving a product to the other routine (timeOfDay change) drops
 // it at the end of the target routine so it can't clash with an existing
-// position. Returns null when no row matched (missing OR not the owner —
+// position. A timeOfDay equal to the product's current routine is not a move
+// (SHAN-731): the CASE keeps its position, where appending unconditionally
+// sent a renamed step 1 to the bottom whenever a client echoed timeOfDay
+// back. Returns null when no row matched (missing OR not the owner —
 // collapsed to a 404 in the route so existence isn't leaked).
 export async function updateSkincareProduct(
   id: string,
@@ -83,12 +86,15 @@ export async function updateSkincareProduct(
   if (patch.imageUrl !== undefined) set.imageUrl = patch.imageUrl;
   if (patch.timeOfDay !== undefined) {
     set.timeOfDay = patch.timeOfDay;
-    set.position = sql`(
-      select coalesce(max(${skincareProducts.position}), -1) + 1
-      from ${skincareProducts}
-      where ${skincareProducts.userId} = ${userId}
-        and ${skincareProducts.timeOfDay} = ${patch.timeOfDay}
-    )`;
+    set.position = sql`case
+      when ${skincareProducts.timeOfDay} = ${patch.timeOfDay} then ${skincareProducts.position}
+      else (
+        select coalesce(max(${skincareProducts.position}), -1) + 1
+        from ${skincareProducts}
+        where ${skincareProducts.userId} = ${userId}
+          and ${skincareProducts.timeOfDay} = ${patch.timeOfDay}
+      )
+    end`;
   }
 
   const [row] = await db

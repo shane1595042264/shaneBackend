@@ -57,6 +57,7 @@ import {
   SkincareReorderMismatchError,
   updateSkincareProduct,
 } from "@/modules/skincare/repo";
+import { skincareProducts } from "@/db/schema";
 
 beforeEach(() => vi.clearAllMocks());
 
@@ -147,6 +148,22 @@ describe("updateSkincareProduct", () => {
     const setArg = ch.set.mock.calls[0][0] as Record<string, unknown>;
     expect(setArg).toHaveProperty("timeOfDay", "night");
     expect((setArg.position as { kind?: string })?.kind).toBe("sql");
+  });
+
+  // SHAN-731: echoing the current routine back must not send the product to
+  // the end, so the position is a CASE that keeps it when the routine matches.
+  it("keeps the position when timeOfDay names the product's current routine", async () => {
+    const ch = updateChain([{ id: "p1", userId: "u1", timeOfDay: "morning" }]);
+    mockUpdate.mockReturnValue(ch);
+    await updateSkincareProduct("p1", "u1", { timeOfDay: "morning", name: "Renamed" });
+    const setArg = ch.set.mock.calls[0][0] as Record<string, unknown>;
+    const position = setArg.position as { strings: TemplateStringsArray; values: unknown[] };
+    const text = position.strings.join("?").replace(/\s+/g, " ");
+    expect(text).toMatch(/^case when \? = \? then \? else \(/);
+    expect(text).toMatch(/\) end$/);
+    expect(position.values[0]).toBe(skincareProducts.timeOfDay);
+    expect(position.values[1]).toBe("morning");
+    expect(position.values[2]).toBe(skincareProducts.position);
   });
 
   it("returns null when no row matched (missing or not owner)", async () => {
