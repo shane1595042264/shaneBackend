@@ -382,6 +382,77 @@ describe("POST /api/loans", () => {
   });
 });
 
+// SHAN-730: a zero-decimal currency's amount is shown rounded to whole units,
+// so a fraction on one would be stored as typed and displayed as something else.
+describe("amount vs the currency's minor unit (SHAN-730)", () => {
+  async function post(amount: string | number, currency?: string) {
+    insertReturning([makeRow({ amount: String(amount), currency: currency ?? "USD" })]);
+    return app.request("/api/loans", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Test-User": USER_A },
+      body: JSON.stringify({ borrowerName: "Bob", amount, currency }),
+    });
+  }
+
+  async function patch(row: Record<string, unknown>, body: Record<string, unknown>) {
+    selectReturning([makeRow(row)]);
+    updateReturning([makeRow({ ...row, ...body })]);
+    return app.request(`/api/loans/${ENTRY_ID}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", "X-Test-User": USER_A },
+      body: JSON.stringify(body),
+    });
+  }
+
+  it("rejects cents on a JPY loan, naming the field", async () => {
+    const res = await post("1000.50", "JPY");
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.details).toEqual([{ path: "amount", message: "JPY has no minor unit, so the amount must be a whole number" }]);
+    expect(mockInsert).not.toHaveBeenCalled();
+  });
+
+  it("rejects a fractional number amount on a lowercase krw loan", async () => {
+    expect((await post(0.5, "krw")).status).toBe(400);
+  });
+
+  it("accepts a whole JPY amount, with or without trailing zeros", async () => {
+    expect((await post("1000", "JPY")).status).toBe(201);
+    expect((await post("1000.00", "JPY")).status).toBe(201);
+  });
+
+  it("still accepts cents on a two-decimal currency, the default included", async () => {
+    expect((await post("10.55")).status).toBe(201);
+    expect((await post("10.55", "EUR")).status).toBe(201);
+  });
+
+  it("caps a three-decimal currency at the two decimals the ledger keeps", async () => {
+    expect((await post("1.25", "BHD")).status).toBe(201);
+    expect((await post("1.255", "BHD")).status).toBe(400);
+  });
+
+  it("rejects moving a loan with cents to JPY without touching the amount", async () => {
+    const res = await patch({ amount: "10.50", currency: "USD" }, { currency: "JPY" });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toBe("JPY has no minor unit, so the amount must be a whole number");
+    expect(mockUpdate).not.toHaveBeenCalled();
+  });
+
+  it("rejects putting cents on an existing JPY loan", async () => {
+    const res = await patch({ amount: "1000", currency: "JPY" }, { amount: "1000.5" });
+    expect(res.status).toBe(400);
+    expect(mockUpdate).not.toHaveBeenCalled();
+  });
+
+  it("allows a JPY move when the amount becomes whole in the same patch", async () => {
+    expect((await patch({ amount: "10.50", currency: "USD" }, { amount: "1500", currency: "JPY" })).status).toBe(200);
+  });
+
+  it("does not re-check the amount when neither it nor the currency changes", async () => {
+    expect((await patch({ amount: "10.50", currency: "JPY" }, { status: "repaid" })).status).toBe(200);
+  });
+});
+
 describe("PATCH /api/loans/:id — ownership + status", () => {
   it("returns 401 without auth", async () => {
     const res = await app.request(`/api/loans/${ENTRY_ID}`, {

@@ -47,6 +47,30 @@ const currencySchema = z
   .regex(/^[A-Za-z]{3}$/, "currency must be a 3-letter ISO 4217 code")
   .transform((s) => s.toUpperCase());
 
+// JPY, KRW, ISK and the other zero-decimal currencies have no minor unit, and
+// the who-owes page formats with Intl, which rounds them to whole units: a JPY
+// 1000.50 loan was stored as typed and shown as ¥1,001 (SHAN-730). So the
+// fraction an amount may carry comes from the currency, capped at the 2 the
+// ledger keeps. Trailing zeros ("1000.00") change nothing and stay allowed.
+function currencyDecimals(currency: string): number {
+  try {
+    const digits = new Intl.NumberFormat("en-US", { style: "currency", currency }).resolvedOptions()
+      .maximumFractionDigits;
+    return Math.min(2, digits ?? 2);
+  } catch {
+    return 2;
+  }
+}
+
+function amountFitsCurrency(amount: string, currency: string): boolean {
+  const fraction = (amount.split(".")[1] ?? "").replace(/0+$/, "");
+  return fraction.length <= currencyDecimals(currency);
+}
+
+function minorUnitMessage(currency: string): string {
+  return `${currency} has no minor unit, so the amount must be a whole number`;
+}
+
 // borrowerName is the person's identity rendered in the who-owes ledger
 // (SHAN-422), so a whitespace-only value must not slip through as a blank row.
 // .trim() BEFORE .min(1) rejects "   " up front AND strips incidental padding
@@ -59,6 +83,11 @@ const createSchema = z.object({
   currency: currencySchema.optional(),
   description: z.string().trim().max(2000).optional().nullable(),
   direction: directionSchema.optional(),
+}).superRefine((d, ctx) => {
+  const currency = d.currency ?? "USD";
+  if (!amountFitsCurrency(d.amount, currency)) {
+    ctx.addIssue({ code: "custom", path: ["amount"], message: minorUnitMessage(currency) });
+  }
 });
 
 // Opt-in keyset pagination for the list endpoint. Both optional, so a bare
@@ -160,6 +189,15 @@ loansRoutes.patch(
     const [existing] = await db.select().from(loanEntries).where(eq(loanEntries.id, id));
     if (!existing) return c.json({ error: "Not found" }, 404);
     if (existing.userId !== userId) return c.json({ error: "Forbidden" }, 403);
+
+    // Checked against the row as it will be: moving a 10.50 USD loan to JPY
+    // breaks the rule as surely as typing 10.50 on a JPY one.
+    if (body.amount !== undefined || body.currency !== undefined) {
+      const currency = body.currency ?? existing.currency;
+      if (!amountFitsCurrency(body.amount ?? existing.amount, currency)) {
+        return c.json({ error: minorUnitMessage(currency) }, 400);
+      }
+    }
 
     const now = new Date();
     const patch: PgUpdateSetSource<typeof loanEntries> = { updatedAt: now };
