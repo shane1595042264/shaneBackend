@@ -11,7 +11,6 @@ const m = vi.hoisted(() => ({
   createPlayer: vi.fn(),
   updatePlayer: vi.fn(),
   deletePlayer: vi.fn(),
-  playerHasMatches: vi.fn(),
   playerIdsExist: vi.fn(),
   createMatch: vi.fn(),
   getMatch: vi.fn(),
@@ -42,7 +41,6 @@ vi.mock("@/modules/scoreboard/repo", async () => {
     createPlayer: m.createPlayer,
     updatePlayer: m.updatePlayer,
     deletePlayer: m.deletePlayer,
-    playerHasMatches: m.playerHasMatches,
     playerIdsExist: m.playerIdsExist,
     createMatch: m.createMatch,
     getMatch: m.getMatch,
@@ -275,14 +273,21 @@ describe("player writes", () => {
   });
 
   it("DELETE 409s when the player has matches", async () => {
-    m.playerHasMatches.mockResolvedValue(true);
+    m.deletePlayer.mockResolvedValue("has_matches");
     const res = await req(`/players/${P1}`, "DELETE", undefined, "u1");
     expect(res.status).toBe(409);
-    expect(m.deletePlayer).not.toHaveBeenCalled();
+    expect(m.deletePlayer).toHaveBeenCalledWith(P1, "u1");
+  });
+
+  // SHAN-734: a non-owner gets the plain 404, never the has-matches 409.
+  it("DELETE 404s for a player the caller does not own", async () => {
+    m.deletePlayer.mockResolvedValue(false);
+    const res = await req(`/players/${P1}`, "DELETE", undefined, "u2");
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: "Not found or not owner" });
   });
 
   it("DELETE 204s otherwise", async () => {
-    m.playerHasMatches.mockResolvedValue(false);
     m.deletePlayer.mockResolvedValue(true);
     const res = await req(`/players/${P1}`, "DELETE", undefined, "u1");
     expect(res.status).toBe(204);

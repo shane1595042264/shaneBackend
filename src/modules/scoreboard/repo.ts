@@ -192,21 +192,31 @@ export async function updatePlayer(
   return (row as ScoreboardPlayerRow | undefined) ?? null;
 }
 
-export async function playerHasMatches(playerId: string): Promise<boolean> {
-  const rows = await db
-    .select({ id: scoreboardMatchPlayers.id })
-    .from(scoreboardMatchPlayers)
-    .where(eq(scoreboardMatchPlayers.playerId, playerId))
-    .limit(1);
-  return rows.length > 0;
-}
-
-export async function deletePlayer(id: string, userId: string): Promise<boolean> {
-  const result = await db
-    .delete(scoreboardPlayers)
-    .where(and(eq(scoreboardPlayers.id, id), eq(scoreboardPlayers.userId, userId)))
-    .returning({ id: scoreboardPlayers.id });
-  return result.length > 0;
+// SHAN-734: ownership first, so a non-owner gets the same 404 as every other
+// scoreboard write instead of learning the player has history. The owner's row
+// is locked FOR UPDATE for the check and the delete: a match insert's FK check
+// takes KEY SHARE on the same row, so a match created mid-delete waits rather
+// than having its roster row cascaded away.
+export async function deletePlayer(
+  id: string,
+  userId: string,
+): Promise<boolean | "has_matches"> {
+  return db.transaction(async (tx) => {
+    const [own] = await tx
+      .select({ id: scoreboardPlayers.id })
+      .from(scoreboardPlayers)
+      .where(and(eq(scoreboardPlayers.id, id), eq(scoreboardPlayers.userId, userId)))
+      .for("update");
+    if (!own) return false;
+    const played = await tx
+      .select({ id: scoreboardMatchPlayers.id })
+      .from(scoreboardMatchPlayers)
+      .where(eq(scoreboardMatchPlayers.playerId, id))
+      .limit(1);
+    if (played.length > 0) return "has_matches";
+    await tx.delete(scoreboardPlayers).where(eq(scoreboardPlayers.id, id));
+    return true;
+  });
 }
 
 export async function playerIdsExist(ids: string[]): Promise<boolean> {

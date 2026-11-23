@@ -21,7 +21,6 @@ import {
   updatePlayer,
   deletePlayer,
   listPlayers,
-  playerHasMatches,
   playerIdsExist,
   createMatch,
   getMatch,
@@ -352,11 +351,11 @@ scoreboardRoutes.delete(
   async (c) => {
     const userId = c.get("userId") as string;
     const { id } = c.req.valid("param");
-    if (await playerHasMatches(id)) {
+    const result = await deletePlayer(id, userId);
+    if (result === "has_matches") {
       return c.json({ error: "Player has recorded matches. Delete those first." }, 409);
     }
-    const ok = await deletePlayer(id, userId);
-    return ok ? c.body(null, 204) : c.json({ error: "Not found or not owner" }, 404);
+    return result ? c.body(null, 204) : c.json({ error: "Not found or not owner" }, 404);
   },
 );
 

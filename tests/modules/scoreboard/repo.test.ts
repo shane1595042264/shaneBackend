@@ -17,7 +17,7 @@ vi.mock("@/db/client", () => ({
     // (SHAN-564), createMatch inserts inside one (SHAN-579); the tx shares
     // the same select/update/insert mocks.
     transaction: (fn: (tx: unknown) => unknown) =>
-      fn({ select: mockSelect, update: mockUpdate, insert: mockInsert }),
+      fn({ select: mockSelect, update: mockUpdate, insert: mockInsert, delete: mockDelete }),
   },
 }));
 vi.mock("@/db/schema", () => ({
@@ -84,7 +84,7 @@ import {
   decideWinner,
   finishMatch,
   reopenMatch,
-  playerHasMatches,
+  deletePlayer,
   listMatches,
 } from "@/modules/scoreboard/repo";
 import { and, eq } from "drizzle-orm";
@@ -393,14 +393,30 @@ describe("reopenMatch", () => {
   });
 });
 
-describe("playerHasMatches", () => {
-  it("true when a match_players row exists", async () => {
-    mockSelect.mockReturnValue(chain([{ id: "mp1" }]));
-    expect(await playerHasMatches("p1")).toBe(true);
+describe("deletePlayer", () => {
+  // SHAN-734: ownership is checked first, under a row lock, so a non-owner
+  // never reaches the has-matches answer.
+  it("false without touching matches when the caller does not own the player", async () => {
+    const own = chain([]);
+    mockSelect.mockReturnValueOnce(own);
+    expect(await deletePlayer("p1", "u2")).toBe(false);
+    expect(own.for).toHaveBeenCalledWith("update");
+    expect(mockSelect).toHaveBeenCalledTimes(1);
+    expect(mockDelete).not.toHaveBeenCalled();
   });
-  it("false when none exists", async () => {
-    mockSelect.mockReturnValue(chain([]));
-    expect(await playerHasMatches("p1")).toBe(false);
+
+  it("has_matches and no delete when the player has played", async () => {
+    mockSelect.mockReturnValueOnce(chain([{ id: "p1" }])).mockReturnValueOnce(chain([{ id: "mp1" }]));
+    expect(await deletePlayer("p1", "u1")).toBe("has_matches");
+    expect(mockDelete).not.toHaveBeenCalled();
+  });
+
+  it("deletes an owned player with no matches", async () => {
+    mockSelect.mockReturnValueOnce(chain([{ id: "p1" }])).mockReturnValueOnce(chain([]));
+    const where = vi.fn(() => Promise.resolve());
+    mockDelete.mockReturnValue({ where });
+    expect(await deletePlayer("p1", "u1")).toBe(true);
+    expect(where).toHaveBeenCalledTimes(1);
   });
 });
 
