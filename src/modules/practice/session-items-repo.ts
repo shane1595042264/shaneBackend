@@ -1,6 +1,12 @@
 import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import { db } from "@/db/client";
-import { practiceSessionItems, practiceSessions, vocabWords, practicePrescriptions } from "@/db/schema";
+import {
+  practiceLocations,
+  practiceSessionItems,
+  practiceSessions,
+  vocabWords,
+  practicePrescriptions,
+} from "@/db/schema";
 import type { SessionItemRow } from "./strikes";
 
 export interface SessionItem {
@@ -84,11 +90,17 @@ export interface SyncInput {
   startedAt?: Date | null;
 }
 
+/**
+ * Returns null when the item is not the caller's, and "unknown_location" when
+ * `locationId` is not one of the caller's locations. A literal rather than a
+ * thrown class or an exported constant, so the route still works under the
+ * route tests' repo mock (see modules/shared/CLAUDE.md).
+ */
 export async function syncSessionItem(
   itemRowId: string,
   userId: string,
   patch: SyncInput,
-): Promise<SessionItem | null> {
+): Promise<SessionItem | "unknown_location" | null> {
   const [owned] = await db
     .select({ id: practiceSessionItems.id })
     .from(practiceSessionItems)
@@ -96,6 +108,19 @@ export async function syncSessionItem(
     .where(and(eq(practiceSessionItems.id, itemRowId), eq(practiceSessions.userId, userId)))
     .limit(1);
   if (!owned) return null;
+
+  // SHAN-735: the location must be the caller's own. An unknown id used to
+  // trip the FK and 500, and another user's id was accepted, which counted
+  // this user's strikes against it and let its owner's delete (ON DELETE SET
+  // NULL) wipe them. null still clears the location.
+  if (typeof patch.locationId === "string") {
+    const [location] = await db
+      .select({ id: practiceLocations.id })
+      .from(practiceLocations)
+      .where(and(eq(practiceLocations.id, patch.locationId), eq(practiceLocations.userId, userId)))
+      .limit(1);
+    if (!location) return "unknown_location";
+  }
 
   const set: Record<string, unknown> = {};
   if (patch.timerState !== undefined) set.timerState = patch.timerState;

@@ -1,11 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-const { mockSelect } = vi.hoisted(() => ({ mockSelect: vi.fn() }));
+const { mockSelect, mockUpdate } = vi.hoisted(() => ({ mockSelect: vi.fn(), mockUpdate: vi.fn() }));
 
-vi.mock("@/db/client", () => ({ db: { select: mockSelect } }));
+vi.mock("@/db/client", () => ({ db: { select: mockSelect, update: mockUpdate } }));
 vi.mock("@/db/schema", () => ({
   practiceSessionItems: { itemId: {}, sessionId: {}, locationId: {}, setsCompleted: {}, completedAt: {} },
   practiceSessions: { id: {}, userId: {} },
+  practiceLocations: { id: {}, userId: {} },
   vocabWords: { id: {}, word: {}, source: {} },
   practicePrescriptions: { itemId: {}, setMode: {}, setSize: {}, restSeconds: {} },
 }));
@@ -28,7 +29,7 @@ function chain(rows: unknown[]) {
   return c;
 }
 
-import { listItemRowsForProgressByItems } from "@/modules/practice/session-items-repo";
+import { listItemRowsForProgressByItems, syncSessionItem } from "@/modules/practice/session-items-repo";
 
 beforeEach(() => vi.clearAllMocks());
 
@@ -64,5 +65,50 @@ describe("listItemRowsForProgressByItems", () => {
     const map = await listItemRowsForProgressByItems("user-1", ["item-a"]);
     expect(mockSelect).toHaveBeenCalledTimes(1);
     expect(map.size).toBe(0);
+  });
+});
+
+describe("syncSessionItem locationId (SHAN-735)", () => {
+  function updateChain() {
+    const set = vi.fn(() => ({ where: vi.fn(() => Promise.resolve()) }));
+    mockUpdate.mockReturnValueOnce({ set });
+    return set;
+  }
+
+  it("rejects a location that is not the caller's, without writing", async () => {
+    mockSelect
+      .mockReturnValueOnce(chain([{ id: "si1" }])) // item ownership
+      .mockReturnValueOnce(chain([])); // location lookup: not this user's
+    const result = await syncSessionItem("si1", "user-1", { locationId: "loc-other", setsCompleted: 2 });
+    expect(result).toBe("unknown_location");
+    expect(mockUpdate).not.toHaveBeenCalled();
+  });
+
+  it("writes a location the caller owns", async () => {
+    mockSelect
+      .mockReturnValueOnce(chain([{ id: "si1" }]))
+      .mockReturnValueOnce(chain([{ id: "loc-1" }]))
+      .mockReturnValueOnce(chain([{ id: "si1", locationId: "loc-1", setsCompleted: 0 }]));
+    const set = updateChain();
+    const result = await syncSessionItem("si1", "user-1", { locationId: "loc-1" });
+    expect(set).toHaveBeenCalledWith({ locationId: "loc-1" });
+    expect(result).toMatchObject({ id: "si1", locationId: "loc-1" });
+  });
+
+  it("clears the location on null without a lookup", async () => {
+    mockSelect
+      .mockReturnValueOnce(chain([{ id: "si1" }]))
+      .mockReturnValueOnce(chain([{ id: "si1", locationId: null }]));
+    const set = updateChain();
+    await syncSessionItem("si1", "user-1", { locationId: null });
+    expect(mockSelect).toHaveBeenCalledTimes(2);
+    expect(set).toHaveBeenCalledWith({ locationId: null });
+  });
+
+  it("returns null for someone else's item before checking the location", async () => {
+    mockSelect.mockReturnValueOnce(chain([]));
+    const result = await syncSessionItem("si1", "user-2", { locationId: "loc-1" });
+    expect(result).toBeNull();
+    expect(mockSelect).toHaveBeenCalledTimes(1);
   });
 });

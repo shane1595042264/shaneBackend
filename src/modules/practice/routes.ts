@@ -336,6 +336,9 @@ practiceRoutes.post(
     if (patch.startedAt !== undefined && patch.startedAt !== null) patch.startedAt = new Date(patch.startedAt);
     const updated = await syncSessionItem(c.req.valid("param").id, userId, patch);
     if (!updated) return c.json({ error: "Not found" }, 404);
+    if (updated === "unknown_location") {
+      return c.json({ error: "locationId must be one of your practice locations" }, 400);
+    }
     return c.json({ sessionItem: updated });
   },
 );

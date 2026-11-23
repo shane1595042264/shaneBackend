@@ -158,6 +158,13 @@ describe("POST /session-items/:id/sync", () => {
     expect(res.status).toBe(200);
     expect(mocks.sessionItems.sync).toHaveBeenCalledWith(UUID, "u1", expect.objectContaining({ locationName: null }));
   });
+  // SHAN-735: a locationId that is not the caller's is a 400, not an FK 500.
+  it("400 when the locationId is not one of the caller's locations", async () => {
+    mocks.sessionItems.sync.mockResolvedValue("unknown_location");
+    const res = await app.request(`/api/practice/session-items/${UUID}/sync`, { method: "POST", headers: { "Content-Type": "application/json", "X-Test-User": "u1" }, body: JSON.stringify({ locationId: UUID }) });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toMatch(/locationId/);
+  });
 });
 
 describe("GET /items", () => {
