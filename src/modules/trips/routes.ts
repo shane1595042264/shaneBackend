@@ -1,4 +1,4 @@
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 import { zValidator } from "@/modules/shared/zod-validator";
 import { z } from "zod";
 import { createMiddleware } from "hono/factory";
@@ -41,6 +41,23 @@ const jsonPatchBody = z.object({
   title: jsonTitle,
   filename: z.string().min(1).max(255).optional(),
 });
+
+/**
+ * SHAN-733: an itinerary that is empty or only whitespace is a 400 on both
+ * body shapes and both verbs. The multipart path checked only the 10 MB
+ * ceiling, so a zero-byte file published a blank, untitled public trip on POST
+ * and erased the stored itinerary on PATCH; the JSON path's min(1) refused ""
+ * but let "   " through. The check is on the trimmed copy only; what gets
+ * stored is the html as sent. The message is shown verbatim on /trips/new.
+ */
+function isBlankHtml(html: string): boolean {
+  return html.trim() === "";
+}
+
+function blankHtmlRejection(c: Context) {
+  const message = "The itinerary is empty. Upload an .html file with something in it.";
+  return c.json({ error: message, details: [{ path: "html", message }] }, 400);
+}
 
 const slugParam = z.object({
   slug: z.string().regex(/^[a-z0-9][a-z0-9-]{0,79}$/),
@@ -156,6 +173,8 @@ tripsRoutes.post("/", optionalAuth, rejectDeadPat, requireScope("trips:write"), 
     sourceFilename = parsed.data.filename ?? null;
     force = parsed.data.force ?? false;
   }
+
+  if (isBlankHtml(html)) return blankHtmlRejection(c);
 
   const titleFromHtml = extractTitle(html);
   // A filename that cleans down to nothing (".html", "__.html") is no title, not
@@ -284,6 +303,8 @@ tripsRoutes.patch(
       providedTitle = parsed.data.title;
       if (parsed.data.filename !== undefined) sourceFilename = parsed.data.filename;
     }
+
+    if (html !== undefined && isBlankHtml(html)) return blankHtmlRejection(c);
 
     if (html === undefined && providedTitle === undefined && sourceFilename === undefined) {
       return c.json({ error: "Nothing to update — provide html, title, or filename" }, 400);

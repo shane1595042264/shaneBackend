@@ -739,3 +739,87 @@ describe("NUL bytes in multipart trip uploads (SHAN-602)", () => {
     });
   }
 });
+
+describe("blank itineraries (SHAN-733)", () => {
+  // The multipart path checked only the 10 MB ceiling, so a zero-byte file
+  // published a blank trip on POST and erased the itinerary on PATCH.
+  const fileForm = (html: string) => {
+    const form = new FormData();
+    form.append("file", new File([html], "tokyo.html", { type: "text/html" }));
+    return form;
+  };
+  const jsonInit = (method: string, html: string) => ({
+    method,
+    headers: { "Content-Type": "application/json", "X-Test-User": "u1" },
+    body: JSON.stringify({ html }),
+  });
+  const blanks = { "zero-byte": "", "whitespace-only": " \n\t " };
+
+  for (const [name, html] of Object.entries(blanks)) {
+    it(`POST refuses a ${name} multipart file before any query`, async () => {
+      const res = await app.request("/api/trips", {
+        method: "POST",
+        headers: { "X-Test-User": "u1" },
+        body: fileForm(html),
+      });
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toMatch(/itinerary is empty/);
+      expect(body.details).toEqual([{ path: "html", message: body.error }]);
+      expect(mockFindDuplicate).not.toHaveBeenCalled();
+      expect(mockCreate).not.toHaveBeenCalled();
+    });
+
+    it(`PATCH refuses a ${name} multipart file and leaves the trip alone`, async () => {
+      mockGet.mockResolvedValue(tripRow("u1"));
+      const res = await app.request("/api/trips/tokyo", {
+        method: "PATCH",
+        headers: { "X-Test-User": "u1" },
+        body: fileForm(html),
+      });
+      expect(res.status).toBe(400);
+      expect((await res.json()).details[0].path).toBe("html");
+      expect(mockUpdate).not.toHaveBeenCalled();
+    });
+  }
+
+  it("POST refuses whitespace-only JSON html", async () => {
+    const res = await app.request("/api/trips", jsonInit("POST", "   "));
+    expect(res.status).toBe(400);
+    expect((await res.json()).details[0].path).toBe("html");
+    expect(mockCreate).not.toHaveBeenCalled();
+  });
+
+  it("PATCH refuses whitespace-only JSON html", async () => {
+    mockGet.mockResolvedValue(tripRow("u1"));
+    const res = await app.request("/api/trips/tokyo", jsonInit("PATCH", "\n\n"));
+    expect(res.status).toBe(400);
+    expect(mockUpdate).not.toHaveBeenCalled();
+  });
+
+  it("stores html with surrounding whitespace as sent", async () => {
+    mockCreate.mockResolvedValue({
+      id: "t1", slug: "tokyo", title: "Tokyo", sourceFilename: null, createdAt: new Date(),
+    });
+    const html = "\n<title>Tokyo</title>\n";
+    const res = await app.request("/api/trips", jsonInit("POST", html));
+    expect(res.status).toBe(201);
+    expect(mockCreate.mock.calls[0][0].html).toBe(html);
+  });
+
+  it("a title-only multipart PATCH is still allowed", async () => {
+    mockGet.mockResolvedValue(tripRow("u1"));
+    mockUpdate.mockResolvedValue({
+      id: "t1", slug: "tokyo", title: "Renamed", sourceFilename: null, updatedAt: new Date(),
+    });
+    const form = new FormData();
+    form.append("title", "Renamed");
+    const res = await app.request("/api/trips/tokyo", {
+      method: "PATCH",
+      headers: { "X-Test-User": "u1" },
+      body: form,
+    });
+    expect(res.status).toBe(200);
+    expect(mockUpdate.mock.calls[0][1]).toMatchObject({ html: undefined, title: "Renamed" });
+  });
+});
