@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { Hono } from "hono";
 import { __resetPinAttempts } from "@/modules/tea-entries/pin-rate-limit";
 import { __resetRateLimitBuckets } from "@/modules/shared/rate-limit";
@@ -663,6 +663,68 @@ describe("GET /api/tea-entries/:id", () => {
       for (let i = 0; i < 9; i++) await guess(ENTRY_IDS[i % 5], "0000");
       expect((await guess(VALID_UUID, "9999")).status).toBe(200);
       expect((await guess(ENTRY_IDS[0], "0000")).status).toBe(403);
+    });
+  });
+
+  describe("pacing guesses under the minute limit still hits a daily ceiling (SHAN-736)", () => {
+    const ENTRY_IDS = Array.from(
+      { length: 5 },
+      (_, i) => `3333333${i}-3333-3333-3333-333333333333`,
+    );
+
+    beforeEach(() => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      vi.setSystemTime(new Date("2026-11-24T00:00:00Z"));
+      mockGetById.mockImplementation(async (id: string) => ({
+        id,
+        authorId: "u-author",
+        title: null,
+        content: "secret",
+        pin: "1234",
+      }));
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    const guess = (id: string, pin: string) =>
+      app.request(`/api/tea-entries/${id}`, { headers: { "X-Tea-Pin": pin } });
+
+    // 9 wrong guesses a minute never trips the minute limit.
+    const paced = async (ids: string[], total: number) => {
+      const statuses: number[] = [];
+      for (let i = 0; i < total; i++) {
+        if (i > 0 && i % 9 === 0) vi.advanceTimersByTime(60_001);
+        statuses.push((await guess(ids[i % ids.length], "0000")).status);
+      }
+      return statuses;
+    };
+
+    it("an entry bucket blocks for the rest of the day after 50 paced misses", async () => {
+      const statuses = await paced([VALID_UUID], 50);
+      expect(statuses.slice(0, 49)).toEqual(Array(49).fill(403));
+      expect(statuses[49]).toBe(429);
+
+      // A fresh minute no longer reopens it, and Retry-After is the day block.
+      vi.advanceTimersByTime(60_001);
+      const res = await guess(VALID_UUID, "1234");
+      expect(res.status).toBe(429);
+      expect(Number(res.headers.get("Retry-After"))).toBeGreaterThan(60);
+
+      vi.advanceTimersByTime(24 * 60 * 60_000);
+      expect((await guess(VALID_UUID, "1234")).status).toBe(200);
+    });
+
+    it("the universal bucket hits the same ceiling across entries, and entry PINs still open", async () => {
+      mockGetUniversalTeaPin.mockResolvedValue("9999");
+      const statuses = await paced(ENTRY_IDS, 50);
+      expect(statuses.slice(0, 49)).toEqual(Array(49).fill(403));
+      expect(statuses[49]).toBe(429);
+
+      vi.advanceTimersByTime(60_001);
+      expect((await guess(VALID_UUID, "9999")).status).toBe(429);
+      expect((await guess(VALID_UUID, "1234")).status).toBe(200);
     });
   });
 
