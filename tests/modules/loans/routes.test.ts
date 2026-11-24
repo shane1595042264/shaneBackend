@@ -1,11 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { Hono } from "hono";
 
-const { mockSelect, mockInsert, mockUpdate, mockDelete } = vi.hoisted(() => ({
+const { mockSelect, mockInsert, mockUpdate, mockDelete, mockTransaction, mockFor } = vi.hoisted(() => ({
   mockSelect: vi.fn(),
   mockInsert: vi.fn(),
   mockUpdate: vi.fn(),
   mockDelete: vi.fn(),
+  mockTransaction: vi.fn(),
+  mockFor: vi.fn(),
 }));
 
 vi.mock("@/db/client", () => ({
@@ -14,6 +16,11 @@ vi.mock("@/db/client", () => ({
     insert: mockInsert,
     update: mockUpdate,
     delete: mockDelete,
+    // PATCH runs inside a transaction (SHAN-737); the tx exposes the same
+    // select/update mocks so every existing PATCH test drives it unchanged.
+    transaction: mockTransaction.mockImplementation((fn: (tx: unknown) => unknown) =>
+      fn({ select: mockSelect, update: mockUpdate }),
+    ),
   },
 }));
 
@@ -79,6 +86,11 @@ function selectReturning(rows: unknown[]) {
         });
         return Object.assign(Promise.resolve(rows), {
           orderBy: () => orderByResult,
+          // PATCH takes its lookup FOR UPDATE (SHAN-737).
+          for: (mode: string) => {
+            mockFor(mode);
+            return Promise.resolve(rows);
+          },
         });
       },
     }),
@@ -559,6 +571,22 @@ describe("PATCH /api/loans/:id — ownership + status", () => {
     });
     expect(res.status).toBe(404);
     expect(await res.json()).toEqual({ error: "Not found" });
+  });
+
+  // SHAN-737: the minor-unit check pairs the patched half with the stored
+  // half, so the stored half must be read under the same lock as the write,
+  // or {amount: 10.50} and {currency: JPY} in two tabs both pass.
+  it("reads the row FOR UPDATE inside the transaction that writes it", async () => {
+    selectReturning([makeRow()]);
+    updateReturning([makeRow({ amount: "10.50" })]);
+    const res = await app.request(`/api/loans/${ENTRY_ID}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", "X-Test-User": USER_A },
+      body: JSON.stringify({ amount: "10.50" }),
+    });
+    expect(res.status).toBe(200);
+    expect(mockTransaction).toHaveBeenCalledTimes(1);
+    expect(mockFor).toHaveBeenCalledWith("update");
   });
 
   it("scopes the update to the caller as well as the id", async () => {

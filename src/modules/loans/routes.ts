@@ -186,50 +186,58 @@ loansRoutes.patch(
     const { id } = c.req.valid("param");
     const body = c.req.valid("json");
 
-    const [existing] = await db.select().from(loanEntries).where(eq(loanEntries.id, id));
-    if (!existing) return c.json({ error: "Not found" }, 404);
-    if (existing.userId !== userId) return c.json({ error: "Forbidden" }, 403);
+    // The read, the checks and the write share one transaction, with the row
+    // locked FOR UPDATE. The minor-unit check pairs the patched half with the
+    // stored half, so an unlocked read let two tabs each pass: {amount: 10.50}
+    // read USD, {currency: JPY} read 10.00, and the row ended up 10.50 JPY
+    // (SHAN-737). Under the lock the second request reads the first's result.
+    return db.transaction(async (tx) => {
+      const [existing] = await tx.select().from(loanEntries).where(eq(loanEntries.id, id)).for("update");
+      if (!existing) return c.json({ error: "Not found" }, 404);
+      if (existing.userId !== userId) return c.json({ error: "Forbidden" }, 403);
 
-    // Checked against the row as it will be: moving a 10.50 USD loan to JPY
-    // breaks the rule as surely as typing 10.50 on a JPY one.
-    if (body.amount !== undefined || body.currency !== undefined) {
-      const currency = body.currency ?? existing.currency;
-      if (!amountFitsCurrency(body.amount ?? existing.amount, currency)) {
-        return c.json({ error: minorUnitMessage(currency) }, 400);
+      // Checked against the row as it will be: moving a 10.50 USD loan to JPY
+      // breaks the rule as surely as typing 10.50 on a JPY one.
+      if (body.amount !== undefined || body.currency !== undefined) {
+        const currency = body.currency ?? existing.currency;
+        if (!amountFitsCurrency(body.amount ?? existing.amount, currency)) {
+          return c.json({ error: minorUnitMessage(currency) }, 400);
+        }
       }
-    }
 
-    const now = new Date();
-    const patch: PgUpdateSetSource<typeof loanEntries> = { updatedAt: now };
-    if (body.borrowerName !== undefined) patch.borrowerName = body.borrowerName;
-    if (body.amount !== undefined) patch.amount = body.amount;
-    if (body.currency !== undefined) patch.currency = body.currency;
-    if (body.description !== undefined) patch.description = body.description;
-    if (body.direction !== undefined) patch.direction = body.direction;
-    if (body.status !== undefined) {
-      patch.status = body.status;
-      // Stamp repaidAt when transitioning to repaid; clear it on the reverse.
-      // The "already repaid?" test runs in SQL against the row being written,
-      // not against `existing`: two overlapping "mark repaid" requests both
-      // read outstanding, and deciding from that read let the later one move
-      // the original repaid date (SHAN-586).
-      if (body.status === "repaid") {
-        patch.repaidAt = sql`CASE WHEN ${loanEntries.status} = 'repaid' THEN ${loanEntries.repaidAt} ELSE ${now}::timestamptz END`;
-      } else {
-        patch.repaidAt = null;
+      const now = new Date();
+      const patch: PgUpdateSetSource<typeof loanEntries> = { updatedAt: now };
+      if (body.borrowerName !== undefined) patch.borrowerName = body.borrowerName;
+      if (body.amount !== undefined) patch.amount = body.amount;
+      if (body.currency !== undefined) patch.currency = body.currency;
+      if (body.description !== undefined) patch.description = body.description;
+      if (body.direction !== undefined) patch.direction = body.direction;
+      if (body.status !== undefined) {
+        patch.status = body.status;
+        // Stamp repaidAt when transitioning to repaid; clear it on the reverse.
+        // The "already repaid?" test runs in SQL against the row being written,
+        // not against `existing`: two overlapping "mark repaid" requests both
+        // read outstanding, and deciding from that read let the later one move
+        // the original repaid date (SHAN-586).
+        if (body.status === "repaid") {
+          patch.repaidAt = sql`CASE WHEN ${loanEntries.status} = 'repaid' THEN ${loanEntries.repaidAt} ELSE ${now}::timestamptz END`;
+        } else {
+          patch.repaidAt = null;
+        }
       }
-    }
 
-    // Scoped by owner as well as id, and a miss is a 404: the entry can be
-    // deleted between the read above and this write (Who Owes open in two
-    // tabs), and serializing the missing row used to throw a 500 (SHAN-586).
-    const [row] = await db
-      .update(loanEntries)
-      .set(patch)
-      .where(and(eq(loanEntries.id, id), eq(loanEntries.userId, userId)))
-      .returning();
-    if (!row) return c.json({ error: "Not found" }, 404);
-    return c.json({ entry: serialize(row) });
+      // Scoped by owner as well as id, and a miss is a 404. Before the lock the
+      // entry could be deleted between the read above and this write (Who Owes
+      // open in two tabs), and serializing the missing row threw a 500
+      // (SHAN-586); the guard stays so a miss can never reach serialize().
+      const [row] = await tx
+        .update(loanEntries)
+        .set(patch)
+        .where(and(eq(loanEntries.id, id), eq(loanEntries.userId, userId)))
+        .returning();
+      if (!row) return c.json({ error: "Not found" }, 404);
+      return c.json({ entry: serialize(row) });
+    });
   },
 );
 
