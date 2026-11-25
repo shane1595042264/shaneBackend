@@ -8,7 +8,7 @@ const { mockSelect, mockHasAccess } = vi.hoisted(() => ({
 
 vi.mock("@/db/client", () => ({ db: { select: mockSelect } }));
 vi.mock("@/db/schema", () => ({
-  activities: { id: "id_col", date: "date_col", source: "source_col", type: "type_col", data: "data_col" },
+  activities: { id: "id_col", createdAt: "created_at_col", date: "date_col", source: "source_col", type: "type_col", data: "data_col" },
 }));
 // The real requireJournalMembership runs; only the membership lookup and the
 // token resolution are stubbed.
@@ -98,19 +98,55 @@ describe("GET /api/activities/:date", () => {
     expect(mockSelect).not.toHaveBeenCalled();
   });
 
-  it("dedups rows that share (source, type, data.id), keeping the first", async () => {
+  it("dedups rows that share (source, type, data.id), keeping the latest sync", async () => {
+    // Rows arrive in sync order (created_at, id); row4 is the newest copy of evt-A.
     mockSelect.mockReturnValue(chain([
-      { id: "row1", date: "2026-05-06", source: "google_calendar", type: "calendar_event", data: { id: "evt-A", title: "Standup", location: "Room 1" } },
-      { id: "row2", date: "2026-05-06", source: "google_calendar", type: "calendar_event", data: { id: "evt-A", title: "Standup", location: "Room 1, +Zoom" } },
-      { id: "row3", date: "2026-05-06", source: "google_calendar", type: "calendar_event", data: { id: "evt-B", title: "Lunch" } },
-      { id: "row4", date: "2026-05-06", source: "google_calendar", type: "calendar_event", data: { id: "evt-A", title: "Standup", location: "Room 2" } },
+      { id: "row1", date: "2026-05-06", source: "google_calendar", type: "calendar_event", data: { id: "evt-A", title: "Standup", startTime: "2026-05-06T10:00:00-05:00" } },
+      { id: "row2", date: "2026-05-06", source: "google_calendar", type: "calendar_event", data: { id: "evt-A", title: "Standup", startTime: "2026-05-06T11:00:00-05:00" } },
+      { id: "row3", date: "2026-05-06", source: "google_calendar", type: "calendar_event", data: { id: "evt-B", title: "Lunch", startTime: "2026-05-06T12:00:00-05:00" } },
+      { id: "row4", date: "2026-05-06", source: "google_calendar", type: "calendar_event", data: { id: "evt-A", title: "Standup", startTime: "2026-05-06T14:00:00-05:00" } },
     ]));
     const res = await app.request("/api/activities/2026-05-06");
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body.activities).toHaveLength(2);
-    expect(body.activities[0].id).toBe("row1");
-    expect(body.activities[1].id).toBe("row3");
+    expect(body.activities.map((a: any) => a.id)).toEqual(["row3", "row4"]);
+  });
+
+  it("reads rows in sync order, not by the random uuid", async () => {
+    const q = chain([]);
+    mockSelect.mockReturnValue(q);
+    await app.request("/api/activities/2026-05-06");
+    expect(q.orderBy).toHaveBeenCalledWith(
+      { c: "created_at_col", dir: "asc" },
+      { c: "id_col", dir: "asc" },
+    );
+  });
+
+  it("orders the day by when each activity happened, across sources and UTC offsets", async () => {
+    mockSelect.mockReturnValue(chain([
+      { id: "late-commit", date: "2026-05-06", source: "github", type: "commit", data: { sha: "b", timestamp: "2026-05-06T20:00:00Z" } },
+      { id: "meeting", date: "2026-05-06", source: "google_calendar", type: "calendar_event", data: { id: "evt", startTime: "2026-05-06T09:00:00-05:00" } },
+      { id: "early-commit", date: "2026-05-06", source: "github", type: "commit", data: { sha: "a", timestamp: "2026-05-06T13:30:00Z" } },
+      { id: "stream", date: "2026-05-06", source: "twitch", type: "stream", data: { createdAt: "2026-05-06T18:00:00Z" } },
+    ]));
+    const res = await app.request("/api/activities/2026-05-06");
+    // 09:00-05:00 is 14:00Z, so it sorts after the 13:30Z commit.
+    expect((await res.json()).activities.map((a: any) => a.id)).toEqual([
+      "early-commit", "meeting", "stream", "late-commit",
+    ]);
+  });
+
+  it("puts rows with no usable time last, in sync order", async () => {
+    mockSelect.mockReturnValue(chain([
+      { id: "untimed-1", date: "2026-05-06", source: "wechat", type: "message", data: { chat: "x" } },
+      { id: "timed", date: "2026-05-06", source: "github", type: "commit", data: { timestamp: "2026-05-06T12:00:00Z" } },
+      { id: "bad-time", date: "2026-05-06", source: "strava", type: "run", data: { startTime: "not a date" } },
+      { id: "untimed-2", date: "2026-05-06", source: "wechat", type: "message", data: { chat: "y" } },
+    ]));
+    const res = await app.request("/api/activities/2026-05-06");
+    expect((await res.json()).activities.map((a: any) => a.id)).toEqual([
+      "timed", "untimed-1", "bad-time", "untimed-2",
+    ]);
   });
 
   it("does not dedup rows whose data lacks an id", async () => {
