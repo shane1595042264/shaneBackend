@@ -3,7 +3,7 @@ import { zValidator } from "@/modules/shared/zod-validator";
 import { z } from "zod";
 import { db } from "@/db/client";
 import { vocabWords, vocabConnections } from "@/db/schema";
-import { desc, eq, and, or, ilike, sql, inArray } from "drizzle-orm";
+import { desc, eq, ne, and, or, ilike, sql, inArray } from "drizzle-orm";
 import { enrichWord } from "./ai-enricher";
 import { enrichPatch } from "./enrich-patch";
 import { requireAuth, requireScope } from "@/modules/auth/middleware";
@@ -235,12 +235,27 @@ vocabularyRoutes.put(
     const userId = c.get("userId") as string;
 
     const [existing] = await db
-      .select({ createdBy: vocabWords.createdBy })
+      .select({ createdBy: vocabWords.createdBy, word: vocabWords.word, language: vocabWords.language })
       .from(vocabWords)
       .where(eq(vocabWords.id, id));
     if (!existing) return c.json({ error: "Word not found" }, 404);
     if (existing.createdBy !== null && existing.createdBy !== userId) {
       return c.json({ error: "You can only edit words you created" }, 403);
+    }
+
+    // SHAN-741: a rename takes POST's duplicate rule, or PUT is the way round
+    // the 409. Only when the key moves: an edit that leaves it alone must not
+    // trip over duplicates that predate it.
+    const word = body.word ?? existing.word;
+    const language = body.language ?? existing.language;
+    if (word !== existing.word || language !== existing.language) {
+      const [clash] = await db
+        .select()
+        .from(vocabWords)
+        .where(and(eq(vocabWords.word, word), eq(vocabWords.language, language), ne(vocabWords.id, id)));
+      if (clash) {
+        return c.json({ error: `"${word}" already exists in ${language}`, existingWord: clash }, 409);
+      }
     }
 
     const [updated] = await db

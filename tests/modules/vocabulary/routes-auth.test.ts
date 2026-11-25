@@ -38,6 +38,7 @@ vi.mock("@/db/schema", () => ({
 
 vi.mock("drizzle-orm", () => ({
   eq: vi.fn((c: unknown, v: unknown) => ({ eq: { c, v } })),
+  ne: vi.fn((c: unknown, v: unknown) => ({ ne: { c, v } })),
   and: vi.fn((...args: unknown[]) => ({ and: args })),
   or: vi.fn((...args: unknown[]) => ({ or: args })),
   desc: vi.fn(),
@@ -878,5 +879,48 @@ describe("POST /api/vocabulary/words — whitespace-only hardening (SHAN-433)", 
     const patch = setFn.mock.calls[0]![0] as Record<string, unknown>;
     expect(patch).toHaveProperty("pronunciation", null);
     expect(patch.partOfSpeech).toBeUndefined();
+  });
+});
+
+// SHAN-741: POST answers 409 for a (word, language) that exists, so a PUT must
+// not be able to rename a word into one.
+describe("PUT /api/vocabulary/words/:id — rename into an existing key (SHAN-741)", () => {
+  const current = { createdBy: "u-shane", word: "colour", language: "english" };
+
+  it("returns 409 with the existing word and writes nothing", async () => {
+    const other = { id: "22222222-2222-2222-2222-222222222222", word: "color", language: "english" };
+    selectRowsSeq([current], [other]);
+    const res = await app.request(`/api/vocabulary/words/${validId}`, {
+      method: "PUT",
+      headers: jwtHeaders("u-shane"),
+      body: JSON.stringify({ word: "color" }),
+    });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: '"color" already exists in english', existingWord: other });
+    expect(mockUpdate).not.toHaveBeenCalled();
+  });
+
+  it("renames when no other word holds the new key", async () => {
+    selectRowsSeq([current], []);
+    updateReturning({ id: validId, word: "colour", language: "british" });
+    const res = await app.request(`/api/vocabulary/words/${validId}`, {
+      method: "PUT",
+      headers: jwtHeaders("u-shane"),
+      body: JSON.stringify({ language: "british" }),
+    });
+    expect(res.status).toBe(200);
+    expect(mockSelect).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not look for a clash when the key is unchanged", async () => {
+    selectRowsSeq([current]);
+    updateReturning({ id: validId });
+    const res = await app.request(`/api/vocabulary/words/${validId}`, {
+      method: "PUT",
+      headers: jwtHeaders("u-shane"),
+      body: JSON.stringify({ definition: "updated" }),
+    });
+    expect(res.status).toBe(200);
+    expect(mockSelect).toHaveBeenCalledTimes(1);
   });
 });

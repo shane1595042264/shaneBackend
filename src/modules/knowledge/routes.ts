@@ -3,7 +3,7 @@ import { zValidator } from "@/modules/shared/zod-validator";
 import { z } from "zod";
 import { db } from "@/db/client";
 import { vocabWords, vocabConnections } from "@/db/schema";
-import { desc, eq, and, or, ilike, sql, inArray } from "drizzle-orm";
+import { desc, eq, ne, and, or, ilike, sql, inArray } from "drizzle-orm";
 import { enrichWord } from "@/modules/vocabulary/ai-enricher";
 import { enrichPatch } from "@/modules/vocabulary/enrich-patch";
 import { classifyNote } from "./classifier";
@@ -547,12 +547,43 @@ knowledgeRoutes.put(
     const body = c.req.valid("json");
 
     const [existing] = await db
-      .select({ createdBy: vocabWords.createdBy })
+      .select({
+        createdBy: vocabWords.createdBy,
+        word: vocabWords.word,
+        language: vocabWords.language,
+        category: vocabWords.category,
+      })
       .from(vocabWords)
       .where(eq(vocabWords.id, id));
     if (!existing) return c.json({ error: "Entry not found" }, 404);
     if (existing.createdBy !== null && existing.createdBy !== userId) {
       return c.json({ error: "You can only edit entries you created" }, 403);
+    }
+
+    // SHAN-741: a rename takes POST's duplicate rule, or PUT is the way round
+    // the 409. Only when the key moves: POST /notes creates same-key cards on
+    // purpose (one word from two books), and editing one must still work.
+    const word = body.word ?? existing.word;
+    const language = body.language ?? existing.language;
+    const category = body.category ?? existing.category;
+    if (word !== existing.word || language !== existing.language || category !== existing.category) {
+      const [clash] = await db
+        .select()
+        .from(vocabWords)
+        .where(
+          and(
+            eq(vocabWords.word, word),
+            eq(vocabWords.language, language),
+            eq(vocabWords.category, category),
+            ne(vocabWords.id, id)
+          )
+        );
+      if (clash) {
+        return c.json(
+          { error: `"${word}" already exists in ${category}/${language}`, existingEntry: clash },
+          409
+        );
+      }
     }
 
     // Derive long_term_memorized from the (normalized) location set — never trust

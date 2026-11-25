@@ -50,6 +50,7 @@ vi.mock("@/db/schema", () => ({
 
 vi.mock("drizzle-orm", () => ({
   eq: vi.fn((c: unknown, v: unknown) => ({ eq: { c, v } })),
+  ne: vi.fn((c: unknown, v: unknown) => ({ ne: { c, v } })),
   and: vi.fn((...args: unknown[]) => ({ and: args })),
   or: vi.fn((...args: unknown[]) => ({ or: args })),
   desc: vi.fn((c: unknown) => ({ c, dir: "desc" })),
@@ -1171,4 +1172,68 @@ describe("knowledge entry edit/delete scope gate (SHAN-566)", () => {
       expect(res.status).toBe(200);
     });
   }
+});
+
+// SHAN-741: POST answers 409 for a (word, language, category) that exists, so
+// a PUT must not be able to rename a card into one.
+describe("PUT /api/knowledge/entries/:id — rename into an existing key (SHAN-741)", () => {
+  const validId = "11111111-1111-1111-1111-111111111111";
+  const authHeaders = { "Content-Type": "application/json", "X-Test-User": "user-1" };
+  const current = { createdBy: "user-1", word: "Mutexes", language: "english", category: "coding" };
+
+  function selectSeq(...rowsList: unknown[][]) {
+    const wheres: unknown[] = [];
+    for (const rows of rowsList) {
+      mockSelect.mockImplementationOnce(() => ({
+        from: () => ({
+          where: (w: unknown) => {
+            wheres.push(w);
+            return Promise.resolve(rows);
+          },
+        }),
+      }));
+    }
+    return wheres;
+  }
+
+  it("returns 409 with the existing card and writes nothing", async () => {
+    const other = { id: "22222222-2222-2222-2222-222222222222", word: "Mutex", language: "english", category: "coding" };
+    const wheres = selectSeq([current], [other]);
+    const res = await app.request(`/api/knowledge/entries/${validId}`, {
+      method: "PUT",
+      headers: authHeaders,
+      body: JSON.stringify({ word: "Mutex" }),
+    });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: '"Mutex" already exists in coding/english', existingEntry: other });
+    expect(mockUpdate).not.toHaveBeenCalled();
+    // The clash query looks for the merged key on any row but this one.
+    expect(JSON.stringify(wheres[1])).toContain('"ne":{"c":"vocabWords.id","v":"11111111-1111-1111-1111-111111111111"}');
+    expect(JSON.stringify(wheres[1])).toContain('"v":"coding"');
+  });
+
+  it("checks a category move against the target category", async () => {
+    const wheres = selectSeq([current], []);
+    updateReturning([{ id: validId }]);
+    const res = await app.request(`/api/knowledge/entries/${validId}`, {
+      method: "PUT",
+      headers: authHeaders,
+      body: JSON.stringify({ category: "general" }),
+    });
+    expect(res.status).toBe(200);
+    expect(JSON.stringify(wheres[1])).toContain('"v":"general"');
+    expect(JSON.stringify(wheres[1])).toContain('"v":"Mutexes"');
+  });
+
+  it("does not look for a clash when the key is unchanged", async () => {
+    selectSeq([current]);
+    updateReturning([{ id: validId }]);
+    const res = await app.request(`/api/knowledge/entries/${validId}`, {
+      method: "PUT",
+      headers: authHeaders,
+      body: JSON.stringify({ word: "Mutexes", definition: "edited" }),
+    });
+    expect(res.status).toBe(200);
+    expect(mockSelect).toHaveBeenCalledTimes(1);
+  });
 });
