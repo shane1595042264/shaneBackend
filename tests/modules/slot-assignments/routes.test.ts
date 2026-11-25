@@ -134,6 +134,31 @@ describe("PUT /api/slot-assignments", () => {
     expect(mockInsert).not.toHaveBeenCalled();
   });
 
+  // SHAN-738: only the canonical spelling of an atomic number is a key.
+  it("rejects a zero-padded key with 400", async () => {
+    const res = await put({ assignments: { "07": "app-n" } });
+    expect(res.status).toBe(400);
+    expect(mockInsert).not.toHaveBeenCalled();
+  });
+
+  it("rejects a padded second key for a slot already in the map with 400", async () => {
+    const res = await put({ assignments: { "7": "app-n", "007": "app-o" } });
+    expect(res.status).toBe(400);
+    expect(mockInsert).not.toHaveBeenCalled();
+  });
+
+  it("rejects key 0 with 400", async () => {
+    const res = await put({ assignments: { "0": "app-x" } });
+    expect(res.status).toBe(400);
+    expect(mockInsert).not.toHaveBeenCalled();
+  });
+
+  it("rejects a long zero-padded key that parses into range with 400", async () => {
+    const res = await put({ assignments: { [`${"0".repeat(10_000)}1`]: "app-h" } });
+    expect(res.status).toBe(400);
+    expect(mockInsert).not.toHaveBeenCalled();
+  });
+
   it("rejects duplicate app ids with 400", async () => {
     const res = await put({ assignments: { "1": "app-h", "2": "app-h" } });
     expect(res.status).toBe(400);

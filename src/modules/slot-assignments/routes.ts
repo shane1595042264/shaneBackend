@@ -38,7 +38,10 @@ const MAX_SLOTS = 118;
 const putSchema = z.object({
   assignments: z
     .record(
-      z.string().regex(/^\d+$/, "Keys must be atomic numbers"),
+      // SHAN-738: no leading zeros, so "07" is not a second key for slot 7
+      // (the client reads keys with Number()), and at most 3 digits, so a
+      // zero-padded key cannot carry a megabyte past the slot cap.
+      z.string().regex(/^[1-9]\d{0,2}$/, "Keys must be atomic numbers"),
       // SHAN-434: trim first so a whitespace-only app id is rejected and
       // " journal" / "journal " normalize to one value — this also tightens
       // the duplicate-app-id guard below (it compares the trimmed values).
