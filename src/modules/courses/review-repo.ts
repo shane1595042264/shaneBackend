@@ -5,7 +5,7 @@
 // "rejected". A pending row whose course was edited before the answer came is
 // "superseded": the edit queued a review of its own, and a verdict on a
 // version nobody can take any more means nothing.
-import { and, asc, desc, eq, isNull, lt, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, isNull, lt, ne, or, sql } from "drizzle-orm";
 import { db } from "@/db/client";
 import { courseReviews, courses } from "@/db/schema";
 
@@ -50,6 +50,23 @@ export async function latestReview(courseId: string): Promise<ReviewRow | null> 
   return row ? asRow(row) : null;
 }
 
+/**
+ * Retire every review still waiting on this course. createReview does this
+ * before queueing the next one; a course made private, or a private course
+ * whose lessons change, does it with no successor (SHAN-740), since private
+ * courses are not reviewed. Without that, a review already reading the old
+ * version stayed pending and its verdict could still land.
+ */
+export async function supersedePendingReviews(
+  courseId: string,
+  executor: Pick<typeof db, "update"> = db,
+): Promise<void> {
+  await executor
+    .update(courseReviews)
+    .set({ status: "superseded" })
+    .where(and(eq(courseReviews.courseId, courseId), eq(courseReviews.status, "pending")));
+}
+
 /** Queue a review of one version, retiring any still waiting on an older one. */
 export async function createReview(input: {
   courseId: string;
@@ -57,10 +74,7 @@ export async function createReview(input: {
   contentHash: string;
 }): Promise<ReviewRow> {
   return db.transaction(async (tx) => {
-    await tx
-      .update(courseReviews)
-      .set({ status: "superseded" })
-      .where(and(eq(courseReviews.courseId, input.courseId), eq(courseReviews.status, "pending")));
+    await supersedePendingReviews(input.courseId, tx);
     const [row] = await tx.insert(courseReviews).values(input).returning();
     return asRow(row);
   });
@@ -102,6 +116,10 @@ export async function finishReview(
  * queues a newer review, and the old verdict must not certify lessons nobody
  * has read. One statement, so no submission can slip in between the check and
  * the write. True when written.
+ *
+ * Never certifies a private course (SHAN-740). Editing a private course's
+ * lessons queues no newer review, so "latest" alone would let a verdict that
+ * was written just before the edit retired it certify the new lessons.
  */
 export async function certifyIfLatest(courseId: string, reviewId: string, certified: boolean): Promise<boolean> {
   const rows = await db
@@ -110,6 +128,7 @@ export async function certifyIfLatest(courseId: string, reviewId: string, certif
     .where(
       and(
         eq(courses.id, courseId),
+        certified ? ne(courses.visibility, "private") : undefined,
         sql`not exists (
           select 1 from course_reviews newer
           where newer.course_id = ${courseId}

@@ -96,7 +96,7 @@ import {
   type CertificateRow,
 } from "./certificate-repo";
 import { contentHash } from "./review";
-import { createReview, latestReview, type ReviewRow } from "./review-repo";
+import { createReview, latestReview, supersedePendingReviews, type ReviewRow } from "./review-repo";
 import { startReview } from "./review-runner";
 
 // Per-PAT 60s rolling write limit. JWT browser sessions bypass. Distinct
@@ -529,6 +529,11 @@ coursesRoutes.patch(
     }
     const row = await updateCourse(id, userId, body);
     if (!row) return c.json({ error: "Not found" }, 404);
+    // SHAN-740: a private course is not reviewed, so a review still waiting
+    // on it is over. Left pending, its verdict would mark the review approved
+    // on a course certifyIfLatest will not certify, and the next submission
+    // would read that as the site owner withdrawing the certification.
+    if (body.visibility === "private") await supersedePendingReviews(row.id);
     const meta = await metaFor(row.id, userId);
     return c.json({ course: serializeCourse(row, meta) });
   },
@@ -682,6 +687,11 @@ coursesRoutes.put(
       if (course.certified || latest?.status === "pending") {
         if (course.visibility !== "private") {
           review = await createReview({ courseId: id, submittedBy: userId, contentHash: hash });
+        } else {
+          // SHAN-740: no review is queued for a private course, so nothing
+          // else would retire one still reading the old version, and its
+          // verdict would certify these lessons.
+          await supersedePendingReviews(id);
         }
         // After createReview, and even when the course read as uncertified: a
         // verdict on the old version can land while this request runs, and it

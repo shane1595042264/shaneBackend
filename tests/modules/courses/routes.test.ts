@@ -53,6 +53,7 @@ const m = vi.hoisted(() => ({
   judgeRecital: vi.fn(),
   latestReview: vi.fn(),
   createReview: vi.fn(),
+  supersedePendingReviews: vi.fn(),
   startReview: vi.fn(),
 }));
 
@@ -131,6 +132,7 @@ vi.mock("@/modules/courses/review", async () => {
 vi.mock("@/modules/courses/review-repo", () => ({
   latestReview: m.latestReview,
   createReview: m.createReview,
+  supersedePendingReviews: m.supersedePendingReviews,
 }));
 vi.mock("@/modules/courses/review-runner", () => ({ startReview: m.startReview }));
 
@@ -2101,6 +2103,59 @@ describe("certification review (SHAN-723)", () => {
       await req(`/api/courses/${courseRow.id}/content`, "PUT", rigorousDoc);
       expect(m.setCertified).toHaveBeenCalledWith(courseRow.id, false);
       expect(m.createReview).not.toHaveBeenCalled();
+    });
+
+    // SHAN-740: nothing else retires a review still reading the old version
+    // of a private course, and its verdict would certify the new lessons.
+    it("retires a review still waiting on a private course's old lessons", async () => {
+      m.getCourseById.mockResolvedValue({ ...courseRow, visibility: "private" });
+      m.getContent.mockResolvedValue(other);
+      m.latestReview.mockResolvedValue(reviewRow({ status: "pending", contentHash: "older" }));
+      const res = await req(`/api/courses/${courseRow.id}/content`, "PUT", rigorousDoc);
+      expect(res.status).toBe(200);
+      expect(m.supersedePendingReviews).toHaveBeenCalledWith(courseRow.id);
+      expect(m.createReview).not.toHaveBeenCalled();
+      expect(m.startReview).not.toHaveBeenCalled();
+      expect(m.setCertified).toHaveBeenCalledWith(courseRow.id, false);
+    });
+
+    it("leaves retiring to createReview on a public course", async () => {
+      m.getCourseById.mockResolvedValue(courseRow);
+      m.getContent.mockResolvedValue(other);
+      m.latestReview.mockResolvedValue(reviewRow({ status: "pending", contentHash: "older" }));
+      await req(`/api/courses/${courseRow.id}/content`, "PUT", rigorousDoc);
+      expect(m.createReview).toHaveBeenCalledTimes(1);
+      expect(m.supersedePendingReviews).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("making the course private (SHAN-740)", () => {
+    const patch = (body: unknown, user = "u1") =>
+      app.request(`/api/courses/${courseRow.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", "X-Test-User": user },
+        body: JSON.stringify(body),
+      });
+
+    it("retires the review waiting on it", async () => {
+      m.updateCourse.mockResolvedValue({ ...courseRow, visibility: "private" });
+      const res = await patch({ visibility: "private" });
+      expect(res.status).toBe(200);
+      expect(m.supersedePendingReviews).toHaveBeenCalledWith(courseRow.id);
+    });
+
+    it("leaves reviews alone on any other edit", async () => {
+      m.updateCourse.mockResolvedValue({ ...courseRow, title: "New" });
+      await patch({ title: "New" });
+      await patch({ visibility: "public" });
+      expect(m.supersedePendingReviews).not.toHaveBeenCalled();
+    });
+
+    it("touches nothing for someone who does not own the course", async () => {
+      m.updateCourse.mockResolvedValue(null);
+      const res = await patch({ visibility: "private" }, "intruder");
+      expect(res.status).toBe(404);
+      expect(m.supersedePendingReviews).not.toHaveBeenCalled();
     });
   });
 });
