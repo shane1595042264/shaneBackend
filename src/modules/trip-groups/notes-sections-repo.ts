@@ -186,6 +186,16 @@ export async function applySectionItemDelta(
   });
 }
 
+/** The name an added to-do item is signed with (SHAN-743). */
+export async function getUserName(userId: string): Promise<string | null> {
+  const [row] = await db
+    .select({ name: users.name })
+    .from(users)
+    .where(eq(users.id, userId))
+    .limit(1);
+  return row?.name ?? null;
+}
+
 export async function deleteSectionById(id: string): Promise<boolean> {
   const rows = await db
     .delete(tripGroupSections)

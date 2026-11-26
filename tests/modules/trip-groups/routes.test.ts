@@ -95,11 +95,12 @@ vi.mock("@/modules/trip-groups/unsplash", () => ({
 const {
   mockCreateNote, mockListNotes, mockGetNoteById, mockDeleteNoteById,
   mockCreateSection, mockListSections, mockGetSectionById, mockUpdateSection, mockDeleteSectionById,
-  mockApplySectionItemDelta,
+  mockApplySectionItemDelta, mockGetUserName,
 } = vi.hoisted(() => ({
   mockCreateNote: vi.fn(), mockListNotes: vi.fn(), mockGetNoteById: vi.fn(), mockDeleteNoteById: vi.fn(),
   mockCreateSection: vi.fn(), mockListSections: vi.fn(), mockGetSectionById: vi.fn(),
   mockUpdateSection: vi.fn(), mockDeleteSectionById: vi.fn(), mockApplySectionItemDelta: vi.fn(),
+  mockGetUserName: vi.fn(),
 }));
 
 vi.mock("@/modules/trip-groups/notes-sections-repo", () => ({
@@ -113,6 +114,7 @@ vi.mock("@/modules/trip-groups/notes-sections-repo", () => ({
   updateSection: mockUpdateSection,
   applySectionItemDelta: mockApplySectionItemDelta,
   deleteSectionById: mockDeleteSectionById,
+  getUserName: mockGetUserName,
 }));
 
 const { mockGetAccessTokenForUser, mockDeletePreviousExport, mockInsertEvents } = vi.hoisted(() => ({
@@ -1780,7 +1782,7 @@ describe("notes + sections (SHAN-283)", () => {
     expect(mockUpdateSection).not.toHaveBeenCalled();
   });
 
-  it("trims item text and collapses a whitespace addedBy to null on section update", async () => {
+  it("trims item text on section update", async () => {
     mockGetGroupBySlug.mockResolvedValue(groupRow);
     mockIsMember.mockResolvedValue(true);
     mockGetSectionById.mockResolvedValue(sectionRow);
@@ -1794,9 +1796,53 @@ describe("notes + sections (SHAN-283)", () => {
     expect(mockUpdateSection).toHaveBeenCalledWith(
       SECTION_ID,
       expect.objectContaining({
-        items: [expect.objectContaining({ text: "adapter", addedBy: null })],
+        items: [expect.objectContaining({ text: "adapter" })],
       }),
     );
+  });
+
+  // SHAN-743: addedBy used to be stored as sent, so a member could sign an
+  // item with anyone's name, or re-sign an item someone else added.
+  it("a full items list keeps each stored item's addedBy and signs new ones with the caller", async () => {
+    mockGetGroupBySlug.mockResolvedValue(groupRow);
+    mockIsMember.mockResolvedValue(true);
+    mockGetSectionById.mockResolvedValue(sectionRow); // i1 added by Ben
+    mockGetUserName.mockResolvedValue("Shane");
+    mockUpdateSection.mockResolvedValue(sectionRow);
+    const res = await app.request(`/api/trip-groups/${SLUG}/sections/${SECTION_ID}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", "X-Test-User": USER_A },
+      body: JSON.stringify({
+        items: [
+          { id: "i1", text: "sunscreen", done: false, addedBy: "Shane" },
+          { id: "i2", text: "adapter", done: false, addedBy: "Ben" },
+        ],
+      }),
+    });
+    expect(res.status).toBe(200);
+    expect(mockGetUserName).toHaveBeenCalledWith(USER_A);
+    expect(mockUpdateSection).toHaveBeenCalledWith(SECTION_ID, {
+      title: undefined,
+      items: [
+        { id: "i1", text: "sunscreen", done: false, addedBy: "Ben" },
+        { id: "i2", text: "adapter", done: false, addedBy: "Shane" },
+      ],
+    });
+  });
+
+  it("a title-only update does not look the caller up", async () => {
+    mockGetGroupBySlug.mockResolvedValue(groupRow);
+    mockIsMember.mockResolvedValue(true);
+    mockGetSectionById.mockResolvedValue(sectionRow);
+    mockUpdateSection.mockResolvedValue(sectionRow);
+    const res = await app.request(`/api/trip-groups/${SLUG}/sections/${SECTION_ID}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", "X-Test-User": USER_A },
+      body: JSON.stringify({ title: "Packing" }),
+    });
+    expect(res.status).toBe(200);
+    expect(mockGetUserName).not.toHaveBeenCalled();
+    expect(mockUpdateSection).toHaveBeenCalledWith(SECTION_ID, { title: "Packing", items: undefined });
   });
 });
 
@@ -1818,6 +1864,7 @@ describe("PUT /sections/:sectionId item deltas (SHAN-557)", () => {
     mockGetGroupBySlug.mockResolvedValue(groupRow);
     mockIsMember.mockResolvedValue(true);
     mockGetSectionById.mockResolvedValue(sectionRow);
+    mockGetUserName.mockResolvedValue("Shane");
   });
 
   it("routes deltas to the locked merge, never the full-list overwrite", async () => {
@@ -1826,7 +1873,8 @@ describe("PUT /sections/:sectionId item deltas (SHAN-557)", () => {
       items: [...sectionRow.items, { id: "i2", text: "charger", done: false, addedBy: "Shane" }],
     };
     mockApplySectionItemDelta.mockResolvedValue(merged);
-    const res = await put({ addItems: [{ id: "i2", text: "  charger ", done: false, addedBy: "Shane" }] });
+    // Sent signed "Ava"; stored signed by the caller (SHAN-743).
+    const res = await put({ addItems: [{ id: "i2", text: "  charger ", done: false, addedBy: "Ava" }] });
     expect(res.status).toBe(200);
     expect(mockApplySectionItemDelta).toHaveBeenCalledWith(
       SECTION_ID,
@@ -1839,6 +1887,27 @@ describe("PUT /sections/:sectionId item deltas (SHAN-557)", () => {
       { id: "i1", text: "passport", done: true, addedBy: "Ava" },
       { id: "i2", text: "charger", done: false, addedBy: "Shane" },
     ]);
+  });
+
+  it("an added item that reuses a stored id keeps the stored addedBy (SHAN-743)", async () => {
+    mockApplySectionItemDelta.mockResolvedValue(sectionRow);
+    const res = await put({ addItems: [{ id: "i1", text: "passport", done: false, addedBy: "Shane" }] });
+    expect(res.status).toBe(200);
+    expect(mockApplySectionItemDelta).toHaveBeenCalledWith(
+      SECTION_ID,
+      { addItems: [{ id: "i1", text: "passport", done: false, addedBy: "Ava" }] },
+      undefined,
+    );
+  });
+
+  it("signs an item sent without addedBy with the caller (SHAN-743)", async () => {
+    mockApplySectionItemDelta.mockResolvedValue(sectionRow);
+    await put({ addItems: [{ id: "i3", text: "tickets", done: false }] });
+    expect(mockApplySectionItemDelta).toHaveBeenCalledWith(
+      SECTION_ID,
+      { addItems: [{ id: "i3", text: "tickets", done: false, addedBy: "Shane" }] },
+      undefined,
+    );
   });
 
   it("passes a title alongside a delta through to the same write", async () => {

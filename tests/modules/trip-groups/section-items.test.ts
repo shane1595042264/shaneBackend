@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { applyItemDelta, isItemDelta } from "@/modules/trip-groups/section-items";
+import { applyItemDelta, attributeItems, isItemDelta } from "@/modules/trip-groups/section-items";
 
 const item = (id: string, done = false) => ({ id, text: id, done, addedBy: null });
 
@@ -61,5 +61,25 @@ describe("applyItemDelta (SHAN-557)", () => {
     expect(isItemDelta({})).toBe(false);
     expect(isItemDelta({ removeItemIds: [] })).toBe(true);
     expect(isItemDelta({ setItemsDone: [{ id: "a", done: true }] })).toBe(true);
+  });
+});
+
+describe("attributeItems (SHAN-743)", () => {
+  const by = (id: string, addedBy: string | null) => ({ id, text: id, done: false, addedBy });
+
+  it("signs a new id with the caller, whatever the body said", () => {
+    expect(attributeItems([by("a", "Ava")], [], "Shane")).toEqual([by("a", "Shane")]);
+  });
+
+  it("keeps the stored addedBy on an id the section already holds", () => {
+    expect(attributeItems([by("a", "Shane")], [by("a", "Ava")], "Shane")).toEqual([by("a", "Ava")]);
+  });
+
+  it("keeps a stored null rather than claiming an unsigned item", () => {
+    expect(attributeItems([by("a", "Shane")], [by("a", null)], "Shane")).toEqual([by("a", null)]);
+  });
+
+  it("signs with null when the caller has no name", () => {
+    expect(attributeItems([by("a", "Ava")], [], null)).toEqual([by("a", null)]);
   });
 });

@@ -61,10 +61,11 @@ import {
   updateSection,
   applySectionItemDelta,
   deleteSectionById,
+  getUserName,
   type TripGroupNote,
   type TripGroupSection,
 } from "./notes-sections-repo";
-import { isItemDelta, MAX_SECTION_ITEMS } from "./section-items";
+import { attributeItems, isItemDelta, MAX_SECTION_ITEMS } from "./section-items";
 
 type AuthEnv = { Variables: { userId: string } };
 
@@ -1001,7 +1002,17 @@ tripGroupsRoutes.put(
     }
     const existing = await getSectionById(sectionId);
     if (!existing || existing.groupId !== group.id) return c.json({ error: "Not found" }, 404);
-    const { title, items, ...delta } = patch;
+    let { title, items, ...delta } = patch;
+    // SHAN-743: sign added items with the caller's name, never the body's.
+    // Checked against the copy read above; an id added since then is one the
+    // delta merge skips anyway, so the locked re-read cannot disagree.
+    if (items !== undefined || delta.addItems !== undefined) {
+      const callerName = await getUserName(userId);
+      if (items) items = attributeItems(items, existing.items, callerName);
+      if (delta.addItems) {
+        delta = { ...delta, addItems: attributeItems(delta.addItems, existing.items, callerName) };
+      }
+    }
     const section = isItemDelta(delta)
       ? await applySectionItemDelta(sectionId, delta, title)
       : await updateSection(sectionId, { title, items });
