@@ -1,11 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { Hono } from "hono";
 
-const { mockSelect, mockInsert, mockDelete, mockQueueNote } = vi.hoisted(() => ({
+const { mockSelect, mockInsert, mockDelete, mockQueueNote, mockIsSiteOwner } = vi.hoisted(() => ({
   mockSelect: vi.fn(),
   mockInsert: vi.fn(),
   mockDelete: vi.fn(),
   mockQueueNote: vi.fn(),
+  mockIsSiteOwner: vi.fn(),
 }));
 
 vi.mock("@/db/client", () => ({ db: { select: mockSelect, insert: mockInsert, delete: mockDelete } }));
@@ -18,8 +19,9 @@ vi.mock("@/db/schema", () => ({
     parentId: "rn.parentId",
     createdAt: "rn.createdAt",
   },
-  courses: { id: "c.id", visibility: "c.visibility" },
-  blogPosts: { id: "bp.id", status: "bp.status" },
+  courses: { id: "c.id", visibility: "c.visibility", userId: "c.userId" },
+  blogPosts: { id: "bp.id", status: "bp.status", authorId: "bp.authorId" },
+  vocabWords: { id: "vw.id" },
 }));
 vi.mock("drizzle-orm", () => ({
   and: vi.fn((...a: unknown[]) => ({ and: a })),
@@ -27,6 +29,7 @@ vi.mock("drizzle-orm", () => ({
   asc: vi.fn((c: unknown) => ({ asc: c })),
 }));
 vi.mock("@/modules/knowledge/ingest", () => ({ queueNoteForKnowledge: mockQueueNote }));
+vi.mock("@/modules/courses/repo", () => ({ isSiteOwner: mockIsSiteOwner }));
 vi.mock("@/modules/auth/middleware", () => ({
   requireAuth: async (c: any, next: any) => {
     const u = c.req.header("X-Test-User");
@@ -59,6 +62,8 @@ function selectReturns(rows: unknown[]) {
 let inserted: Record<string, unknown> | null = null;
 beforeEach(() => {
   vi.clearAllMocks();
+  mockSelect.mockReset();
+  mockIsSiteOwner.mockResolvedValue(false);
   inserted = null;
   mockInsert.mockReturnValue({
     values: (v: Record<string, unknown>) => {
@@ -86,7 +91,7 @@ describe("reader notes", () => {
 
   it("creates a note with its AI stamp and queues it for knowledge", async () => {
     const meta = { kind: "ai", provider: "openai", model: "gpt-5-nano" };
-    selectReturns([{ status: "published" }]);
+    selectReturns([{ status: "published", authorId: "u2" }]);
     const res = await post({ surface: "blog", resource: POST_ID.toUpperCase(), content: "Same result twice.", anchor, meta });
     expect(res.status).toBe(201);
     expect(inserted).toMatchObject({ userId: "u1", surface: "blog", resourceId: POST_ID, meta, parentId: null });
@@ -94,36 +99,58 @@ describe("reader notes", () => {
   });
 
   it("files a course note to knowledge only when the course is public", async () => {
-    selectReturns([{ visibility: "public" }]);
+    selectReturns([{ visibility: "public", userId: "u2" }]);
     expect((await post({ surface: "course", resource: POST_ID, content: "A pixel.", anchor })).status).toBe(201);
     expect(inserted).toMatchObject({ surface: "course", resourceId: POST_ID });
     expect(mockQueueNote).toHaveBeenCalledWith(expect.objectContaining({ app: "course" }));
 
     mockQueueNote.mockClear();
-    selectReturns([{ visibility: "private" }]);
+    selectReturns([{ visibility: "private", userId: "u1" }]);
     expect((await post({ surface: "course", resource: POST_ID, content: "A pixel.", anchor })).status).toBe(201);
     expect(mockQueueNote).not.toHaveBeenCalled();
+  });
 
-    selectReturns([]);
+  it("lets the site owner note a private course they did not create, without filing it", async () => {
+    mockIsSiteOwner.mockResolvedValueOnce(true);
+    selectReturns([{ visibility: "private", userId: "u2" }]);
     expect((await post({ surface: "course", resource: POST_ID, content: "A pixel.", anchor })).status).toBe(201);
+    expect(mockIsSiteOwner).toHaveBeenCalledWith("u1");
+    expect(mockQueueNote).not.toHaveBeenCalled();
+  });
+
+  it("answers 404 for a page that is missing or the caller cannot read, and saves nothing", async () => {
+    const cases: Array<[string, unknown[]]> = [
+      ["knowledge", []],
+      ["blog", []],
+      ["blog", [{ status: "trashed", authorId: "u1" }]],
+      ["blog", [{ status: "draft", authorId: "u2" }]],
+      ["course", []],
+      ["course", [{ visibility: "private", userId: "u2" }]],
+    ];
+    for (const [surface, rows] of cases) {
+      selectReturns(rows);
+      const res = await post({ surface, resource: POST_ID, content: "x", anchor });
+      expect(res.status, `${surface} ${JSON.stringify(rows)}`).toBe(404);
+      expect(await res.json()).toEqual({ error: "Not found" });
+    }
+    selectReturns([{ status: "draft", authorId: "u2" }]);
+    expect((await post({ surface: "blog", resource: POST_ID, content: "x", parentId: NOTE_ID })).status).toBe(404);
+    expect(mockInsert).not.toHaveBeenCalled();
     expect(mockQueueNote).not.toHaveBeenCalled();
   });
 
   it("files a blog note to knowledge only while the post is published", async () => {
-    selectReturns([{ status: "draft" }]);
+    selectReturns([{ status: "draft", authorId: "u1" }]);
     expect((await post({ surface: "blog", resource: POST_ID, content: "Same result twice.", anchor })).status).toBe(201);
     expect(inserted).toMatchObject({ surface: "blog", resourceId: POST_ID });
     expect(vi.mocked(eq)).toHaveBeenCalledWith("bp.id", POST_ID);
     expect(mockQueueNote).not.toHaveBeenCalled();
-
-    selectReturns([]);
-    expect((await post({ surface: "blog", resource: POST_ID, content: "Same result twice.", anchor })).status).toBe(201);
-    expect(mockQueueNote).not.toHaveBeenCalled();
   });
 
-  it("files a knowledge-card note without a lookup, since cards are always public", async () => {
+  it("files a note on an existing knowledge card, since cards are always public", async () => {
+    selectReturns([{ id: POST_ID }]);
     expect((await post({ surface: "knowledge", resource: POST_ID, content: "x", anchor })).status).toBe(201);
-    expect(mockSelect).not.toHaveBeenCalled();
+    expect(vi.mocked(eq)).toHaveBeenCalledWith("vw.id", POST_ID);
     expect(mockQueueNote).toHaveBeenCalledWith(expect.objectContaining({ app: "knowledge" }));
   });
 
@@ -134,8 +161,10 @@ describe("reader notes", () => {
   });
 
   it("only replies under your own top-level note on the same page", async () => {
+    selectReturns([{ status: "published", authorId: "u2" }]);
     selectReturns([]);
     expect((await post({ surface: "blog", resource: POST_ID, content: "x", parentId: NOTE_ID })).status).toBe(400);
+    selectReturns([{ status: "published", authorId: "u2" }]);
     selectReturns([{ id: NOTE_ID, parentId: null, resourceId: POST_ID, surface: "blog" }]);
     const res = await post({ surface: "blog", resource: POST_ID, content: "reply", parentId: NOTE_ID });
     expect(res.status).toBe(201);

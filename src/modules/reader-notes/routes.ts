@@ -2,9 +2,10 @@ import { Hono } from "hono";
 import { z } from "zod";
 import { and, asc, eq } from "drizzle-orm";
 import { db } from "@/db/client";
-import { blogPosts, courses, readerNotes } from "@/db/schema";
+import { blogPosts, courses, readerNotes, vocabWords } from "@/db/schema";
 import { requireAuth, requireBrowserSession } from "@/modules/auth/middleware";
 import { anchorSchema, noteMetaSchema } from "@/modules/ai/note-schemas";
+import { isSiteOwner } from "@/modules/courses/repo";
 import { queueNoteForKnowledge } from "@/modules/knowledge/ingest";
 import { uuidId } from "@/modules/shared/validators";
 import { zValidator } from "@/modules/shared/zod-validator";
@@ -57,6 +58,17 @@ readerNotesRoutes.post("/", zValidator("json", createBody), async (c) => {
     if (body.anchor || body.meta) {
       return c.json({ error: "A reply cannot carry an anchor or meta; it belongs to its note's thread" }, 400);
     }
+  } else if (!body.anchor) {
+    return c.json({ error: "A note needs an anchor (the text it is pinned to)" }, 400);
+  }
+
+  // SHAN-742: the page must exist and be one the caller can read. Missing and
+  // unreadable answer the same 404, so a private course or someone's draft
+  // cannot be confirmed to exist through this route either.
+  const page = await resolvePage(body.surface, body.resource, userId);
+  if (!page) return c.json({ error: "Not found" }, 404);
+
+  if (body.parentId) {
     const [parent] = await db
       .select({ id: readerNotes.id, parentId: readerNotes.parentId, resourceId: readerNotes.resourceId, surface: readerNotes.surface })
       .from(readerNotes)
@@ -64,8 +76,6 @@ readerNotesRoutes.post("/", zValidator("json", createBody), async (c) => {
     if (!parent || parent.parentId !== null || parent.resourceId !== body.resource || parent.surface !== body.surface) {
       return c.json({ error: "parentId must be one of your notes on this page" }, 400);
     }
-  } else if (!body.anchor) {
-    return c.json({ error: "A note needs an anchor (the text it is pinned to)" }, 400);
   }
 
   const [note] = await db
@@ -81,27 +91,48 @@ readerNotesRoutes.post("/", zValidator("json", createBody), async (c) => {
     })
     .returning();
 
-  if (body.anchor && (await mayFileToKnowledge(body.surface, body.resource))) {
+  if (body.anchor && page.isPublic) {
     queueNoteForKnowledge({ userId, quote: body.anchor.quote, content: body.content, app: body.surface });
   }
   return c.json({ note }, 201);
 });
 
 /**
- * Knowledge cards are public, so a note only feeds them when the words it
- * quotes are public too. Knowledge cards always are; a course can be private,
- * and a quote from one must not resurface on a public card. A blog post can be
- * a draft, readable by its author alone, and a published post can be flipped
- * back to one (SHAN-695), so it files only while published.
+ * The page a note is pinned to, as the caller sees it: null when it is
+ * missing or the caller cannot read it, the same rules the blog and course
+ * reads apply (a trashed post is gone, a draft is its author's alone, a
+ * private course is its creator's and the site owner's).
+ *
+ * isPublic says whether the note may feed a knowledge card. Knowledge cards
+ * are public, so a note only feeds them when the words it quotes are public
+ * too: always on a card, only while published on a post (one can be flipped
+ * back to draft, SHAN-695), and only on a public course.
  */
-async function mayFileToKnowledge(surface: z.infer<typeof surfaceEnum>, resourceId: string): Promise<boolean> {
-  if (surface === "knowledge") return true;
-  if (surface === "blog") {
-    const [row] = await db.select({ status: blogPosts.status }).from(blogPosts).where(eq(blogPosts.id, resourceId));
-    return row?.status === "published";
+async function resolvePage(
+  surface: z.infer<typeof surfaceEnum>,
+  resourceId: string,
+  userId: string,
+): Promise<{ isPublic: boolean } | null> {
+  if (surface === "knowledge") {
+    const [row] = await db.select({ id: vocabWords.id }).from(vocabWords).where(eq(vocabWords.id, resourceId));
+    return row ? { isPublic: true } : null;
   }
-  const [row] = await db.select({ visibility: courses.visibility }).from(courses).where(eq(courses.id, resourceId));
-  return row?.visibility === "public";
+  if (surface === "blog") {
+    const [row] = await db
+      .select({ status: blogPosts.status, authorId: blogPosts.authorId })
+      .from(blogPosts)
+      .where(eq(blogPosts.id, resourceId));
+    if (!row || row.status === "trashed") return null;
+    if (row.status === "draft" && row.authorId !== userId) return null;
+    return { isPublic: row.status === "published" };
+  }
+  const [row] = await db
+    .select({ visibility: courses.visibility, userId: courses.userId })
+    .from(courses)
+    .where(eq(courses.id, resourceId));
+  if (!row) return null;
+  if (row.visibility === "public") return { isPublic: true };
+  return row.userId === userId || (await isSiteOwner(userId)) ? { isPublic: false } : null;
 }
 
 readerNotesRoutes.delete("/:id", zValidator("param", z.object({ id: uuidId("Invalid id") })), async (c) => {
