@@ -7,7 +7,7 @@
 // Every mutation that changes the number of comments on a post does the count
 // bump in the SAME transaction as the row change. Two independent statements
 // would leave the tile lying about the thread whenever the second one failed.
-import { asc, eq, sql, and } from "drizzle-orm";
+import { asc, eq, sql, and, inArray, or } from "drizzle-orm";
 import { db } from "@/db/client";
 import { blogComments, blogPosts, users } from "@/db/schema";
 
@@ -69,12 +69,35 @@ export async function getComment(id: string) {
   return row ?? null;
 }
 
-/** Author-only. Returns null when the id is unknown or the caller isn't the author. */
+/**
+ * Author-only. Returns null when the id is unknown, the caller isn't the
+ * author, or the post is one the caller can no longer read (SHAN-744).
+ *
+ * The visibility rule is getPostBySlug's (published, or a draft the caller
+ * wrote; never trashed), applied inside the UPDATE itself: unpublishing a post
+ * has to freeze its thread, and a separate SELECT would leave a window for an
+ * edit to land after the status change.
+ */
 export async function updateComment(commentId: string, authorId: string, content: string) {
+  const readablePosts = db
+    .select({ id: blogPosts.id })
+    .from(blogPosts)
+    .where(
+      or(
+        eq(blogPosts.status, "published"),
+        and(eq(blogPosts.status, "draft"), eq(blogPosts.authorId, authorId))
+      )
+    );
   const [row] = await db
     .update(blogComments)
     .set({ content, editedAt: new Date(), updatedAt: new Date() })
-    .where(and(eq(blogComments.id, commentId), eq(blogComments.authorId, authorId)))
+    .where(
+      and(
+        eq(blogComments.id, commentId),
+        eq(blogComments.authorId, authorId),
+        inArray(blogComments.postId, readablePosts)
+      )
+    )
     .returning();
   return row ?? null;
 }

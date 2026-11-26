@@ -31,6 +31,8 @@ vi.mock("@/db/schema", () => {
 vi.mock("drizzle-orm", () => ({
   eq: vi.fn((c: unknown, v: unknown) => ({ eq: [c, v] })),
   and: vi.fn((...a: unknown[]) => ({ and: a })),
+  or: vi.fn((...a: unknown[]) => ({ or: a })),
+  inArray: vi.fn((c: unknown, sub: unknown) => ({ inArray: [c, sub] })),
   asc: vi.fn((c: unknown) => ({ c, dir: "asc" })),
   sql: Object.assign(
     vi.fn((strings: TemplateStringsArray, ...values: unknown[]) => ({
@@ -51,7 +53,7 @@ function chain(rows: unknown[]) {
   return c;
 }
 
-import { createComment, deleteComment, listForPost } from "@/modules/blog/comments-repo";
+import { createComment, deleteComment, listForPost, updateComment } from "@/modules/blog/comments-repo";
 
 beforeEach(() => vi.clearAllMocks());
 
@@ -161,6 +163,48 @@ describe("deleteComment", () => {
     await deleteComment("c1", "u2");
     const arg = (updateChain.set as any).mock.calls[0][0];
     expect(String(arg.commentCount.__sql)).toContain("greatest(0,");
+  });
+});
+
+describe("updateComment", () => {
+  // SHAN-744: the post's visibility is part of the UPDATE's own WHERE, so an
+  // unpublished or trashed post freezes its thread with no check-then-write gap.
+  function setup(returned: unknown[]) {
+    const sub = chain([]);
+    mockSelect.mockReturnValue(sub);
+    const upd = chain(returned);
+    mockUpdate.mockReturnValue(upd);
+    return { sub, upd };
+  }
+
+  it("scopes the update to the comment, its author and a post the caller can read", async () => {
+    const { sub, upd } = setup([{ id: "c1", content: "edited" }]);
+
+    expect(await updateComment("c1", "u2", "edited")).toEqual({ id: "c1", content: "edited" });
+
+    const where = (upd.where as any).mock.calls[0][0];
+    expect(where.and).toEqual([
+      { eq: [{ table: "blog_comments", column: "id" }, "c1"] },
+      { eq: [{ table: "blog_comments", column: "authorId" }, "u2"] },
+      { inArray: [{ table: "blog_comments", column: "postId" }, sub] },
+    ]);
+    // Readable = published, or a draft the caller wrote. Trashed never is.
+    expect((sub.where as any).mock.calls[0][0]).toEqual({
+      or: [
+        { eq: [{ table: "blog_posts", column: "status" }, "published"] },
+        {
+          and: [
+            { eq: [{ table: "blog_posts", column: "status" }, "draft"] },
+            { eq: [{ table: "blog_posts", column: "authorId" }, "u2"] },
+          ],
+        },
+      ],
+    });
+  });
+
+  it("returns null when nothing matched (unknown, not the author, or post hidden)", async () => {
+    setup([]);
+    expect(await updateComment("c1", "u2", "edited")).toBeNull();
   });
 });
 
