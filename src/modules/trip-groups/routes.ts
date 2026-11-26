@@ -326,12 +326,18 @@ tripGroupsRoutes.post(
         });
       }
 
+      const changedDays = computeChangedDays(base, itinerary);
+      const summaryChanged = base?.summary !== itinerary.summary;
+      // SHAN-745: a draft identical to the base would approve to nothing.
+      if (changedDays.length === 0 && !summaryChanged) {
+        return c.json({ suggestion: null, unchanged: true, modelUsed });
+      }
       const suggestion = await createSuggestion({
         groupId: detail.id,
         authorId: userId,
         itinerary,
-        changedDays: computeChangedDays(base, itinerary),
-        summaryChanged: base?.summary !== itinerary.summary,
+        changedDays,
+        summaryChanged,
         note: null,
       });
       return c.json({ suggestion: suggestionJson(suggestion), modelUsed }, 201);
@@ -506,12 +512,19 @@ tripGroupsRoutes.put(
       const parsedBase = itinerarySchema.safeParse(group.itinerary);
       base = parsedBase.success ? parsedBase.data : null;
     }
+    const changedDays = computeChangedDays(base, itinerary);
+    const summaryChanged = base?.summary !== itinerary.summary;
+    // SHAN-745: a Save with nothing edited would queue an empty suggestion
+    // for the owner to triage.
+    if (changedDays.length === 0 && !summaryChanged) {
+      return c.json({ suggestion: null, unchanged: true });
+    }
     const suggestion = await createSuggestion({
       groupId: group.id,
       authorId: userId,
       itinerary,
-      changedDays: computeChangedDays(base, itinerary),
-      summaryChanged: base?.summary !== itinerary.summary,
+      changedDays,
+      summaryChanged,
       note: "Manual edit",
     });
     return c.json({ suggestion: suggestionJson(suggestion) }, 201);

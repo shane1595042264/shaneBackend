@@ -704,6 +704,20 @@ describe("itinerary suggestions (SHAN-273)", () => {
     );
   });
 
+  it("non-owner consolidate that returns the base unchanged files no suggestion (SHAN-745)", async () => {
+    mockGetGroupDetail.mockResolvedValue({ ...memberDetail, itinerary: ITIN });
+    // The real consolidator returns schema-parsed output, defaults filled in.
+    mockConsolidateItinerary.mockResolvedValue({ itinerary: enriched(ITIN), modelUsed: "m" });
+    const res = await app.request(`/api/trip-groups/${SLUG}/itinerary/consolidate`, {
+      method: "POST",
+      headers: { "X-Test-User": USER_B },
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ suggestion: null, unchanged: true, modelUsed: "m" });
+    expect(mockCreateSuggestion).not.toHaveBeenCalled();
+    expect(mockSaveItinerary).not.toHaveBeenCalled();
+  });
+
   it("owner consolidate still writes directly", async () => {
     mockGetGroupDetail.mockResolvedValue(memberDetail);
     mockConsolidateItinerary.mockResolvedValue({ itinerary: ITIN, modelUsed: "m" });
@@ -1094,6 +1108,22 @@ describe("PUT /api/trip-groups/:slug/itinerary (SHAN-276)", () => {
         note: "Manual edit",
       }),
     );
+  });
+
+  it("member save that changes nothing files no suggestion (SHAN-745)", async () => {
+    mockGetGroupBySlug.mockResolvedValue({ ...groupRow, itinerary: ITIN });
+    mockIsMember.mockResolvedValue(true);
+    for (const body of [{ itinerary: ITIN }, { itinerary: ITIN, base: ITIN }]) {
+      const res = await app.request(`/api/trip-groups/${SLUG}/itinerary`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", "X-Test-User": USER_B },
+        body: JSON.stringify(body),
+      });
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ suggestion: null, unchanged: true });
+    }
+    expect(mockCreateSuggestion).not.toHaveBeenCalled();
+    expect(mockSaveItinerary).not.toHaveBeenCalled();
   });
 
   it("member edit that keeps the summary records summaryChanged false (SHAN-563)", async () => {
