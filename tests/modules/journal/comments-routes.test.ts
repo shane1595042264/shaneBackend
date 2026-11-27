@@ -233,6 +233,32 @@ describe("PATCH /api/journal/comments/:id", () => {
     expect(res.status).toBe(200);
   });
 
+  it("records a comment.update when the content changed", async () => {
+    mockGetComment.mockResolvedValue({ id: CID, entryId: "e1", content: "before" });
+    mockUpdateComment.mockResolvedValue({ id: CID, entryId: "e1", content: "edited" });
+    const res = await app.request(`/api/journal/comments/${CID}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", "X-Test-User": "u1" },
+      body: JSON.stringify({ content: "edited" }),
+    });
+    expect(res.status).toBe(200);
+    expect(mockUpdateComment).toHaveBeenCalledWith(CID, "u1", "edited");
+  });
+
+  // SHAN-747: Save without touching the text is a 200 that leaves no audit row.
+  it("answers 200 and logs nothing when the content is unchanged", async () => {
+    mockGetComment.mockResolvedValue({ id: CID, entryId: "e1", content: "same" });
+    mockUpdateComment.mockResolvedValue({ id: CID, entryId: "e1", content: "same", editedAt: null });
+    const res = await app.request(`/api/journal/comments/${CID}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", "X-Test-User": "u1" },
+      body: JSON.stringify({ content: "same " }),
+    });
+    expect(res.status).toBe(200);
+    expect((await res.json()).comment.editedAt).toBeNull();
+    expect(mockRecordActivity).not.toHaveBeenCalled();
+  });
+
   it("404 when not author / not found", async () => {
     mockUpdateComment.mockResolvedValue(null);
     const res = await app.request(`/api/journal/comments/${CID}`, {

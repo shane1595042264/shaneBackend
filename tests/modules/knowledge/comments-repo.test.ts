@@ -21,6 +21,7 @@ vi.mock("drizzle-orm", () => ({
   and: vi.fn((...a) => ({ and: a })),
   asc: vi.fn((c) => ({ c, dir: "asc" })),
   getTableColumns: vi.fn(() => ({})),
+  sql: vi.fn(() => ({ __sql: true })),
 }));
 
 function chain(rows: unknown[]) {

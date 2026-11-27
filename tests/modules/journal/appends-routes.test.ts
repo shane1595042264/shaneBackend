@@ -7,6 +7,7 @@ const {
   mockListAppends,
   mockUpdateAppend,
   mockSoftDeleteAppend,
+  mockGetAppend,
   mockRecordActivity,
 } = vi.hoisted(() => ({
   mockGetByDate: vi.fn(),
@@ -14,6 +15,7 @@ const {
   mockListAppends: vi.fn(),
   mockUpdateAppend: vi.fn(),
   mockSoftDeleteAppend: vi.fn(),
+  mockGetAppend: vi.fn(),
   mockRecordActivity: vi.fn(),
 }));
 
@@ -43,6 +45,7 @@ vi.mock("@/modules/journal/appends-repo", () => ({
   listAppendsForEntry: mockListAppends,
   updateAppend: mockUpdateAppend,
   softDeleteAppend: mockSoftDeleteAppend,
+  getAppend: mockGetAppend,
 }));
 // SHAN-475: every journal route now runs requireJournalMembership. These
 // suites are about the routes, not the gate, so let everyone through here;
@@ -225,6 +228,22 @@ describe("PATCH /api/journal/entries/:date/appends/:id", () => {
     expect(mockRecordActivity).toHaveBeenCalledWith(
       expect.objectContaining({ action: "append.update", targetType: "append", targetId: AID })
     );
+  });
+
+  // SHAN-747: Save without touching the text is a 200 that leaves no audit row.
+  it("answers 200 and logs nothing when the content is unchanged", async () => {
+    mockGetByDate.mockResolvedValue({ entry: { id: "e1", authorId: "u1" } });
+    mockGetAppend.mockResolvedValue({ id: AID, entryId: "e1", content: "same" });
+    mockUpdateAppend.mockResolvedValue({ id: AID, entryId: "e1", content: "same", editedAt: null });
+
+    const res = await app.request(`/api/journal/entries/2026-05-11/appends/${AID}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", "X-Test-User": "u1" },
+      body: JSON.stringify({ content: "  same  " }),
+    });
+    expect(res.status).toBe(200);
+    expect((await res.json()).append.editedAt).toBeNull();
+    expect(mockRecordActivity).not.toHaveBeenCalled();
   });
 
   it("404s when the append is not the caller's, and logs nothing", async () => {

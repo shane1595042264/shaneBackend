@@ -2,6 +2,7 @@
 import { and, asc, eq, getTableColumns } from "drizzle-orm";
 import { db } from "@/db/client";
 import { knowledgeComments, users, vocabWords } from "@/db/schema";
+import { stampIfChanged } from "@/modules/shared/edit-stamp";
 
 export async function createComment(input: {
   entryId: string;
@@ -53,7 +54,11 @@ export async function getComment(id: string) {
 export async function updateComment(commentId: string, authorId: string, content: string) {
   const [row] = await db
     .update(knowledgeComments)
-    .set({ content, editedAt: new Date(), updatedAt: new Date() })
+    .set({
+      content,
+      editedAt: stampIfChanged(knowledgeComments.content, content, knowledgeComments.editedAt),
+      updatedAt: stampIfChanged(knowledgeComments.content, content, knowledgeComments.updatedAt),
+    })
     .where(and(eq(knowledgeComments.id, commentId), eq(knowledgeComments.authorId, authorId)))
     .returning();
   return row ?? null;

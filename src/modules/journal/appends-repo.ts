@@ -1,6 +1,7 @@
 import { and, asc, eq, isNull } from "drizzle-orm";
 import { db } from "@/db/client";
 import { journalAppends, users } from "@/db/schema";
+import { stampIfChanged } from "@/modules/shared/edit-stamp";
 
 export async function createAppend(input: {
   entryId: string;
@@ -45,7 +46,10 @@ export async function updateAppend(input: {
 }) {
   const [row] = await db
     .update(journalAppends)
-    .set({ content: input.content, editedAt: new Date() })
+    .set({
+      content: input.content,
+      editedAt: stampIfChanged(journalAppends.content, input.content, journalAppends.editedAt),
+    })
     .where(
       and(
         eq(journalAppends.id, input.id),

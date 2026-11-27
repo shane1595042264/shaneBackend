@@ -28,6 +28,7 @@ import { keysetBefore, parseKeysetCursor } from "@/modules/shared/keyset";
 import { ownerEmail } from "@/modules/journal/access-repo";
 import { db } from "@/db/client";
 import { courseComments, courseCovers, courseRatings, courses, users } from "@/db/schema";
+import { stampIfChanged } from "@/modules/shared/edit-stamp";
 
 export interface CourseRow {
   id: string;
@@ -386,7 +387,11 @@ export async function updateCourseComment(
 ) {
   const [row] = await db
     .update(courseComments)
-    .set({ content, editedAt: new Date(), updatedAt: new Date() })
+    .set({
+      content,
+      editedAt: stampIfChanged(courseComments.content, content, courseComments.editedAt),
+      updatedAt: stampIfChanged(courseComments.content, content, courseComments.updatedAt),
+    })
     .where(and(eq(courseComments.id, commentId), eq(courseComments.authorId, authorId)))
     .returning();
   return row ?? null;

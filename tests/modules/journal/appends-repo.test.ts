@@ -26,6 +26,7 @@ vi.mock("drizzle-orm", () => ({
   asc: vi.fn((c: unknown) => ({ c, dir: "asc" })),
   eq: vi.fn((c: unknown, v: unknown) => ({ c, v })),
   isNull: vi.fn((c: unknown) => ({ isNull: c })),
+  sql: vi.fn((strings: TemplateStringsArray, ...values: unknown[]) => ({ __sql: strings.join("?"), values })),
 }));
 
 import {
@@ -110,15 +111,18 @@ describe("updateAppend", () => {
     expect(row).toBeNull();
   });
 
-  it("stamps editedAt", async () => {
-    const set = vi.fn(() => ({
+  // SHAN-747: a save that changes nothing must keep the old editedAt, so the
+  // stamp is a CASE on the stored content inside the UPDATE, not a JS Date.
+  it("stamps editedAt only when the content differs", async () => {
+    const set = vi.fn((_patch: any) => ({
       where: vi.fn(() => ({ returning: vi.fn(() => Promise.resolve([{ id: "a1" }])) })),
     }));
     mockUpdate.mockReturnValue({ set });
     await updateAppend({ id: "a1", entryId: "e1", authorId: "u1", content: "fixed" });
-    expect(set).toHaveBeenCalledWith(
-      expect.objectContaining({ content: "fixed", editedAt: expect.any(Date) })
-    );
+    const patch = set.mock.calls[0][0];
+    expect(patch.content).toBe("fixed");
+    expect(patch.editedAt.__sql).toMatch(/case when .* is distinct from .* then now\(\) else .* end/);
+    expect(patch.editedAt.values).toContain("fixed");
   });
 });
 

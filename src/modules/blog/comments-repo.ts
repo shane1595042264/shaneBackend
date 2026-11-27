@@ -10,6 +10,7 @@
 import { asc, eq, sql, and, inArray, or } from "drizzle-orm";
 import { db } from "@/db/client";
 import { blogComments, blogPosts, users } from "@/db/schema";
+import { stampIfChanged } from "@/modules/shared/edit-stamp";
 
 export async function createComment(input: {
   postId: string;
@@ -90,7 +91,11 @@ export async function updateComment(commentId: string, authorId: string, content
     );
   const [row] = await db
     .update(blogComments)
-    .set({ content, editedAt: new Date(), updatedAt: new Date() })
+    .set({
+      content,
+      editedAt: stampIfChanged(blogComments.content, content, blogComments.editedAt),
+      updatedAt: stampIfChanged(blogComments.content, content, blogComments.updatedAt),
+    })
     .where(
       and(
         eq(blogComments.id, commentId),

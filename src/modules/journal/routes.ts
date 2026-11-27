@@ -349,6 +349,9 @@ journalRoutes.patch(
     const row = await getEntryByDate(date);
     if (!row) return c.json({ error: "Not found" }, 404);
 
+    // SHAN-747: read the stored text so a save that changes nothing leaves no
+    // append.update row. The repo keeps the old editedAt on its own.
+    const before = await getAppend(id);
     const updated = await updateAppend({
       id,
       entryId: row.entry.id,
@@ -358,6 +361,7 @@ journalRoutes.patch(
     // One 404 for "no such append", "not yours" and "already deleted": the
     // distinction would tell a non-author which append ids exist.
     if (!updated) return c.json({ error: "Not found or not author" }, 404);
+    if (before?.content === content) return c.json({ append: updated });
 
     await recordActivity({
       entryId: row.entry.id,
@@ -961,8 +965,14 @@ journalRoutes.patch(
   zValidator("json", commentEditBody),
   async (c) => {
     const userId = c.get("userId") as string;
-    const updated = await updateCommentRepo(c.req.valid("param").id, userId, c.req.valid("json").content);
+    const commentId = c.req.valid("param").id;
+    const { content } = c.req.valid("json");
+    // SHAN-747: a save that changes nothing is a 200 with no comment.update
+    // row; the repo keeps the old editedAt, so no "edited" tag either.
+    const before = await getComment(commentId);
+    const updated = await updateCommentRepo(commentId, userId, content);
     if (!updated) return c.json({ error: "Not found or not author" }, 404);
+    if (before?.content === content) return c.json({ comment: updated });
     const entryDate = await entryDateById(updated.entryId);
     if (entryDate) {
       await recordActivity({

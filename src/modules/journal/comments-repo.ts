@@ -2,6 +2,7 @@
 import { and, asc, eq, getTableColumns, inArray, sql } from "drizzle-orm";
 import { db } from "@/db/client";
 import { commentReactions, journalComments, journalEntries, users } from "@/db/schema";
+import { stampIfChanged } from "@/modules/shared/edit-stamp";
 
 /**
  * SHAN-577: what an inline note is pinned to. `target` is "entry" for the
@@ -121,7 +122,11 @@ export async function getComment(id: string) {
 export async function updateComment(commentId: string, authorId: string, content: string) {
   const [row] = await db
     .update(journalComments)
-    .set({ content, editedAt: new Date(), updatedAt: new Date() })
+    .set({
+      content,
+      editedAt: stampIfChanged(journalComments.content, content, journalComments.editedAt),
+      updatedAt: stampIfChanged(journalComments.content, content, journalComments.updatedAt),
+    })
     .where(and(eq(journalComments.id, commentId), eq(journalComments.authorId, authorId)))
     .returning();
   return row ?? null;
