@@ -10,11 +10,15 @@ const { mockSelect, mockInsert, mockUpdate } = vi.hoisted(() => ({
 vi.mock("@/db/client", () => ({
   db: { select: mockSelect, insert: mockInsert, update: mockUpdate },
 }));
-vi.mock("@/db/schema", () => ({ apiTokens: {} }));
+vi.mock("@/db/schema", () => ({
+  apiTokens: { id: "api_tokens.id", createdAt: "api_tokens.created_at", revokedAt: "api_tokens.revoked_at" },
+}));
 vi.mock("drizzle-orm", () => ({
   eq: vi.fn((c: unknown, v: unknown) => ({ c, v })),
   and: vi.fn((...args: unknown[]) => ({ and: args })),
   isNull: vi.fn((c: unknown) => ({ c, op: "null" })),
+  desc: vi.fn((c: unknown) => ({ c, op: "desc" })),
+  sql: vi.fn((strings: TemplateStringsArray, ...values: unknown[]) => ({ sql: strings.join("?"), values })),
 }));
 
 import { mintToken, hashToken, listTokens, revokeToken, lookupActiveToken } from "@/modules/auth/tokens";
@@ -44,15 +48,26 @@ describe("listTokens", () => {
     const rows = [
       { id: "tok-1", name: "agent", scopes: ["read"], lastUsedAt: null, revokedAt: null, createdAt: new Date() },
     ];
+    const orderBy = vi.fn(() => Promise.resolve(rows));
     const selectChain = {
       from: vi.fn(() => ({
-        where: vi.fn(() => Promise.resolve(rows)),
+        where: vi.fn(() => ({ orderBy })),
       })),
     };
     mockSelect.mockReturnValue(selectChain);
     const result = await listTokens("user-1");
     expect(result).toEqual(rows);
     expect(selectChain.from).toHaveBeenCalled();
+  });
+
+  it("orders newest first with the id as a tiebreaker (SHAN-746)", async () => {
+    const orderBy = vi.fn(() => Promise.resolve([]));
+    mockSelect.mockReturnValue({ from: vi.fn(() => ({ where: vi.fn(() => ({ orderBy })) })) });
+    await listTokens("user-1");
+    expect(orderBy).toHaveBeenCalledWith(
+      { c: "api_tokens.created_at", op: "desc" },
+      { c: "api_tokens.id", op: "desc" },
+    );
   });
 });
 
@@ -81,6 +96,20 @@ describe("revokeToken", () => {
     mockUpdate.mockReturnValue(updateChain);
     const result = await revokeToken("user-1", "tok-missing");
     expect(result).toBe(false);
+  });
+
+  it("keeps the first revocation time on a repeat revoke (SHAN-746)", async () => {
+    const set = vi.fn(() => ({
+      where: vi.fn(() => ({
+        returning: vi.fn(() => Promise.resolve([{ id: "tok-1" }])),
+      })),
+    }));
+    mockUpdate.mockReturnValue({ set });
+    await revokeToken("user-1", "tok-1");
+    const { revokedAt } = (set.mock.calls[0] as unknown as [{ revokedAt: { sql: string; values: unknown[] } }])[0];
+    expect(revokedAt).not.toBeInstanceOf(Date);
+    expect(revokedAt.sql).toBe("coalesce(?, now())");
+    expect(revokedAt.values).toEqual(["api_tokens.revoked_at"]);
   });
 });
 

@@ -1,6 +1,6 @@
 // src/modules/auth/tokens.ts
 import { createHash, randomBytes } from "node:crypto";
-import { and, eq, isNull } from "drizzle-orm";
+import { and, desc, eq, isNull, sql } from "drizzle-orm";
 import { db } from "@/db/client";
 import { apiTokens } from "@/db/schema";
 
@@ -35,13 +35,18 @@ export async function listTokens(userId: string) {
       createdAt: apiTokens.createdAt,
     })
     .from(apiTokens)
-    .where(eq(apiTokens.userId, userId));
+    .where(eq(apiTokens.userId, userId))
+    // SHAN-746: newest first, with the id as a tiebreaker. Without an ORDER BY
+    // the rows came back in heap order, which every last_used_at write shuffles.
+    .orderBy(desc(apiTokens.createdAt), desc(apiTokens.id));
 }
 
 export async function revokeToken(userId: string, tokenId: string): Promise<boolean> {
   const result = await db
     .update(apiTokens)
-    .set({ revokedAt: new Date() })
+    // SHAN-746: a repeat revoke still matches (so it stays a 204, not a 404)
+    // but keeps the first revocation time instead of moving it to now.
+    .set({ revokedAt: sql`coalesce(${apiTokens.revokedAt}, now())` })
     .where(and(eq(apiTokens.id, tokenId), eq(apiTokens.userId, userId)))
     .returning({ id: apiTokens.id });
   return result.length > 0;
