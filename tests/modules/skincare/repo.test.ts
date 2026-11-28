@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-const { mockSelect, mockInsert, mockDelete, mockUpdate, mockTransaction } = vi.hoisted(() => ({
+const { mockSelect, mockInsert, mockDelete, mockUpdate, mockTransaction, mockExecute } = vi.hoisted(() => ({
+  mockExecute: vi.fn(),
   mockSelect: vi.fn(),
   mockInsert: vi.fn(),
   mockDelete: vi.fn(),
@@ -59,10 +60,26 @@ import {
 } from "@/modules/skincare/repo";
 import { skincareProducts } from "@/db/schema";
 
-beforeEach(() => vi.clearAllMocks());
+beforeEach(() => {
+  vi.clearAllMocks();
+  // Transactions reuse the db mocks so the writes inside them can be asserted
+  // directly; execute is the advisory lock.
+  mockExecute.mockResolvedValue(undefined);
+  mockTransaction.mockImplementation(async (fn: (tx: unknown) => unknown) =>
+    fn({ select: mockSelect, insert: mockInsert, update: mockUpdate, execute: mockExecute }),
+  );
+});
+
+// SHAN-748: the advisory lock key a routine write took, or undefined.
+function lockKey(call = 0): unknown {
+  const q = mockExecute.mock.calls[call]?.[0] as { strings: TemplateStringsArray; values: unknown[] } | undefined;
+  if (!q) return undefined;
+  expect(q.strings.join("?")).toContain("pg_advisory_xact_lock(hashtextextended(");
+  return q.values[0];
+}
 
 describe("listSkincareProducts", () => {
-  it("selects the caller's rows ordered by (timeOfDay, position)", async () => {
+  it("selects the caller's rows ordered by (timeOfDay, position, id)", async () => {
     const c = chain([
       { id: "p1", userId: "u1", timeOfDay: "morning", name: "Cleanser", position: 0 },
     ]);
@@ -70,8 +87,12 @@ describe("listSkincareProducts", () => {
     const out = await listSkincareProducts("u1");
     expect(out).toHaveLength(1);
     expect(out[0].id).toBe("p1");
-    // two orderBy args → timeOfDay then position
-    expect((c.orderBy as ReturnType<typeof vi.fn>).mock.calls[0]).toHaveLength(2);
+    // timeOfDay, then position, then id so tied positions read in a fixed order
+    expect((c.orderBy as ReturnType<typeof vi.fn>).mock.calls[0]).toEqual([
+      { c: skincareProducts.timeOfDay, dir: "asc" },
+      { c: skincareProducts.position, dir: "asc" },
+      { c: skincareProducts.id, dir: "asc" },
+    ]);
   });
 });
 
@@ -111,6 +132,19 @@ describe("createSkincareProduct", () => {
     // position is a computed SQL expression, not a literal number
     expect((values.position as { kind?: string })?.kind).toBe("sql");
   });
+
+  it("appends under the routine's advisory lock, taken before the insert (SHAN-748)", async () => {
+    const order: string[] = [];
+    mockExecute.mockImplementation(async () => void order.push("lock"));
+    mockInsert.mockImplementation(() => {
+      order.push("insert");
+      return { values: () => ({ returning: () => Promise.resolve([{ id: "p1" }]) }) };
+    });
+    await createSkincareProduct({ userId: "u1", timeOfDay: "night", name: "Serum" });
+    expect(mockTransaction).toHaveBeenCalledTimes(1);
+    expect(lockKey()).toBe("skincare:u1:night");
+    expect(order).toEqual(["lock", "insert"]);
+  });
 });
 
 describe("updateSkincareProduct", () => {
@@ -130,6 +164,9 @@ describe("updateSkincareProduct", () => {
     expect(setArg).not.toHaveProperty("brand");
     expect(setArg).not.toHaveProperty("timeOfDay");
     expect(setArg).not.toHaveProperty("position");
+    // no position is assigned, so no routine lock and no transaction
+    expect(mockTransaction).not.toHaveBeenCalled();
+    expect(mockExecute).not.toHaveBeenCalled();
   });
 
   it("allows clearing brand/imageUrl to null explicitly", async () => {
@@ -148,6 +185,11 @@ describe("updateSkincareProduct", () => {
     const setArg = ch.set.mock.calls[0][0] as Record<string, unknown>;
     expect(setArg).toHaveProperty("timeOfDay", "night");
     expect((setArg.position as { kind?: string })?.kind).toBe("sql");
+    // SHAN-748: under the target routine's lock, so a concurrent append cannot tie
+    expect(lockKey()).toBe("skincare:u1:night");
+    expect(mockExecute.mock.invocationCallOrder[0]).toBeLessThan(
+      mockUpdate.mock.invocationCallOrder[0],
+    );
   });
 
   // SHAN-731: echoing the current routine back must not send the product to
@@ -189,14 +231,6 @@ describe("deleteSkincareProduct", () => {
 });
 
 describe("reorderSkincareProducts", () => {
-  // The reorder runs inside db.transaction; the tx reuses the db mocks so
-  // the routine read and the per-id updates can be asserted directly.
-  beforeEach(() => {
-    mockTransaction.mockImplementation(async (fn: (tx: unknown) => unknown) =>
-      fn({ select: mockSelect, update: mockUpdate }),
-    );
-  });
-
   function updateWhere() {
     const where = vi.fn(() => Promise.resolve(undefined));
     return { set: vi.fn(() => ({ where })) };
@@ -211,6 +245,11 @@ describe("reorderSkincareProducts", () => {
     const moved = await reorderSkincareProducts("u1", "morning", ["b", "a"]);
     expect(moved).toBe(2);
     expect(routine.for).toHaveBeenCalledWith("update");
+    // SHAN-748: the routine lock comes before the read, so an append waits
+    expect(lockKey()).toBe("skincare:u1:morning");
+    expect(mockExecute.mock.invocationCallOrder[0]).toBeLessThan(
+      mockSelect.mock.invocationCallOrder[0],
+    );
     expect(u1.set).toHaveBeenCalledWith(expect.objectContaining({ position: 0 }));
     expect(u2.set).toHaveBeenCalledWith(expect.objectContaining({ position: 1 }));
   });
